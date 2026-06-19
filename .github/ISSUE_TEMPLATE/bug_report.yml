@@ -1,0 +1,130 @@
+name: Bug report
+description: Report a playback, HDR, subtitle, fullscreen, or device-specific problem
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please avoid posting private subscription URLs, cookies, tokens, or personal media links.
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: e.g. v0.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Build variant
+      options:
+        - java32
+        - java64
+        - hisense32
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      placeholder: e.g. Huawei Vision SE 65 / Xiaomi TV / Android phone model
+    validations:
+      required: true
+
+  - type: input
+    id: android
+    attributes:
+      label: Android version
+      placeholder: e.g. Android 10 / Android 12
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stream_type
+    attributes:
+      label: Stream container
+      options:
+        - MP4
+        - MKV
+        - TS
+        - WebM
+        - Live stream
+        - Other / unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dynamic_range
+    attributes:
+      label: Video dynamic range
+      options:
+        - SDR
+        - HDR10
+        - HDR10+
+        - Dolby Vision
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Problem area
+      options:
+        - Playback start fails
+        - HDR does not activate
+        - Subtitle issue
+        - Audio / passthrough issue
+        - Fullscreen / controls issue
+        - Source switching crash
+        - UI / focus issue
+        - Build / installation issue
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Press ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or extra context
+      description: Paste only non-sensitive logs or attach screenshots if available.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I removed private URLs, tokens, cookies, and credentials from this report
+          required: true
+        - label: I confirmed which build variant I am using
+          required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support guide
+    url: https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/blob/main/SUPPORT.md
+    about: Read this first before opening a report
+  - name: Security policy
+    url: https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/blob/main/SECURITY.md
+    about: Use this path for sensitive security issues

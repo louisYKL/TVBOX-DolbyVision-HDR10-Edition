@@ -153,6 +153,13 @@ $env:GRADLE_USER_HOME='E:\apk\tvbox\TVBoxOS-main\_runtime\gradle-home'
 - `TVBox_debug-java64.apk`
 - `TVBox_debug-hisense.apk`
 
+## 社区协作
+
+- [贡献指南](CONTRIBUTING.md)
+- [支持与反馈](SUPPORT.md)
+- [安全策略](SECURITY.md)
+- [更新记录](CHANGELOG.md)
+
 ## 适合谁
 
 - 想要在 Android TV / 智慧屏上尽量保留系统硬解与 HDR 激发的人。

@@ -1,0 +1,46 @@
+name: Feature request
+description: Suggest a new capability, compatibility improvement, or UX refinement
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests are most useful when they are tied to a real playback, TV interaction, or maintenance problem.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Short summary
+      placeholder: One-sentence description of the request
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      placeholder: Describe the current pain point or limitation
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      placeholder: Describe the behavior you want
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Device / variant scope
+      placeholder: e.g. affects java32 on Android TV only, or all variants
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Extra context
+      description: References, screenshots, device behavior, or examples from other apps

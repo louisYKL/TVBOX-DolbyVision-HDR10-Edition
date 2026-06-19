@@ -151,6 +151,13 @@ The repository includes a basic Android build workflow for:
 - `TVBox_debug-java64.apk`
 - `TVBox_debug-hisense.apk`
 
+## Community
+
+- [Contributing Guide](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Security Policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+
 ## Who this is for
 
 - Anyone who wants to preserve native hardware decoding and HDR activation on Android TV or smart-screen devices.
