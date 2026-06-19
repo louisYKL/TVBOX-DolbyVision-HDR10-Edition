@@ -3,6 +3,7 @@ package com.github.tvbox.osc.base;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.content.res.Configuration;
 import android.content.res.Resources;
@@ -22,6 +23,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsetsController;
 import android.view.animation.PathInterpolator;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import androidx.annotation.Nullable;
@@ -64,11 +66,14 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
 
     private static float screenRatio = -100.0f;
     private Boolean tvDevice;
+    private boolean contentInitialized;
+    private boolean activityRegistered;
+    private boolean deferredLandscapeContent;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         if (isJava64Build()) {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         }
         try {
             if (screenRatio < 0) {
@@ -82,11 +87,14 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
             th.printStackTrace();
         }
         super.onCreate(savedInstanceState);
-        setContentView(getLayoutResID());
         mContext = this;
-        CutoutUtil.adaptCutoutAboveAndroidP(mContext, true);//设置刘海
-        AppManager.getInstance().addActivity(this);
-        init();
+        registerActivityIfNeeded();
+        if (shouldDeferLandscapeContent()) {
+            deferredLandscapeContent = true;
+            showDeferredLandscapePlaceholder();
+            return;
+        }
+        inflateActivityContentIfNeeded();
     }
 
     @Override
@@ -230,6 +238,12 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         return super.getResources();
     }
 
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        ensureLandscapeContentInflated();
+    }
+
     public boolean hasPermission(String permission) {
         boolean has = true;
         try {
@@ -365,7 +379,13 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
     }
 
     public boolean shouldApplyLandscapeDensity() {
-        return isTvDevice() || isJava64Build();
+        if (isTvDevice()) {
+            return true;
+        }
+        if (!isJava64Build()) {
+            return false;
+        }
+        return isLandscapeReadyForJava64Phone();
     }
 
     public boolean isTvDevice() {
@@ -406,6 +426,62 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
 
     private static boolean isJava64Build() {
         return "java64".equals(BuildConfig.FLAVOR) || "python64".equals(BuildConfig.FLAVOR);
+    }
+
+    protected boolean isJava64PhoneDevice() {
+        if (!isJava64Build() || isTvDevice()) {
+            return false;
+        }
+        try {
+            PackageManager pm = getPackageManager();
+            return pm != null && pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    private boolean shouldDeferLandscapeContent() {
+        return isJava64PhoneDevice() && !isLandscapeReadyForJava64Phone();
+    }
+
+    private boolean isLandscapeReadyForJava64Phone() {
+        Configuration configuration = super.getResources().getConfiguration();
+        return configuration != null && configuration.orientation == Configuration.ORIENTATION_LANDSCAPE;
+    }
+
+    private void showDeferredLandscapePlaceholder() {
+        FrameLayout placeholder = new FrameLayout(this);
+        placeholder.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        placeholder.setBackgroundResource(R.drawable.bg_apple_tv_shell);
+        setContentView(placeholder);
+        configureWindowMaterial();
+    }
+
+    private void ensureLandscapeContentInflated() {
+        if (!contentInitialized && !shouldDeferLandscapeContent()) {
+            inflateActivityContentIfNeeded();
+        }
+    }
+
+    private void inflateActivityContentIfNeeded() {
+        if (contentInitialized) {
+            return;
+        }
+        setContentView(getLayoutResID());
+        CutoutUtil.adaptCutoutAboveAndroidP(mContext, true);//设置刘海
+        contentInitialized = true;
+        deferredLandscapeContent = false;
+        init();
+    }
+
+    private void registerActivityIfNeeded() {
+        if (activityRegistered) {
+            return;
+        }
+        AppManager.getInstance().addActivity(this);
+        activityRegistered = true;
     }
 
     protected static BitmapDrawable globalWp = null;

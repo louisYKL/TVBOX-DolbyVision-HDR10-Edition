@@ -1,6 +1,7 @@
 package com.github.tvbox.osc.ui.activity;
 
 import android.os.Bundle;
+import android.text.TextUtils;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -129,7 +130,10 @@ public class HistoryActivity extends BaseActivity {
                         bundle.putString("id", vodInfo.id);
                         bundle.putString("sourceKey", vodInfo.sourceKey);
                         SourceBean sourceBean = ApiConfig.get().getSource(vodInfo.sourceKey);
-                        if(sourceBean!=null){
+                        boolean hasDetailSource = sourceBean != null
+                                && !TextUtils.isEmpty(vodInfo.id)
+                                && !TextUtils.isEmpty(vodInfo.sourceKey);
+                        if(hasDetailSource){
                             bundle.putString("picture", vodInfo.pic);
                             jumpActivity(DetailActivity.class, bundle);
                         }else {

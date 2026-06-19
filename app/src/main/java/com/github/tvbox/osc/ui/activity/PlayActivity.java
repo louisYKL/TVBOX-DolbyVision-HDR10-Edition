@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.net.http.SslError;
 import android.os.Build;
 import android.os.Bundle;
@@ -67,6 +68,7 @@ import com.github.tvbox.osc.util.DefaultConfig;
 import com.github.tvbox.osc.util.DolbyVisionPlaybackRouter;
 import com.github.tvbox.osc.util.FileUtils;
 import com.github.tvbox.osc.util.HawkConfig;
+import com.github.tvbox.osc.util.HdrDeviceSupport;
 import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
@@ -101,6 +103,7 @@ import org.xwalk.core.XWalkWebResourceResponse;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -138,9 +141,17 @@ public class PlayActivity extends BaseActivity {
     private Handler mHandler;
     private final ExecutorService playbackProbeExecutor = Executors.newSingleThreadExecutor();
     private final AtomicInteger playbackRequestSeq = new AtomicInteger(0);
+    private final AtomicInteger playGeneration = new AtomicInteger(0);
+    private volatile int activePlayGeneration = 0;
+    private volatile int activeParseGeneration = 0;
+    private volatile int activeM3u8Generation = 0;
+    private volatile String activeProgressKey = "";
 
     private boolean suppressPauseForFullScreenTransition;
     private boolean playbackRenderedFirstFrame;
+    private boolean pendingHdrWindowEnableAfterRender;
+    private boolean lastReleasedPlaybackRequiresHdrOutput;
+    private long nextPlayerReleaseSettleMs = PLAYER_RELEASE_SETTLE_MS;
     private volatile long lastPlayerReleaseAtMs = 0L;
     private List<Subtitle> sourceSubtitles = new java.util.ArrayList<>();
     private String pendingSystemFallbackSourceUrl;
@@ -175,22 +186,112 @@ public class PlayActivity extends BaseActivity {
             } catch (Throwable ignored) {
             }
         }
+        persistPlaybackHistoryRecord();
     }
 
-    private boolean delayPlaybackUntilPlayerReleaseSettled(final Runnable action, final int requestSeq, final String reason) {
-        if (mHandler == null || action == null || requestSeq != playbackRequestSeq.get()) {
+    private void persistPlaybackHistoryRecord() {
+        try {
+            rebuildProgressKeyFromState();
+            String resolvedSourceKey = resolveActiveSourceKey();
+            if (mVodInfo == null
+                    || TextUtils.isEmpty(resolvedSourceKey)
+                    || mVodInfo.seriesMap == null
+                    || TextUtils.isEmpty(mVodInfo.playFlag)
+                    || mVodInfo.seriesMap.get(mVodInfo.playFlag) == null
+                    || mVodInfo.playIndex < 0
+                    || mVodInfo.playIndex >= mVodInfo.seriesMap.get(mVodInfo.playFlag).size()) {
+                return;
+            }
+            VodInfo.VodSeries currentSeries = mVodInfo.seriesMap.get(mVodInfo.playFlag).get(mVodInfo.playIndex);
+            mVodInfo.playNote = currentSeries == null ? "" : currentSeries.name;
+            com.github.tvbox.osc.cache.RoomDataManger.insertVodRecord(resolvedSourceKey, mVodInfo);
+            EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_HISTORY_REFRESH));
+            LOG.i("echo-progress-history activity saved index=" + mVodInfo.playIndex
+                    + " flag=" + mVodInfo.playFlag + " key=" + progressKey);
+        } catch (Throwable th) {
+            LOG.e("echo-progress-history activity failed: " + th.getMessage());
+        }
+    }
+
+    private void rebuildProgressKeyFromState() {
+        try {
+            if (mVodInfo == null
+                    || TextUtils.isEmpty(mVodInfo.id)
+                    || TextUtils.isEmpty(mVodInfo.playFlag)) {
+                return;
+            }
+            String resolvedSourceKey = resolveActiveSourceKey();
+            if (TextUtils.isEmpty(resolvedSourceKey)) {
+                return;
+            }
+            mVodInfo.sourceKey = resolvedSourceKey;
+            progressKey = resolvedSourceKey + "|" + mVodInfo.id + "|" + mVodInfo.playFlag + "|" + mVodInfo.playIndex;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private String resolveActiveSourceKey() {
+        String resolvedSourceKey = firstNonEmpty(sourceKey, mVodInfo == null ? null : mVodInfo.sourceKey);
+        if (!TextUtils.isEmpty(resolvedSourceKey) && mVodInfo != null && TextUtils.isEmpty(mVodInfo.sourceKey)) {
+            mVodInfo.sourceKey = resolvedSourceKey;
+        }
+        return resolvedSourceKey;
+    }
+
+    private int beginPlayGeneration(String key) {
+        int generation = playGeneration.incrementAndGet();
+        activePlayGeneration = generation;
+        activeParseGeneration = generation;
+        activeM3u8Generation = 0;
+        activeProgressKey = key == null ? "" : key;
+        playbackRequestSeq.incrementAndGet();
+        LOG.i("echo-play-generation activity begin gen=" + generation + " progress=" + activeProgressKey);
+        return generation;
+    }
+
+    private int currentPlayGeneration() {
+        return activePlayGeneration;
+    }
+
+    private boolean isCurrentPlayGeneration(int generation) {
+        return generation > 0 && generation == activePlayGeneration && generation == playGeneration.get();
+    }
+
+    private boolean isCurrentParseGeneration(int generation) {
+        return generation > 0 && generation == activeParseGeneration && isCurrentPlayGeneration(generation);
+    }
+
+    private boolean isCurrentProgressKey(String key) {
+        return !TextUtils.isEmpty(key) && TextUtils.equals(key, activeProgressKey);
+    }
+
+    private void logStalePlayback(String stage, int generation) {
+        LOG.i("echo-play-stale activity " + stage + " gen=" + generation
+                + " active=" + activePlayGeneration + " progress=" + activeProgressKey);
+    }
+
+    private boolean delayPlaybackUntilPlayerReleaseSettled(final Runnable action,
+                                                           final int requestSeq,
+                                                           final int generation,
+                                                           final String reason) {
+        if (mHandler == null || action == null || requestSeq != playbackRequestSeq.get()
+                || !isCurrentPlayGeneration(generation)) {
             return false;
         }
-        long waitMs = PLAYER_RELEASE_SETTLE_MS - (System.currentTimeMillis() - lastPlayerReleaseAtMs);
+        long settleWindowMs = Math.max(PLAYER_RELEASE_SETTLE_MS, nextPlayerReleaseSettleMs);
+        long waitMs = settleWindowMs - (System.currentTimeMillis() - lastPlayerReleaseAtMs);
+        nextPlayerReleaseSettleMs = PLAYER_RELEASE_SETTLE_MS;
         if (waitMs <= 0L) {
             return false;
         }
-        final long delay = Math.min(PLAYER_RELEASE_SETTLE_MS, Math.max(80L, waitMs));
-        LOG.i("echo-player-release-settle delay=" + delay + " reason=" + reason + " seq=" + requestSeq);
+        final long delay = Math.min(settleWindowMs, Math.max(80L, waitMs));
+        LOG.i("echo-player-release-settle delay=" + delay + " settleWindow=" + settleWindowMs
+                + " reason=" + reason + " seq=" + requestSeq);
         mHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (requestSeq != playbackRequestSeq.get() || isFinishing()) {
+                if (requestSeq != playbackRequestSeq.get() || isFinishing()
+                        || !isCurrentPlayGeneration(generation)) {
                     LOG.i("echo-playback-request stale activity release-settle seq=" + requestSeq);
                     return;
                 }
@@ -236,10 +337,20 @@ public class PlayActivity extends BaseActivity {
             public boolean handleMessage(@NonNull Message msg) {
                 switch (msg.what) {
                     case MSG_PARSE_TIMEOUT:
+                        if (msg.arg1 > 0 && !isCurrentParseGeneration(msg.arg1)) {
+                            LOG.i("echo-play-stale activity parse-timeout gen=" + msg.arg1
+                                    + " active=" + activePlayGeneration);
+                            return true;
+                        }
                         stopParse();
                         errorWithRetry("嗅探错误", false);
                         break;
                     case MSG_PLAY_TIMEOUT:
+                        if (msg.arg1 > 0 && !isCurrentPlayGeneration(msg.arg1)) {
+                            LOG.i("echo-play-stale activity play-timeout gen=" + msg.arg1
+                                    + " active=" + activePlayGeneration);
+                            return true;
+                        }
                         LOG.i("echo-playTimeout exceeded, no auto source/player fallback");
                         stopParse();
                         forceReleaseCurrentPlayer("activity-play-timeout");
@@ -275,13 +386,26 @@ public class PlayActivity extends BaseActivity {
         mVideoView.setProgressManager(progressManager);
         mVideoView.addOnStateChangeListener(new VideoView.SimpleOnStateChangeListener() {
             @Override
+            public void onPlayerStateChanged(int playerState) {
+                if (playerState == VideoView.PLAYER_FULL_SCREEN || playerState == VideoView.PLAYER_NORMAL) {
+                    syncHdrWindowForCurrentPlayback("activity-player-state-" + playerState);
+                }
+            }
+
+            @Override
             public void onPlayStateChanged(int playState) {
                 LOG.i("echo-play-state:" + playState + " url=" + safeLogSnippet(currentPlaybackUrl));
-                if (playState == VideoView.STATE_PLAYING || playState == VideoView.STATE_BUFFERED) {
+                if (playState == VideoView.STATE_PLAYING) {
                     playbackRenderedFirstFrame = true;
                     cancelPlayTimeout();
                     syncHdrWindowForCurrentPlayback("activity-state-" + playState);
                     hideTipSafe();
+                } else if (playState == VideoView.STATE_BUFFERED) {
+                    cancelPlayTimeout();
+                    if (playbackRenderedFirstFrame) {
+                        syncHdrWindowForCurrentPlayback("activity-state-" + playState);
+                        hideTipSafe();
+                    }
                 }
                 if (playState == VideoView.STATE_BUFFERING) {
                     if (playbackRenderedFirstFrame) {
@@ -363,12 +487,21 @@ public class PlayActivity extends BaseActivity {
 
             @Override
             public void prepared() {
+                AbstractPlayer mediaPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
+                if (mediaPlayer instanceof MPVCompatPlayer) {
+                    bindMpvSubtitleText((MPVCompatPlayer) mediaPlayer);
+                }
                 initSubtitleView();
             }
 
             @Override
             public void startPlayUrl(String url, HashMap<String, String> headers) {
-                goPlayUrl(url, headers);
+                int generation = activeM3u8Generation > 0 ? activeM3u8Generation : currentPlayGeneration();
+                if (!isCurrentPlayGeneration(generation)) {
+                    logStalePlayback("m3u8-startPlayUrl", generation);
+                    return;
+                }
+                goPlayUrl(url, headers, generation);
             }
             @Override
             public void setAllowSwitchPlayer(boolean isAllow){allowSwitchPlayer=isAllow;}
@@ -386,6 +519,10 @@ public class PlayActivity extends BaseActivity {
             return;
         }
         LOG.i("echo-subtitle apply external activity path=" + path);
+        AbstractPlayer mediaPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
+        if (mediaPlayer instanceof AndroidMediaPlayer) {
+            SystemPlayerTrackManager.clearSubtitleSelections((AndroidMediaPlayer) mediaPlayer, null);
+        }
         mController.mSubtitleView.bindToMediaPlayer(mVideoView.getMediaPlayer());
         applySubtitleToneForCurrentPlayback();
         mController.mSubtitleView.stop();
@@ -640,6 +777,9 @@ public class PlayActivity extends BaseActivity {
         mController.mSubtitleView.prepareForInternalSubtitle();
         mController.mSubtitleView.bindToMediaPlayer(mediaPlayer);
         applySubtitleToneForCurrentPlayback();
+        if (mediaPlayer instanceof AndroidMediaPlayer) {
+            SystemPlayerTrackManager.clearSubtitleSelections((AndroidMediaPlayer) mediaPlayer, null);
+        }
         if (mediaPlayer instanceof MPVCompatPlayer) {
             bindMpvSubtitleText((MPVCompatPlayer) mediaPlayer);
         }
@@ -655,6 +795,31 @@ public class PlayActivity extends BaseActivity {
             }
             mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
         }));
+        player.setOnRuntimeVideoModeListener((hdr, dolbyVision, outputMode, reason) ->
+                runOnUiThread(() -> promoteRuntimeHdrState(hdr, dolbyVision, outputMode, "activity-" + reason)));
+    }
+
+    private void promoteRuntimeHdrState(boolean hdr, boolean dolbyVision, String outputMode, String reason) {
+        if ((!hdr && !dolbyVision) || mVideoView == null) {
+            return;
+        }
+        boolean changed = !currentPlaybackRequiresHdrOutput;
+        currentPlaybackRequiresHdrOutput = true;
+        if (dolbyVision) {
+            lastPlayLooksLikeDolbyVision = true;
+        }
+        if (!TextUtils.isEmpty(outputMode)) {
+            try {
+                if (mVodPlayerCfg != null) {
+                    mVodPlayerCfg.put("dvm", outputMode);
+                }
+            } catch (JSONException e) {
+                LOG.e("echo-runtime-hdr activity put dvm failed: " + e.getMessage());
+            }
+        }
+        applySubtitleToneForCurrentPlayback();
+        pendingHdrWindowEnableAfterRender = false;
+        syncHdrWindowForCurrentPlayback(reason + (changed ? "-promote" : "-refresh"));
     }
 
     void setTip(String msg, boolean loading, boolean err) {
@@ -703,27 +868,45 @@ public class PlayActivity extends BaseActivity {
     }
 
     void playUrl(String url, HashMap<String, String> headers) {
+        playUrl(url, headers, currentPlayGeneration());
+    }
+
+    void playUrl(String url, HashMap<String, String> headers, int generation) {
+        if (!isCurrentPlayGeneration(generation)) {
+            logStalePlayback("playUrl", generation);
+            return;
+        }
         if (TextUtils.isEmpty(url)) {
             handleMissingPlayableUrl("playUrl-empty-arg", null);
             return;
         }
         if(!url.startsWith("data:application"))EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_REFRESH, url));//更新播放地址
         if (!Hawk.get(HawkConfig.M3U8_PURIFY, false)) {
-            goPlayUrl(url,headers);
+            goPlayUrl(url, headers, generation);
             return;
         }
         if (url.startsWith("http://127.0.0.1") || !url.contains(".m3u8")) {
-            goPlayUrl(url,headers);
+            goPlayUrl(url, headers, generation);
             return;
         }
         if(DefaultConfig.noAd(mVodInfo.playFlag)){
-            goPlayUrl(url,headers);
+            goPlayUrl(url, headers, generation);
             return;
         }
         LOG.i("echo-playM3u8:" + url);
+        activeM3u8Generation = generation;
         mController.playM3u8(url,headers);
     }
+
     void goPlayUrl(String url, HashMap<String, String> headers) {
+        goPlayUrl(url, headers, currentPlayGeneration());
+    }
+
+    void goPlayUrl(String url, HashMap<String, String> headers, int generation) {
+        if (!isCurrentPlayGeneration(generation)) {
+            logStalePlayback("goPlayUrl", generation);
+            return;
+        }
         LOG.i("echo-goPlayUrl:" + url);
         final String normalizedUrl = url == null ? "" : url.trim();
         if (TextUtils.isEmpty(normalizedUrl)) {
@@ -735,17 +918,23 @@ public class PlayActivity extends BaseActivity {
         final String finalUrl = normalizedUrl;
         final HashMap<String, String> finalHeaders = headers == null ? null : new HashMap<>(headers);
         final int requestSeq = playbackRequestSeq.incrementAndGet();
+        final int requestGeneration = generation;
         playbackProbeExecutor.execute(new Runnable() {
             @Override
             public void run() {
+                if (!isCurrentPlayGeneration(requestGeneration)) {
+                    logStalePlayback("preflight-before", requestGeneration);
+                    return;
+                }
                 final PlaybackPreflight preflight = buildPlaybackPreflight(finalUrl, finalHeaders);
-                if (isFinishing() || requestSeq != playbackRequestSeq.get()) {
+                if (isFinishing() || requestSeq != playbackRequestSeq.get() || !isCurrentPlayGeneration(requestGeneration)) {
+                    logStalePlayback("preflight-after", requestGeneration);
                     return;
                 }
                 runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                startPlaybackPreflightOnMain(preflight, finalHeaders, requestSeq);
+                startPlaybackPreflightOnMain(preflight, finalHeaders, requestSeq, requestGeneration);
             }
         });
             }
@@ -754,8 +943,9 @@ public class PlayActivity extends BaseActivity {
 
     private void startPlaybackPreflightOnMain(final PlaybackPreflight preflight,
                                               final HashMap<String, String> originalHeaders,
-                                              final int requestSeq) {
-        if (requestSeq != playbackRequestSeq.get() || isFinishing()) {
+                                              final int requestSeq,
+                                              final int requestGeneration) {
+        if (requestSeq != playbackRequestSeq.get() || isFinishing() || !isCurrentPlayGeneration(requestGeneration)) {
             LOG.i("echo-playback-request stale activity seq=" + requestSeq);
             return;
         }
@@ -822,8 +1012,9 @@ public class PlayActivity extends BaseActivity {
                     LOG.e("echo-dolby-route put failed: " + e.getMessage());
                 }
             }
+            configureReleaseSettleForPlayback(dvDecision.requiresHdrOutput, resolvedPlayerType);
             boolean released = forceReleaseCurrentPlayer("activity-new-url");
-            if (requestSeq != playbackRequestSeq.get() || isFinishing()) {
+            if (requestSeq != playbackRequestSeq.get() || isFinishing() || !isCurrentPlayGeneration(requestGeneration)) {
                 LOG.i("echo-playback-request stale activity after-release seq=" + requestSeq);
                 return;
             }
@@ -831,10 +1022,10 @@ public class PlayActivity extends BaseActivity {
                 @Override
                 public void run() {
                     startResolvedPlaybackOnMain(preflight.url, playbackPlayerCfg, finalActiveHeaders,
-                            dvDecision, resolvedPlayerType, requestSeq);
+                            dvDecision, resolvedPlayerType, requestSeq, requestGeneration);
                 }
             };
-            if (released && delayPlaybackUntilPlayerReleaseSettled(startResolvedPlayback, requestSeq, "activity-new-url")) {
+            if (released && delayPlaybackUntilPlayerReleaseSettled(startResolvedPlayback, requestSeq, requestGeneration, "activity-new-url")) {
                 return;
             }
             startResolvedPlayback.run();
@@ -848,8 +1039,10 @@ public class PlayActivity extends BaseActivity {
                                              HashMap<String, String> activeHeaders,
                                              DolbyVisionPlaybackRouter.Decision dvDecision,
                                              int resolvedPlayerType,
-                                             int requestSeq) {
-        if (requestSeq != playbackRequestSeq.get() || isFinishing() || mVideoView == null) {
+                                             int requestSeq,
+                                             int requestGeneration) {
+        if (requestSeq != playbackRequestSeq.get() || isFinishing() || mVideoView == null
+                || !isCurrentPlayGeneration(requestGeneration)) {
             LOG.i("echo-playback-request stale activity start-resolved seq=" + requestSeq);
             return;
         }
@@ -860,7 +1053,9 @@ public class PlayActivity extends BaseActivity {
             useSdrFallbackPlayer = dvDecision.preferSdrFallback;
             currentPlaybackRequiresHdrOutput = dvDecision.requiresHdrOutput;
             applySubtitleToneForCurrentPlayback();
-            syncHdrWindowForCurrentPlayback("activity-player-" + resolvedPlayerType);
+            int activePlayerType = playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
+            prepareHdrWindowForPlaybackStart(activePlayerType, dvDecision.requiresHdrOutput,
+                    "activity-player-" + resolvedPlayerType);
             if (url.startsWith("data:application/dash+xml;base64,")) {
                 PlayerHelper.updateCfg(mVideoView, playbackPlayerCfg);
                 LOG.i("dash: " + url.split("base64,")[1]);
@@ -870,7 +1065,6 @@ public class PlayActivity extends BaseActivity {
                 PlayerHelper.updateCfg(mVideoView, playbackPlayerCfg);
             }
             mVideoView.setProgressKey(progressKey);
-            int activePlayerType = playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
             boolean systemPlayer = PlayerHelper.isSystemPlayerType(activePlayerType);
             String playbackUrl = PlayerHelper.isBuiltInCompatPlayerType(activePlayerType)
                     ? PlaybackUrlNormalizer.resolveCompatPlaybackUrl(url, activeHeaders, false)
@@ -973,6 +1167,11 @@ public class PlayActivity extends BaseActivity {
     private boolean forceReleaseCurrentPlayer(String reason) {
         cancelPlayTimeout();
         boolean releasedPlayer = false;
+        if (currentPlaybackUrl != null || playbackRenderedFirstFrame || currentPlaybackRequiresHdrOutput) {
+            lastReleasedPlaybackRequiresHdrOutput = currentPlaybackRequiresHdrOutput;
+        }
+        pendingHdrWindowEnableAfterRender = false;
+        HdrOutputManager.releaseHdr(this, reason + "-pre-release");
         if (mVideoView != null) {
             releasedPlayer = mVideoView.getMediaPlayer() != null
                     || mVideoView.isPlaybackActive()
@@ -1001,10 +1200,24 @@ public class PlayActivity extends BaseActivity {
 
     private void syncHdrWindowForCurrentPlayback(String reason) {
         if (currentPlaybackRequiresHdrOutput) {
-            HdrOutputManager.requestHdr(this, reason);
+            if (pendingHdrWindowEnableAfterRender && !playbackRenderedFirstFrame) {
+                LOG.i("echo-hdr-window defer reason=" + reason + " firstFrame=false");
+                return;
+            }
+            pendingHdrWindowEnableAfterRender = false;
+            boolean fullscreenBrightnessBoost = shouldBoostHdrBrightness();
+            HdrOutputManager.requestHdr(this, reason, fullscreenBrightnessBoost);
         } else {
+            pendingHdrWindowEnableAfterRender = false;
             HdrOutputManager.releaseHdr(this, reason + "-sdr");
         }
+    }
+
+    private boolean shouldBoostHdrBrightness() {
+        if (!App.isJava64Build() || isTvDevice()) {
+            return mVideoView != null && mVideoView.isFullScreen();
+        }
+        return currentPlaybackRequiresHdrOutput;
     }
 
     private JSONObject copyPlayerConfigForPlayback() {
@@ -1016,6 +1229,52 @@ public class PlayActivity extends BaseActivity {
         }
     }
 
+    private void rememberPlaybackOutputStateBeforeReset() {
+        if (currentPlaybackUrl != null || playbackRenderedFirstFrame || currentPlaybackRequiresHdrOutput) {
+            lastReleasedPlaybackRequiresHdrOutput = currentPlaybackRequiresHdrOutput;
+        }
+        pendingHdrWindowEnableAfterRender = false;
+    }
+
+    private void configureReleaseSettleForPlayback(boolean nextRequiresHdrOutput, int resolvedPlayerType) {
+        boolean systemPlayer = PlayerHelper.isSystemPlayerType(resolvedPlayerType);
+        boolean crossDynamicRangeSwitch = lastReleasedPlaybackRequiresHdrOutput != nextRequiresHdrOutput;
+        boolean tvLike = isTvDevice();
+        if (systemPlayer && crossDynamicRangeSwitch && tvLike) {
+            nextPlayerReleaseSettleMs = 560L;
+        } else if (systemPlayer && crossDynamicRangeSwitch) {
+            nextPlayerReleaseSettleMs = 420L;
+        } else if (systemPlayer && (lastReleasedPlaybackRequiresHdrOutput || nextRequiresHdrOutput)) {
+            nextPlayerReleaseSettleMs = tvLike ? 420L : 340L;
+        } else {
+            nextPlayerReleaseSettleMs = PLAYER_RELEASE_SETTLE_MS;
+        }
+        LOG.i("echo-hdr-release-settle nextHdr=" + nextRequiresHdrOutput
+                + " lastHdr=" + lastReleasedPlaybackRequiresHdrOutput
+                + " cross=" + crossDynamicRangeSwitch
+                + " tvLike=" + tvLike
+                + " player=" + resolvedPlayerType
+                + " settleMs=" + nextPlayerReleaseSettleMs);
+    }
+
+    private void prepareHdrWindowForPlaybackStart(int activePlayerType, boolean requiresHdrOutput, String reason) {
+        boolean deferHdrWindow = requiresHdrOutput && shouldDeferHdrWindowEnable(activePlayerType);
+        pendingHdrWindowEnableAfterRender = deferHdrWindow;
+        if (!requiresHdrOutput) {
+            HdrOutputManager.releaseHdr(this, reason + "-prepare-sdr");
+            return;
+        }
+        if (deferHdrWindow) {
+            LOG.i("echo-hdr-window defer-until-render reason=" + reason + " player=" + activePlayerType);
+            return;
+        }
+        syncHdrWindowForCurrentPlayback(reason + "-prepare");
+    }
+
+    private boolean shouldDeferHdrWindowEnable(int activePlayerType) {
+        return PlayerHelper.isSystemPlayerType(activePlayerType) && isTvDevice();
+    }
+
     private void applyProbePlaybackHeaders(HashMap<String, String> headers, VideoStreamProbe.Result probe) {
         if (headers == null || probe == null) {
             return;
@@ -1025,6 +1284,9 @@ public class PlayActivity extends BaseActivity {
         }
         if (probe.hasDolbyVision) {
             headers.put("X-TVBox-Probe-DolbyVision", "1");
+        }
+        if (HdrDeviceSupport.query(mContext).supportsNativeDolbyVision()) {
+            headers.put("X-TVBox-Probe-NativeDvDevice", "1");
         }
         if (probe.hasHdr10) {
             headers.put("X-TVBox-Probe-Hdr10", "1");
@@ -1179,7 +1441,9 @@ public class PlayActivity extends BaseActivity {
     void startPlayTimeout(String playbackUrl, long timeoutMs, String reason) {
         cancelPlayTimeout();
         LOG.i("echo-startPlayTimeout:" + timeoutMs + " reason=" + reason + " url=" + playbackUrl);
-        mHandler.sendEmptyMessageDelayed(MSG_PLAY_TIMEOUT, timeoutMs);
+        Message message = mHandler.obtainMessage(MSG_PLAY_TIMEOUT);
+        message.arg1 = currentPlayGeneration();
+        mHandler.sendMessageDelayed(message, timeoutMs);
     }
 
     void cancelPlayTimeout() {
@@ -1212,7 +1476,7 @@ public class PlayActivity extends BaseActivity {
                 mController.mSubtitleView.hasInternal = true;
             }
             ((AndroidMediaPlayer) mediaPlayer).setOnTimedTextListener(text -> {
-                if (!mController.mSubtitleView.isInternal) {
+                if (mController == null || mController.mSubtitleView == null || !mController.mSubtitleView.isInternal) {
                     return;
                 }
                 mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
@@ -1273,7 +1537,16 @@ public class PlayActivity extends BaseActivity {
                 webPlayUrl = null;
                 if (info != null) {
                     try {
-                        progressKey = info.optString("proKey", null);
+                        String resultProgressKey = info.optString("proKey", null);
+                        if (!isCurrentProgressKey(resultProgressKey)) {
+                            LOG.i("echo-play-stale playResult activity progress=" + resultProgressKey
+                                    + " active=" + activeProgressKey);
+                            return;
+                        }
+                        final int generation = currentPlayGeneration();
+                        if (!TextUtils.isEmpty(resultProgressKey)) {
+                            progressKey = resultProgressKey;
+                        }
                         boolean parse = info.optString("parse", "1").equals("1");
                         boolean jx = info.optString("jx", "0").equals("1");
                         playSubtitle = info.optString("subt", /*"https://dash.akamaized.net/akamai/test/caption_test/ElephantsDream/ElephantsDream_en.vtt"*/"");
@@ -1327,14 +1600,14 @@ public class PlayActivity extends BaseActivity {
                                 return;
                             }
                             boolean userJxList = (playUrl.isEmpty() && ApiConfig.get().getVipParseFlags().contains(flag)) || jx;
-                            initParse(flag, userJxList, playUrl, url);
+                            initParse(flag, userJxList, playUrl, url, generation);
                         } else {
                             mController.showParse(false);
                             String directUrl = (playUrl + url).trim();
                             if (TextUtils.isEmpty(directUrl)) {
                                 handleMissingPlayableUrl("empty-direct-url");
                             } else {
-                                playUrl(directUrl, headers);
+                                playUrl(directUrl, headers, generation);
                             }
                         }
                     } catch (Throwable th) {
@@ -1356,6 +1629,10 @@ public class PlayActivity extends BaseActivity {
 //            mVodInfo = (VodInfo) bundle.getSerializable("VodInfo");
             mVodInfo = App.getInstance().getVodInfo();
             sourceKey = bundle.getString("sourceKey");
+            sourceKey = firstNonEmpty(sourceKey, mVodInfo == null ? null : mVodInfo.sourceKey);
+            if (mVodInfo != null && !TextUtils.isEmpty(sourceKey)) {
+                mVodInfo.sourceKey = sourceKey;
+            }
             sourceBean = ApiConfig.get().getSource(sourceKey);
             initPlayerCfg();
             triedLineFlags.clear();
@@ -1409,7 +1686,7 @@ public class PlayActivity extends BaseActivity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (mVideoView != null && !mVideoView.isFullScreen()) {
+        if (!shouldRouteKeyToController()) {
             if (event != null && event.getAction() == KeyEvent.ACTION_DOWN && isConfirmKey(event.getKeyCode())) {
                 persistPlaybackProgress();
                 mVideoView.startFullScreen();
@@ -1417,6 +1694,8 @@ public class PlayActivity extends BaseActivity {
                     @Override
                     public void run() {
                         if (mController != null) {
+                            syncEmbeddedControllerMode();
+                            mController.setForceFullScreenInputMode(isPlayerVisuallyFullScreen());
                             mController.syncFullScreenControlState();
                         }
                     }
@@ -1441,7 +1720,7 @@ public class PlayActivity extends BaseActivity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (mVideoView != null && !mVideoView.isFullScreen()) {
+        if (!shouldRouteKeyToController()) {
             if (isConfirmKey(keyCode)) {
                 return true;
             }
@@ -1457,7 +1736,7 @@ public class PlayActivity extends BaseActivity {
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
-        if (mVideoView != null && !mVideoView.isFullScreen()) {
+        if (!shouldRouteKeyToController()) {
             return super.onKeyUp(keyCode, event);
         }
         if (event != null ) {
@@ -1474,6 +1753,7 @@ public class PlayActivity extends BaseActivity {
         suppressPauseForFullScreenTransition = false;
         if (mVideoView != null && PlayerHelper.isInternalPlayerType(mVodPlayerCfg == null ? -1 : mVodPlayerCfg.optInt("pl", -1))) {
             mVideoView.resume();
+            syncEmbeddedControllerMode();
         }
     }
 
@@ -1490,6 +1770,84 @@ public class PlayActivity extends BaseActivity {
             persistPlaybackProgress();
             mVideoView.pause();
         }
+    }
+
+    private boolean shouldRouteKeyToController() {
+        return mVideoView != null && (mVideoView.isFullScreen() || isPlayerVisuallyFullScreen());
+    }
+
+    private boolean isPlayerVisuallyFullScreen() {
+        if (mVideoView == null || mVideoView.getVisibility() != View.VISIBLE) {
+            return false;
+        }
+        int width = mVideoView.getWidth();
+        int height = mVideoView.getHeight();
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+        View root = getWindow() == null ? null : getWindow().getDecorView();
+        int rootWidth = root == null ? getResources().getDisplayMetrics().widthPixels : root.getWidth();
+        int rootHeight = root == null ? getResources().getDisplayMetrics().heightPixels : root.getHeight();
+        if (rootWidth <= 0 || rootHeight <= 0) {
+            return false;
+        }
+        return width >= rootWidth * 0.90f && height >= rootHeight * 0.85f;
+    }
+
+    private void syncEmbeddedControllerMode() {
+        if (mController != null) {
+            boolean visuallyFull = isPlayerVisuallyFullScreen();
+            mController.setForceFullScreenInputMode(visuallyFull);
+            mController.setEmbeddedPreviewMode(mVideoView == null || (!mVideoView.isFullScreen() && !visuallyFull));
+        }
+        updatePhoneFullScreenGestureExclusion();
+        if (mVideoView != null && !mVideoView.isFullScreen() && !isPlayerVisuallyFullScreen()) {
+            restorePreviewPlayerFocus();
+        }
+    }
+
+    private void updatePhoneFullScreenGestureExclusion() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || mVideoView == null || !App.isJava64Build() || isTvDevice()) {
+            return;
+        }
+        mVideoView.post(new Runnable() {
+            @Override
+            public void run() {
+                if (mVideoView == null) {
+                    return;
+                }
+                boolean fullScreenInput = mVideoView.isFullScreen() || isPlayerVisuallyFullScreen();
+                if (!fullScreenInput || mVideoView.getWidth() <= 0 || mVideoView.getHeight() <= 0) {
+                    mVideoView.setSystemGestureExclusionRects(Collections.<Rect>emptyList());
+                    return;
+                }
+                int width = mVideoView.getWidth();
+                int height = mVideoView.getHeight();
+                int edge = Math.max(32, Math.round(Math.min(width, height) * 0.06f));
+                Rect left = new Rect(0, 0, edge, height);
+                Rect right = new Rect(Math.max(0, width - edge), 0, width, height);
+                Rect bottom = new Rect(0, Math.max(0, height - edge), width, height);
+                mVideoView.setSystemGestureExclusionRects(java.util.Arrays.asList(left, right, bottom));
+            }
+        });
+    }
+
+    private void restorePreviewPlayerFocus() {
+        if (mVideoView == null) {
+            return;
+        }
+        mVideoView.post(new Runnable() {
+            @Override
+            public void run() {
+                if (mVideoView == null || mVideoView.isFullScreen()) {
+                    return;
+                }
+                mVideoView.setFocusable(true);
+                mVideoView.setFocusableInTouchMode(true);
+                mVideoView.requestFocus();
+                mVideoView.requestFocusFromTouch();
+            }
+        });
     }
 
     @Override
@@ -1670,6 +2028,7 @@ public class PlayActivity extends BaseActivity {
         lastPlayLooksLikeDolbyVision = false;
         useHdrFallbackPlayer = false;
         useSdrFallbackPlayer = false;
+        rememberPlaybackOutputStateBeforeReset();
         currentPlaybackRequiresHdrOutput = false;
         applySubtitleToneForCurrentPlayback();
         VodInfo.VodSeries vs = mVodInfo.seriesMap.get(mVodInfo.playFlag).get(mVodInfo.playIndex);
@@ -1690,8 +2049,14 @@ public class PlayActivity extends BaseActivity {
             persistPlaybackProgress();
             forceReleaseCurrentPlayer("activity-play-switch");
         }
-        subtitleCacheKey = mVodInfo.sourceKey + "-" + mVodInfo.id + "-" + mVodInfo.playFlag + "-" + mVodInfo.playIndex+ "-" + vs.name + "-subt";
-        progressKey = mVodInfo.sourceKey + mVodInfo.id + mVodInfo.playFlag + mVodInfo.playIndex + vs.name;
+        String resolvedSourceKey = resolveActiveSourceKey();
+        if (TextUtils.isEmpty(resolvedSourceKey)) {
+            handleMissingPlayableUrl("missing-source-key", "播放源信息错误");
+            return;
+        }
+        subtitleCacheKey = resolvedSourceKey + "-" + mVodInfo.id + "-" + mVodInfo.playFlag + "-" + mVodInfo.playIndex+ "-" + vs.name + "-subt";
+        progressKey = resolvedSourceKey + "|" + mVodInfo.id + "|" + mVodInfo.playFlag + "|" + mVodInfo.playIndex;
+        final int generation = beginPlayGeneration(progressKey);
         //重新播放清除现有进度
         if (reset) {
             CacheManager.delete(MD5.string2MD5(progressKey), 0);
@@ -1712,15 +2077,18 @@ public class PlayActivity extends BaseActivity {
             String jp_url= vs.url;
             mController.showParse(false);
             if(vs.url.startsWith("tvbox-xg:")){
-                playUrl(Jianpian.JPUrlDec(jp_url.substring(9)), null);
+                playUrl(Jianpian.JPUrlDec(jp_url.substring(9)), null, generation);
             }else {
-                playUrl(Jianpian.JPUrlDec(jp_url), null);
+                playUrl(Jianpian.JPUrlDec(jp_url), null, generation);
             }
             return;
         }
         if (Thunder.play(vs.url, new Thunder.ThunderCallback() {
             @Override
             public void status(int code, String info) {
+                if (!isCurrentPlayGeneration(generation)) {
+                    return;
+                }
                 if (code < 0) {
                     setTip(info, false, true);
                 } else {
@@ -1734,13 +2102,13 @@ public class PlayActivity extends BaseActivity {
 
             @Override
             public void play(String url) {
-                playUrl(url, null);
+                playUrl(url, null, generation);
             }
         })) {
             mController.showParse(false);
             return;
         }
-        sourceViewModel.getPlay(sourceKey, mVodInfo.playFlag, progressKey, vs.url, subtitleCacheKey);
+        sourceViewModel.getPlay(resolvedSourceKey, mVodInfo.playFlag, progressKey, vs.url, subtitleCacheKey);
     }
 
     private String playSubtitle;
@@ -1754,6 +2122,15 @@ public class PlayActivity extends BaseActivity {
     private String currentPlaybackUrl;
 
     private void initParse(String flag, boolean useParse, String playUrl, final String url) {
+        initParse(flag, useParse, playUrl, url, currentPlayGeneration());
+    }
+
+    private void initParse(String flag, boolean useParse, String playUrl, final String url, int generation) {
+        if (!isCurrentPlayGeneration(generation)) {
+            logStalePlayback("initParse", generation);
+            return;
+        }
+        activeParseGeneration = generation;
         parseFlag = flag;
         webUrl = url;
         ParseBean parseBean = null;
@@ -1780,7 +2157,7 @@ public class PlayActivity extends BaseActivity {
                 parseBean.setUrl(playUrl);
             }
         }
-        doParse(parseBean);
+        doParse(parseBean, generation);
     }
 
     JSONObject jsonParse(String input, String json) throws JSONException {
@@ -1813,7 +2190,8 @@ public class PlayActivity extends BaseActivity {
     }
 
     void stopParse() {
-        mHandler.removeMessages(100);
+        activeParseGeneration = 0;
+        mHandler.removeMessages(MSG_PARSE_TIMEOUT);
         stopLoadWebView(false);
         OkGo.getInstance().cancelTag("json_jx");
         if (parseThreadPool != null) {
@@ -1830,15 +2208,26 @@ public class PlayActivity extends BaseActivity {
 
 
     private void doParse(ParseBean pb) {
+        doParse(pb, currentPlayGeneration());
+    }
+
+    private void doParse(ParseBean pb, int generation) {
+        if (!isCurrentPlayGeneration(generation)) {
+            logStalePlayback("doParse", generation);
+            return;
+        }
         stopParse();
+        activeParseGeneration = generation;
         initParseLoadFound();
         if (pb.getType() == 4) {
-            parseMix(pb,true);
+            parseMix(pb, true, generation);
         }
         else if (pb.getType() == 0) {
             setTip("正在嗅探播放地址", true, false);
-            mHandler.removeMessages(100);
-            mHandler.sendEmptyMessageDelayed(100, 20 * 1000);
+            mHandler.removeMessages(MSG_PARSE_TIMEOUT);
+            Message message = mHandler.obtainMessage(MSG_PARSE_TIMEOUT);
+            message.arg1 = generation;
+            mHandler.sendMessageDelayed(message, 20 * 1000);
             if(pb.getExt()!=null){
                 // 解析ext
                 try {
@@ -1861,7 +2250,7 @@ public class PlayActivity extends BaseActivity {
                     e.printStackTrace();
                 }
             }
-            loadWebView(pb.getUrl() + webUrl);
+            loadWebView(pb.getUrl() + webUrl, generation);
         } else if (pb.getType() == 1) { // json 解析
             setTip("正在解析播放地址", true, false);
             // 解析ext
@@ -1894,9 +2283,17 @@ public class PlayActivity extends BaseActivity {
 
                         @Override
                         public void onSuccess(Response<String> response) {
+                            if (!isCurrentParseGeneration(generation)) {
+                                logStalePlayback("json-parse-success", generation);
+                                return;
+                            }
                             String json = response.body();
                             try {
                                 JSONObject rs = jsonParse(webUrl, json);
+                                if (rs == null) {
+                                    errorWithRetry("解析错误", false);
+                                    return;
+                                }
                                 HashMap<String, String> headers = null;
                                 if (rs.has("header")) {
                                     try {
@@ -1913,8 +2310,12 @@ public class PlayActivity extends BaseActivity {
 
                                     }
                                 }
-                                playUrl(rs.getString("url"), headers);
+                                playUrl(rs.getString("url"), headers, generation);
                             } catch (Throwable e) {
+                                if (!isCurrentParseGeneration(generation)) {
+                                    logStalePlayback("json-parse-catch", generation);
+                                    return;
+                                }
                                 e.printStackTrace();
                                 errorWithRetry("解析错误", false);
 //                                setTip("解析错误", false, true);
@@ -1924,6 +2325,10 @@ public class PlayActivity extends BaseActivity {
                         @Override
                         public void onError(Response<String> response) {
                             super.onError(response);
+                            if (!isCurrentParseGeneration(generation)) {
+                                logStalePlayback("json-parse-error", generation);
+                                return;
+                            }
                             errorWithRetry("解析错误", false);
 //                            setTip("解析错误", false, true);
                         }
@@ -1940,7 +2345,15 @@ public class PlayActivity extends BaseActivity {
             parseThreadPool.execute(new Runnable() {
                 @Override
                 public void run() {
+                    if (!isCurrentParseGeneration(generation)) {
+                        logStalePlayback("json-ext-before", generation);
+                        return;
+                    }
                     JSONObject rs = ApiConfig.get().jsonExt(pb.getUrl(), jxs, webUrl);
+                    if (!isCurrentParseGeneration(generation)) {
+                        logStalePlayback("json-ext-after", generation);
+                        return;
+                    }
                     if (rs == null || !rs.has("url") || rs.optString("url").isEmpty()) {
 //                        errorWithRetry("解析错误", false);//没有url重试也没有重新获取
                         setTip("解析错误", false, true);
@@ -1972,19 +2385,27 @@ public class PlayActivity extends BaseActivity {
                         boolean parseWV = rs.optInt("parse", 0) == 1;
                         if (parseWV) {
                             String wvUrl = DefaultConfig.checkReplaceProxy(rs.optString("url", ""));
-                            loadUrl(wvUrl);
+                            loadUrl(wvUrl, generation);
                         } else {
-                            playUrl(rs.optString("url", ""), headers);
+                            playUrl(rs.optString("url", ""), headers, generation);
                         }
                     }
                 }
             });
         } else if (pb.getType() == 3) { // json 聚合
-            parseMix(pb,false);
+            parseMix(pb, false, generation);
         }
     }
 
     private void parseMix(ParseBean pb,boolean isSuper){
+        parseMix(pb, isSuper, currentPlayGeneration());
+    }
+
+    private void parseMix(ParseBean pb,boolean isSuper,int generation){
+        if (!isCurrentParseGeneration(generation)) {
+            logStalePlayback("parseMix", generation);
+            return;
+        }
         setTip("正在解析播放地址", true, false);
         parseThreadPool = Executors.newSingleThreadExecutor();
         LinkedHashMap<String, HashMap<String, String>> jxs = new LinkedHashMap<>();
@@ -2003,8 +2424,16 @@ public class PlayActivity extends BaseActivity {
         parseThreadPool.execute(new Runnable() {
             @Override
             public void run() {
+                if (!isCurrentParseGeneration(generation)) {
+                    logStalePlayback("parseMix-before", generation);
+                    return;
+                }
                 if(isSuper){
                     JSONObject rs = SuperParse.parse(jxs,parseFlag+"123",webUrl);
+                    if (!isCurrentParseGeneration(generation)) {
+                        logStalePlayback("parseMix-super-after", generation);
+                        return;
+                    }
                     if (!rs.has("url") || rs.optString("url").isEmpty()) {
                         setTip("解析错误", false, true);
                     } else {
@@ -2016,26 +2445,41 @@ public class PlayActivity extends BaseActivity {
                             runOnUiThread(new Runnable() {
                                 @Override
                                 public void run() {
+                                    if (!isCurrentParseGeneration(generation)) {
+                                        logStalePlayback("parseMix-super-ui", generation);
+                                        return;
+                                    }
                                     String mixParseUrl = DefaultConfig.checkReplaceProxy(rs.optString("url", ""));
                                     stopParse();
-                                    mHandler.removeMessages(100);
-                                    mHandler.sendEmptyMessageDelayed(100, 20 * 1000);
-                                    loadWebView(mixParseUrl);
+                                    activeParseGeneration = generation;
+                                    mHandler.removeMessages(MSG_PARSE_TIMEOUT);
+                                    Message message = mHandler.obtainMessage(MSG_PARSE_TIMEOUT);
+                                    message.arg1 = generation;
+                                    mHandler.sendMessageDelayed(message, 20 * 1000);
+                                    loadWebView(mixParseUrl, generation);
                                 }
                             });
                             parseThreadPool.execute(new Runnable() {
                                 @Override
                                 public void run() {
+                                    if (!isCurrentParseGeneration(generation)) {
+                                        logStalePlayback("parseMix-super-json-before", generation);
+                                        return;
+                                    }
                                     JSONObject res = SuperParse.doJsonJx(webUrl);
-                                    rsJsonJx(res, true);
+                                    rsJsonJx(res, true, generation);
                                 }
                             });
                         } else {
-                            rsJsonJx(rs,false);
+                            rsJsonJx(rs, false, generation);
                         }
                     }
                 }else {
                     JSONObject rs = ApiConfig.get().jsonExtMix(parseFlag + "111", pb.getUrl(), finalExtendName, jxs, webUrl);
+                    if (!isCurrentParseGeneration(generation)) {
+                        logStalePlayback("parseMix-after", generation);
+                        return;
+                    }
                     if (rs == null || !rs.has("url") || rs.optString("url").isEmpty()) {
                         setTip("解析错误", false, true);
                     } else {
@@ -2046,24 +2490,39 @@ public class PlayActivity extends BaseActivity {
                             runOnUiThread(new Runnable() {
                                 @Override
                                 public void run() {
+                                    if (!isCurrentParseGeneration(generation)) {
+                                        logStalePlayback("parseMix-ui", generation);
+                                        return;
+                                    }
                                     String mixParseUrl = DefaultConfig.checkReplaceProxy(rs.optString("url", ""));
                                     stopParse();
+                                    activeParseGeneration = generation;
                                     setTip("正在嗅探播放地址", true, false);
-                                    mHandler.removeMessages(100);
-                                    mHandler.sendEmptyMessageDelayed(100, 20 * 1000);
-                                    loadWebView(mixParseUrl);
+                                    mHandler.removeMessages(MSG_PARSE_TIMEOUT);
+                                    Message message = mHandler.obtainMessage(MSG_PARSE_TIMEOUT);
+                                    message.arg1 = generation;
+                                    mHandler.sendMessageDelayed(message, 20 * 1000);
+                                    loadWebView(mixParseUrl, generation);
                                 }
                             });
                         } else {
-                           rsJsonJx(rs,false);
+                           rsJsonJx(rs, false, generation);
                         }
                     }
                 }
             }
         });
     }
-    private void rsJsonJx(JSONObject rs,boolean isSuper)
-    {
+
+    private void rsJsonJx(JSONObject rs,boolean isSuper) {
+        rsJsonJx(rs, isSuper, currentPlayGeneration());
+    }
+
+    private void rsJsonJx(JSONObject rs,boolean isSuper,int generation) {
+        if (!isCurrentParseGeneration(generation)) {
+            logStalePlayback("rsJsonJX", generation);
+            return;
+        }
         if(isSuper){
             if(rs==null || !rs.has("url"))return;
             stopLoadWebView(false);
@@ -2092,7 +2551,7 @@ public class PlayActivity extends BaseActivity {
                 }
             });
         }
-        playUrl(rs.optString("url", ""), headers);
+        playUrl(rs.optString("url", ""), headers, generation);
     }
     // webview
     private XWalkView mXwalkWebView;
@@ -2105,6 +2564,14 @@ public class PlayActivity extends BaseActivity {
     private AtomicInteger loadFoundCount = new AtomicInteger(0);
 
     void loadWebView(String url) {
+        loadWebView(url, currentPlayGeneration());
+    }
+
+    void loadWebView(String url, int generation) {
+        if (!isCurrentParseGeneration(generation)) {
+            logStalePlayback("loadWebView", generation);
+            return;
+        }
         if (mSysWebView == null && mXwalkWebView == null) {
             boolean useSystemWebView = Hawk.get(HawkConfig.PARSE_WEBVIEW, true);
             if (!useSystemWebView) {
@@ -2112,29 +2579,29 @@ public class PlayActivity extends BaseActivity {
                     @Override
                     public void success() {
                         initWebView(!sourceBean.getClickSelector().isEmpty());
-                        loadUrl(url);
+                        loadUrl(url, generation);
                     }
 
                     @Override
                     public void fail() {
                         Toast.makeText(mContext, "XWalkView不兼容，已替换为系统自带WebView", Toast.LENGTH_SHORT).show();
                         initWebView(true);
-                        loadUrl(url);
+                        loadUrl(url, generation);
                     }
 
                     @Override
                     public void ignore() {
                         Toast.makeText(mContext, "XWalkView运行组件未下载，已替换为系统自带WebView", Toast.LENGTH_SHORT).show();
                         initWebView(true);
-                        loadUrl(url);
+                        loadUrl(url, generation);
                     }
                 });
             } else {
                 initWebView(true);
-                loadUrl(url);
+                loadUrl(url, generation);
             }
         } else {
-            loadUrl(url);
+            loadUrl(url, generation);
         }
     }
 
@@ -2149,11 +2616,24 @@ public class PlayActivity extends BaseActivity {
     }
 
     void loadUrl(String url) {
+        loadUrl(url, currentPlayGeneration());
+    }
+
+    void loadUrl(String url, int generation) {
+        if (!isCurrentParseGeneration(generation)) {
+            logStalePlayback("loadUrl", generation);
+            return;
+        }
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (!isCurrentParseGeneration(generation)) {
+                    logStalePlayback("loadUrl-ui", generation);
+                    return;
+                }
                 if (mXwalkWebView != null) {
                     mXwalkWebView.stopLoading();
+                    mXwalkWebView.setTag(Integer.valueOf(generation));
                     if(webUserAgent != null) {
                         mXwalkWebView.getSettings().setUserAgentString(webUserAgent);
                     }
@@ -2166,6 +2646,7 @@ public class PlayActivity extends BaseActivity {
                 }
                 if (mSysWebView != null) {
                     mSysWebView.stopLoading();
+                    mSysWebView.setTag(Integer.valueOf(generation));
                     if(webUserAgent != null) {
                         mSysWebView.getSettings().setUserAgentString(webUserAgent);
                     }
@@ -2229,6 +2710,14 @@ public class PlayActivity extends BaseActivity {
                 return sp.isVideoFormat(url);
         }
         return VideoParseRuler.checkIsVideoForParse(webUrl, url);
+    }
+
+    private int getWebViewGeneration(View view) {
+        Object tag = view == null ? null : view.getTag();
+        if (tag instanceof Integer) {
+            return (Integer) tag;
+        }
+        return currentPlayGeneration();
     }
 
     class MyWebView extends WebView {
@@ -2374,7 +2863,11 @@ public class PlayActivity extends BaseActivity {
             }
         }
 
-        WebResourceResponse checkIsVideo(String url, HashMap<String, String> headers) {
+        WebResourceResponse checkIsVideo(String url, HashMap<String, String> headers, int generation) {
+            if (!isCurrentParseGeneration(generation)) {
+                logStalePlayback("web-check-video", generation);
+                return null;
+            }
             if (url.endsWith("/favicon.ico")) {
                 if (url.startsWith("http://127.0.0.1")) {
                     return new WebResourceResponse("image/x-icon", "UTF-8", null);
@@ -2405,10 +2898,10 @@ public class PlayActivity extends BaseActivity {
                         stopLoadWebView(false);
                         SuperParse.stopJsonJx();
                         url = loadFoundVideoUrls.poll();
-                        mHandler.removeMessages(100);
+                        mHandler.removeMessages(MSG_PARSE_TIMEOUT);
                         String cookie = CookieManager.getInstance().getCookie(url);
                         if(!TextUtils.isEmpty(cookie))headers.put("Cookie", " " + cookie);//携带cookie
-                        playUrl(url, headers);
+                        playUrl(url, headers, generation);
                     }
                 }
             }
@@ -2428,6 +2921,11 @@ public class PlayActivity extends BaseActivity {
         @Override
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            int generation = getWebViewGeneration(view);
+            if (!isCurrentParseGeneration(generation)) {
+                logStalePlayback("web-intercept", generation);
+                return null;
+            }
             String url = request.getUrl().toString();
             LOG.i("echo-shouldInterceptRequest url:" + url);
             HashMap<String, String> webHeaders = new HashMap<>();
@@ -2441,7 +2939,7 @@ public class PlayActivity extends BaseActivity {
                     }
                 }
             }
-            return checkIsVideo(url, webHeaders);
+            return checkIsVideo(url, webHeaders, generation);
         }
 
         @Override
@@ -2550,6 +3048,11 @@ public class PlayActivity extends BaseActivity {
 
         @Override
         public XWalkWebResourceResponse shouldInterceptLoadRequest(XWalkView view, XWalkWebResourceRequest request) {
+            int generation = getWebViewGeneration(view);
+            if (!isCurrentParseGeneration(generation)) {
+                logStalePlayback("xwalk-intercept", generation);
+                return null;
+            }
             String url = request.getUrl().toString();
             LOG.i("echo-shouldInterceptLoadRequest url:" + url);
             // suppress favicon requests as we don't display them anywhere
@@ -2592,11 +3095,11 @@ public class PlayActivity extends BaseActivity {
                     if (loadFoundCount.incrementAndGet() == 1) {
                         SuperParse.stopJsonJx();
                         stopLoadWebView(false);
-                        mHandler.removeMessages(100);
+                        mHandler.removeMessages(MSG_PARSE_TIMEOUT);
                         url = loadFoundVideoUrls.poll();
                         String cookie = CookieManager.getInstance().getCookie(url);
                         if(!TextUtils.isEmpty(cookie))webHeaders.put("Cookie", " " + cookie);//携带cookie
-                        playUrl(url, webHeaders);
+                        playUrl(url, webHeaders, generation);
                     }
                 }
             }

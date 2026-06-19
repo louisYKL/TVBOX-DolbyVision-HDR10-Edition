@@ -19,6 +19,9 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.github.tvbox.osc.base.App;
+import com.github.tvbox.osc.base.BaseActivity;
+
 import java.util.Map;
 
 import xyz.doikki.videoplayer.controller.BaseVideoController;
@@ -214,8 +217,14 @@ public abstract class BaseController extends BaseVideoController implements Gest
     public boolean onDown(MotionEvent e) {
         if (!isInPlaybackState() //不处于播放状态
                 || !mIsGestureEnabled //关闭了手势
-                || PlayerUtils.isEdge(getContext(), e)) //处于屏幕边沿
+                || (!shouldIgnoreEdgeRestrictionForTouch(e) && PlayerUtils.isEdge(getContext(), e))) //处于屏幕边沿
             return true;
+        if (mAudioManager == null) {
+            mChangePosition = false;
+            mChangeBrightness = false;
+            mChangeVolume = false;
+            return true;
+        }
         mStreamVolume = mAudioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
         Activity activity = PlayerUtils.scanForActivity(getContext());
         if (activity == null) {
@@ -259,7 +268,7 @@ public abstract class BaseController extends BaseVideoController implements Gest
                 || !mIsGestureEnabled //关闭了手势
                 || !mCanSlide //关闭了滑动手势
                 || isLocked() //锁住了屏幕
-                || PlayerUtils.isEdge(getContext(), e1)) //处于屏幕边沿
+                || (!shouldIgnoreEdgeRestrictionForTouch(e1) && PlayerUtils.isEdge(getContext(), e1))) //处于屏幕边沿
             return true;
         float deltaX = e1.getX() - e2.getX();
         float deltaY = e1.getY() - e2.getY();
@@ -325,6 +334,45 @@ public abstract class BaseController extends BaseVideoController implements Gest
     protected void slideToChangeBrightness(float deltaY) {
         Activity activity = PlayerUtils.scanForActivity(getContext());
         if (activity == null) return;
+        if (shouldUseDeviceBrightnessGesture()) {
+            Window window = activity.getWindow();
+            if (window == null) {
+                return;
+            }
+            WindowManager.LayoutParams attributes = window.getAttributes();
+            int height = Math.max(1, getMeasuredHeight());
+            float currentBrightness = attributes.screenBrightness;
+            if (currentBrightness <= 0f) {
+                currentBrightness = mBrightness > 0f ? mBrightness : 0.5f;
+            }
+            float brightness = deltaY * 2f / height + currentBrightness;
+            if (brightness < 0f) {
+                brightness = 0f;
+            }
+            if (brightness > 1.0f) {
+                brightness = 1.0f;
+            }
+            int percent = (int) (brightness * 100);
+            try {
+                attributes.screenBrightness = brightness;
+                window.setAttributes(attributes);
+            } catch (Throwable ignored) {
+                return;
+            }
+            for (Map.Entry<IControlComponent, Boolean> next : mControlComponents.entrySet()) {
+                IControlComponent component = next.getKey();
+                if (component instanceof IGestureComponent) {
+                    ((IGestureComponent) component).onBrightnessChange(percent);
+                }
+            }
+            Message msg = Message.obtain();
+            msg.what = 100;
+            msg.obj = "亮度" + percent + "%";
+            mHandler.sendMessage(msg);
+            mHandler.removeMessages(101);
+            mHandler.sendEmptyMessageDelayed(101, 1000);
+            return;
+        }
         Window window = activity.getWindow();
         WindowManager.LayoutParams attributes = window.getAttributes();
         int height = getMeasuredHeight();
@@ -354,7 +402,24 @@ public abstract class BaseController extends BaseVideoController implements Gest
     protected void slideToChangeVolume(float deltaY) {
         int streamMaxVolume = mAudioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
         int percent = 100;
-        if (streamMaxVolume > 0) {
+        if (shouldUseDeviceVolumeGesture()) {
+            if (streamMaxVolume > 0) {
+                int height = Math.max(1, getMeasuredHeight());
+                int deltaV = (int) ((deltaY * 2f / height) * streamMaxVolume);
+                int index = mStreamVolume + deltaV;
+                if (index < 0) {
+                    index = 0;
+                }
+                if (index > streamMaxVolume) {
+                    index = streamMaxVolume;
+                }
+                try {
+                    mAudioManager.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0);
+                } catch (Throwable ignored) {
+                }
+                percent = Math.round(index * 100f / streamMaxVolume);
+            }
+        } else if (streamMaxVolume > 0) {
             try {
                 int current = mAudioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
                 if (current < streamMaxVolume) {
@@ -371,10 +436,46 @@ public abstract class BaseController extends BaseVideoController implements Gest
         }
         Message msg = Message.obtain();
         msg.what = 100;
-        msg.obj = "音频直通/系统音量";
+        msg.obj = shouldUseDeviceVolumeGesture() ? ("音量" + percent + "%") : "音频直通/系统音量";
         mHandler.sendMessage(msg);
         mHandler.removeMessages(101);
         mHandler.sendEmptyMessageDelayed(101, 1000);
+    }
+
+    private boolean shouldUseDeviceVolumeGesture() {
+        if (!App.isJava64Build()) {
+            return false;
+        }
+        Activity activity = PlayerUtils.scanForActivity(getContext());
+        if (activity instanceof BaseActivity) {
+            return !((BaseActivity) activity).isTvDevice();
+        }
+        return false;
+    }
+
+    private boolean shouldIgnoreEdgeRestrictionForTouch(@Nullable MotionEvent event) {
+        if (!App.isJava64Build() || event == null) {
+            return false;
+        }
+        Activity activity = PlayerUtils.scanForActivity(getContext());
+        if (!(activity instanceof BaseActivity) || ((BaseActivity) activity).isTvDevice()) {
+            return false;
+        }
+        return mControlWrapper != null
+                && mControlWrapper.isFullScreen()
+                && event.getPointerCount() > 0
+                && event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER;
+    }
+
+    private boolean shouldUseDeviceBrightnessGesture() {
+        if (!App.isJava64Build()) {
+            return false;
+        }
+        Activity activity = PlayerUtils.scanForActivity(getContext());
+        if (activity instanceof BaseActivity) {
+            return !((BaseActivity) activity).isTvDevice();
+        }
+        return false;
     }
 
     @Override

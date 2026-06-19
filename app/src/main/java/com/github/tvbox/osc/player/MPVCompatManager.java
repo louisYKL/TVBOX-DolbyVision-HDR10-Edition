@@ -282,7 +282,7 @@ public final class MPVCompatManager {
         // Keep it as a runtime property via applySubtitleOutputOptions().
         appendFileOption(builder, "sid", "auto");
         appendFileOption(builder, "sub-auto", "fuzzy");
-        appendFileOption(builder, "sub-visibility", "yes");
+        appendFileOption(builder, "sub-visibility", "no");
         appendFileOption(builder, "sub-ass", "yes");
         appendFileOption(builder, "sub-ass-override", "force");
         appendFileOption(builder, "sub-font-size", "44");
@@ -317,15 +317,19 @@ public final class MPVCompatManager {
 
     public static void applyAudioOutputOptions() {
         boolean passthrough = Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false);
-        setRuntimeString("ao", "audiotrack,opensles");
+        setRuntimeString("ao", "audiotrack");
         setRuntimeDouble("volume", 100d);
         setRuntimeBoolean("mute", false);
         setRuntimeString("audio-device", "auto");
         setRuntimeString("audio-set-media-role", "yes");
         setRuntimeString("audio-stream-silence", "no");
-        setRuntimeString("audio-exclusive", passthrough ? "yes" : "no");
-        setRuntimeString("audio-spdif", passthrough ? "ac3,eac3,dts,dts-hd,truehd" : "");
-        setRuntimeString("ad-spdif-dtshd", passthrough ? "yes" : "no");
+        if (passthrough) {
+            setRuntimeString("audio-exclusive", "yes");
+            setRuntimeString("audio-spdif", "ac3,eac3,dts,dts-hd,truehd");
+        } else {
+            setRuntimeString("audio-exclusive", "no");
+            setRuntimeString("audio-spdif", "");
+        }
         LOG.i("echo-mpv-audio passthrough=" + passthrough + " volume=100");
     }
 
@@ -333,7 +337,7 @@ public final class MPVCompatManager {
         setRuntimeString("slang", "zh-Hans,zh-CN,chs,zh,chi,zho,zh-Hant,zh-TW,cht");
         setRuntimeString("sid", "auto");
         setRuntimeString("sub-auto", "fuzzy");
-        setRuntimeString("sub-visibility", "yes");
+        setRuntimeString("sub-visibility", "no");
         setRuntimeString("sub-ass", "yes");
         setRuntimeString("sub-ass-override", "force");
         setRuntimeString("sub-ass-force-style", "PrimaryColour=&H00606060,SecondaryColour=&H00606060,OutlineColour=&H00000000,BackColour=&H80000000");

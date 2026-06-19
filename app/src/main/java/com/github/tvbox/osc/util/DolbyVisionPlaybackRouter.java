@@ -2,6 +2,9 @@ package com.github.tvbox.osc.util;
 
 import android.content.Context;
 
+import com.github.tvbox.osc.base.App;
+
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -71,6 +74,8 @@ public final class DolbyVisionPlaybackRouter {
 
         boolean streamDetectedDv = streamProbe.probed && streamProbe.hasDolbyVision;
         boolean matroskaLike = isMatroskaLike(url, extraHints) || streamProbe.isMatroska;
+        boolean probeTimedOut = streamProbe.summary != null
+                && streamProbe.summary.toLowerCase(Locale.US).contains("timeoutexception");
 
         // HDR/DV 只能由视频流探测结果决定，禁止根据标题/文件名里的 DV/HDR/10Bit 字样判断。
         boolean looksLikeDolbyVision = streamDetectedDv;
@@ -79,20 +84,54 @@ public final class DolbyVisionPlaybackRouter {
                 || streamProbe.hasHdr10
                 || streamProbe.hasHdr10Plus;
 
-        // 地面真相：本设备固件 extractor(FF_Extractor/OMX.NVT) 打不开 HTTP 上的 HEVC MKV/WebM，
-        // 一律 av_open_input_file fail(-22)；而 MPV 自带 ffmpeg 能正常硬解。故 MKV/WebM 必须走 MPV，
-        // MP4/TS 等才交系统播放器（原生硬解+原生 HDR 激活，性能最佳）。
-        boolean systemCanOpenContainer = !matroskaLike;
+        // 原生 DV 路由必须以“真实存在 DV 解码器 + 显示端支持 DV”为前提。
+        // 仅有系统属性/XML 宣称支持，但 MediaCodecList 没有 video/dolby-vision 解码器时，
+        // 32/64 位都不能冒险走原生杜比，否则会出现偏色、黑屏或只出声不出画。
+        boolean localProxyMatroskaDvNeedsCompat = looksLikeDolbyVision
+                && matroskaLike
+                && url != null
+                && url.contains("/proxy/play/")
+                && (!streamProbe.hasHdr10BaseLayer || streamProbe.dolbyVisionProfile <= 0);
+        boolean preferNativeHdrSystem = caps.supportsNativeDolbyVision()
+                && caps.displaySupportsHdr()
+                && !localProxyMatroskaDvNeedsCompat;
+        boolean allowSystemForHdrContainer = preferNativeHdrSystem && requiresHdrOutput;
+        boolean systemCanOpenContainer = !matroskaLike
+                || allowSystemForHdrContainer
+                || (matroskaLike && !looksLikeDolbyVision && caps.hevcMain10Decoder);
+        int nativeRequestedPlayerType = allowSystemForHdrContainer
+                ? PlayerHelper.PLAYER_TYPE_SYSTEM
+                : requestedPlayerType;
 
         if (looksLikeDolbyVision) {
             // 路由2：设备能端到端原生 DV 且容器系统播放器能打开 → 系统播放器原生杜比视界。
-            if (caps.supportsNativeDolbyVision() && systemCanOpenContainer) {
+            if (caps.supportsNativeDolbyVision() && systemCanOpenContainer && !localProxyMatroskaDvNeedsCompat) {
                 LOG.i("echo-dolby-route route=native-dv player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
                         + " caps=" + caps.summary
+                        + " nativeHdrSystem=" + preferNativeHdrSystem
                         + " streamDv=" + streamDetectedDv
+                        + " localProxyMatroskaCompat=" + localProxyMatroskaDvNeedsCompat
                         + " probe=" + streamProbe.summary + " url=" + safeSnippet(url));
                 return new Decision(true, false, false, false, false, "", true,
                         PlayerHelper.PLAYER_TYPE_SYSTEM, "native-dolby-vision");
+            }
+
+            // 64位手机/平板同样必须先具备真实 DV 解码器。
+            // 只有严格满足原生解码能力时，才保留系统原生 DV 链路。
+            if (App.isJava64Build()
+                    && caps.supportsNativeDolbyVision()
+                    && caps.displaySupportsHdr()
+                    && !localProxyMatroskaDvNeedsCompat) {
+                LOG.i("echo-dolby-route route=native-dv-java64 player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
+                        + " caps=" + caps.summary
+                        + " streamDv=" + streamDetectedDv
+                        + " profile=" + streamProbe.dolbyVisionProfile
+                        + " matroska=" + matroskaLike
+                        + " localProxyMatroskaCompat=" + localProxyMatroskaDvNeedsCompat
+                        + " probe=" + streamProbe.summary
+                        + " url=" + safeSnippet(url));
+                return new Decision(true, false, false, false, false, "", true,
+                        PlayerHelper.PLAYER_TYPE_SYSTEM, "native-dolby-vision-java64");
             }
 
             // 双层/Profile 7/8/DV+HDR：只播放 HDR10 基础层，避免在低功耗电视上做 GPU/CPU 重映射。
@@ -133,20 +172,35 @@ public final class DolbyVisionPlaybackRouter {
 
         // 路由3：普通 SDR/HDR10/HDR10+ 且容器系统播放器能打开（MP4/TS）→ 系统播放器原生硬解 + 原生 HDR。
         if (systemCanOpenContainer) {
-            LOG.i("echo-dolby-route route=system-native player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
+            LOG.i("echo-dolby-route route=system-native player=" + nativeRequestedPlayerType
                     + " caps=" + caps.summary
+                    + " nativeHdrSystem=" + preferNativeHdrSystem
                     + " hdr10=" + streamProbe.hasHdr10 + " hdr10Plus=" + streamProbe.hasHdr10Plus
                     + " matroska=" + matroskaLike
                     + " requiresHdr=" + requiresHdrOutput + " probe=" + streamProbe.summary
                     + " url=" + safeSnippet(url));
             return new Decision(false, false, false, false, false, "", requiresHdrOutput,
-                    requestedPlayerType, "system-native-hdr");
+                    nativeRequestedPlayerType, "system-native-hdr");
         }
 
         // 路由4：普通 MKV/WebM（系统播放器打不开）→ 兼容播放器(MPV)。
         // HDR10/HDR10+ 源在 MPV 映射并激发 HDR；SDR 源直通。
         boolean mkvPreferHdr = (streamProbe.hasHdr10 || streamProbe.hasHdr10Plus)
                 && caps.displaySupportsHdr();
+        if (matroskaLike
+                && !looksLikeDolbyVision
+                && !streamProbe.hasHdr10
+                && !streamProbe.hasHdr10Plus
+                && probeTimedOut
+                && caps.hevcMain10Decoder) {
+            LOG.i("echo-dolby-route route=system-matroska-probe-timeout player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
+                    + " caps=" + caps.summary
+                    + " matroska=" + matroskaLike
+                    + " probe=" + streamProbe.summary
+                    + " url=" + safeSnippet(url));
+            return new Decision(false, false, false, false, false, "", false,
+                    PlayerHelper.PLAYER_TYPE_SYSTEM, "system-matroska-probe-timeout");
+        }
         LOG.i("echo-dolby-route route=mkv-compat player=" + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
                 + " caps=" + caps.summary + " preferHdr=" + mkvPreferHdr
                 + " hdr10=" + streamProbe.hasHdr10 + " hdr10Plus=" + streamProbe.hasHdr10Plus

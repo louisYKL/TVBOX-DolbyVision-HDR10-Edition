@@ -139,7 +139,7 @@ public class DetailActivity extends BaseActivity {
     private final ArrayList<String> seriesGroupOptions = new ArrayList<>();
     private View currentSeriesGroupView;
     private int GroupCount;
-    boolean showPreview = Hawk.get(HawkConfig.SHOW_PREVIEW, true);; // true 开启 false 关闭
+    boolean showPreview = Hawk.get(HawkConfig.SHOW_PREVIEW, true); // true 开启 false 关闭
     private int pendingFlagPosition = -1;
     private boolean preferPreviewFocus = true;
 
@@ -152,6 +152,9 @@ public class DetailActivity extends BaseActivity {
 
     @Override
     protected void init() {
+        if (isJava64PhoneDevice()) {
+            showPreview = false;
+        }
         EventBus.getDefault().register(this);
         initView();
         initViewModel();

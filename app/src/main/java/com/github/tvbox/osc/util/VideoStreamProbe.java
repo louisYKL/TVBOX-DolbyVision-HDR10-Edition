@@ -30,7 +30,7 @@ import okhttp3.Response;
 public final class VideoStreamProbe {
     private static final ConcurrentHashMap<String, Result> CACHE = new ConcurrentHashMap<>();
     private static final int PROBE_BYTES = 1024 * 1024;
-    private static final int LOCAL_PROXY_PROBE_BYTES = 512 * 1024;
+    private static final int LOCAL_PROXY_PROBE_BYTES = 1024 * 1024;
     private static final int SAMPLE_PROBE_BYTES = 192 * 1024;
     private static final int MAX_VIDEO_SAMPLE_PROBE_COUNT = 6;
     private static final long MAIN_THREAD_LOCAL_PROXY_PROBE_TIMEOUT_MS = 2500L;
@@ -85,7 +85,25 @@ public final class VideoStreamProbe {
             return result;
         } catch (Throwable th) {
             future.cancel(true);
-            Result result = Result.unknown("timeout-" + th.getClass().getSimpleName());
+            Result fallback = null;
+            if (isLocalProxyVideoUrl(probeUrl)) {
+                fallback = probeContainerBytes(probeUrl, headers,
+                        "timeout-byte-" + th.getClass().getSimpleName(),
+                        LOCAL_PROXY_PROBE_BYTES, false);
+            }
+            Result result;
+            if (fallback != null && fallback.probed) {
+                result = new Result(fallback.probed,
+                        fallback.hasDolbyVision,
+                        fallback.hasHdr10,
+                        fallback.hasHdr10Plus,
+                        fallback.isMatroska || containsMatroskaMarkerInUrl(probeUrl),
+                        fallback.dolbyVisionProfile,
+                        fallback.hasHdr10BaseLayer,
+                        "timeout-fallback:" + fallback.summary);
+            } else {
+                result = Result.unknown("timeout-" + th.getClass().getSimpleName());
+            }
             return result;
         }
     }
@@ -101,12 +119,26 @@ public final class VideoStreamProbe {
 
     private static Result doProbeOffMain(Context context, String url, Map<String, String> headers) {
         if (isLocalProxyVideoUrl(url)) {
-            Result result = probeContainerBytes(url, headers, "local-proxy-byte", LOCAL_PROXY_PROBE_BYTES, false);
-            if (result != null && result.probed) {
-                return result;
+            Result byteResult = probeContainerBytes(url, headers, "local-proxy-byte", LOCAL_PROXY_PROBE_BYTES, false);
+            if (byteResult != null
+                    && byteResult.probed
+                    && (byteResult.hasDolbyVision || byteResult.hasHdr10 || byteResult.hasHdr10Plus)) {
+                return new Result(true,
+                        byteResult.hasDolbyVision,
+                        byteResult.hasHdr10,
+                        byteResult.hasHdr10Plus,
+                        byteResult.isMatroska || containsMatroskaMarkerInUrl(url),
+                        byteResult.dolbyVisionProfile,
+                        byteResult.hasHdr10BaseLayer,
+                        "local-proxy-byte-fast:" + byteResult.summary);
             }
-            return Result.unknownContainer("local-proxy-byte-unavailable", containsMatroskaMarkerInUrl(url));
+            Result extractorResult = probeExtractorResult(context, url, headers);
+            return mergeLocalProxyProbeResult(url, byteResult, extractorResult);
         }
+        return probeExtractorResult(context, url, headers);
+    }
+
+    private static Result probeExtractorResult(Context context, String url, Map<String, String> headers) {
         MediaExtractor extractor = new MediaExtractor();
         try {
             if (url.startsWith("http://") || url.startsWith("https://")) {
@@ -202,6 +234,57 @@ public final class VideoStreamProbe {
         }
     }
 
+    private static Result mergeLocalProxyProbeResult(String url, Result byteResult, Result extractorResult) {
+        boolean urlMatroska = containsMatroskaMarkerInUrl(url);
+        boolean byteMatroska = byteResult != null && byteResult.isMatroska;
+        boolean extractorMatroska = extractorResult != null && extractorResult.isMatroska;
+        boolean isMatroska = urlMatroska || byteMatroska || extractorMatroska;
+
+        if (extractorResult != null && extractorResult.probed) {
+            boolean hdr10 = extractorResult.hasHdr10
+                    || (byteResult != null && byteResult.hasHdr10);
+            boolean hdr10Plus = extractorResult.hasHdr10Plus
+                    || (byteResult != null && byteResult.hasHdr10Plus);
+            boolean hasDolbyVision = extractorResult.hasDolbyVision
+                    || (byteResult != null && byteResult.hasDolbyVision);
+            int dvProfile = extractorResult.dolbyVisionProfile > 0
+                    ? extractorResult.dolbyVisionProfile
+                    : (byteResult == null ? -1 : byteResult.dolbyVisionProfile);
+            boolean hdr10BaseLayer = extractorResult.hasHdr10BaseLayer
+                    || (byteResult != null && byteResult.hasHdr10BaseLayer)
+                    || (hasDolbyVision && hdr10);
+            String summary = "local-proxy-merge:"
+                    + extractorResult.summary
+                    + (byteResult != null && !TextUtils.isEmpty(byteResult.summary)
+                    ? "+" + byteResult.summary : "");
+            return new Result(true, hasDolbyVision, hdr10, hdr10Plus, isMatroska,
+                    dvProfile, hdr10BaseLayer, summary);
+        }
+
+        if (byteResult != null && byteResult.probed) {
+            if (byteResult.hasHdr10 || byteResult.hasHdr10Plus || byteResult.isMatroska) {
+                return new Result(true,
+                        byteResult.hasDolbyVision,
+                        byteResult.hasHdr10,
+                        byteResult.hasHdr10Plus,
+                        isMatroska,
+                        byteResult.dolbyVisionProfile,
+                        byteResult.hasHdr10BaseLayer,
+                        "local-proxy-byte-only:" + byteResult.summary);
+            }
+            return new Result(true, false, false, false, isMatroska, -1, false,
+                    "local-proxy-byte-no-hdr:" + byteResult.summary);
+        }
+
+        if (extractorResult != null) {
+            return new Result(extractorResult.probed, extractorResult.hasDolbyVision,
+                    extractorResult.hasHdr10, extractorResult.hasHdr10Plus, isMatroska,
+                    extractorResult.dolbyVisionProfile, extractorResult.hasHdr10BaseLayer,
+                    "local-proxy-extractor-only:" + extractorResult.summary);
+        }
+        return Result.unknownContainer("local-proxy-unavailable", isMatroska);
+    }
+
     private static Result probeExtractorOnWorker(final Context context,
                                                  final String url,
                                                  final Map<String, String> headers,
@@ -217,6 +300,20 @@ public final class VideoStreamProbe {
                     prefix + ":" + result.summary);
         } catch (Throwable th) {
             future.cancel(true);
+            Result fallback = null;
+            if (isLocalProxyVideoUrl(url)) {
+                fallback = probeContainerBytes(url, headers, prefix + ":timeout-byte", LOCAL_PROXY_PROBE_BYTES, false);
+            }
+            if (fallback != null && fallback.probed) {
+                return new Result(fallback.probed,
+                        fallback.hasDolbyVision,
+                        fallback.hasHdr10,
+                        fallback.hasHdr10Plus,
+                        fallback.isMatroska || containsMatroskaMarkerInUrl(url),
+                        fallback.dolbyVisionProfile,
+                        fallback.hasHdr10BaseLayer,
+                        prefix + ":" + fallback.summary);
+            }
             return Result.unknown(prefix + ":probe-timeout");
         }
     }
@@ -235,12 +332,20 @@ public final class VideoStreamProbe {
         try {
             int safeProbeBytes = Math.max(32 * 1024, Math.min(PROBE_BYTES, probeBytes));
             ProbeChunk first = readRange(url, headers, 0L, safeProbeBytes - 1L, safeProbeBytes);
-            if (containsDolbyVisionMarker(first.data) || containsHevcRpuNal(first.data, first.data.length)) {
+            boolean firstHasDvText = containsDolbyVisionMarker(first.data);
+            boolean firstHasDvRpu = containsHevcRpuNal(first.data, first.data.length);
+            boolean firstHasHevcContext = containsHevcCodecMarker(first.data);
+            boolean localProxyUrl = isLocalProxyVideoUrl(url);
+            if (firstHasDvText || firstHasDvRpu) {
                 int dvProfile = extractDolbyVisionProfile(first.data);
+                boolean dvConfirmed = isConfirmedDolbyVisionByteProbe(firstHasDvText, firstHasDvRpu,
+                        firstHasHevcContext, dvProfile, localProxyUrl);
                 boolean hdr10BaseLayer = containsHdr10Marker(first.data) || isDolbyVisionProfileWithHdr10BaseLayer(dvProfile);
-                return new Result(true, true, hdr10BaseLayer, containsHdr10PlusMarker(first.data),
+                if (dvConfirmed) {
+                    return new Result(true, true, hdr10BaseLayer, containsHdr10PlusMarker(first.data),
                         containsMatroskaMarker(first.data), dvProfile, hdr10BaseLayer,
                         prefix + ":header-dovi" + profileSuffix(dvProfile, hdr10BaseLayer));
+                }
             }
             if (containsHdr10PlusMarker(first.data) || containsHdr10Marker(first.data)) {
                 return new Result(true, false, true, containsHdr10PlusMarker(first.data), containsMatroskaMarker(first.data),
@@ -248,17 +353,24 @@ public final class VideoStreamProbe {
             }
             long total = first.totalSize;
             boolean firstLooksMatroska = containsMatroskaMarker(first.data);
-            if (readTail && total > safeProbeBytes && !isLocalProxyVideoUrl(url)) {
+            if (readTail && total > safeProbeBytes && !localProxyUrl) {
                 long start = Math.max(0L, total - safeProbeBytes);
                 ProbeChunk tail = readRange(url, headers, start, total - 1L, safeProbeBytes);
                 boolean tailLooksMatroska = containsMatroskaMarker(tail.data);
-                if (containsDolbyVisionMarker(tail.data) || containsHevcRpuNal(tail.data, tail.data.length)) {
+                boolean tailHasDvText = containsDolbyVisionMarker(tail.data);
+                boolean tailHasDvRpu = containsHevcRpuNal(tail.data, tail.data.length);
+                boolean tailHasHevcContext = containsHevcCodecMarker(tail.data);
+                if (tailHasDvText || tailHasDvRpu) {
                     int dvProfile = extractDolbyVisionProfile(tail.data);
                     boolean hdr10BaseLayer = containsHdr10Marker(tail.data) || containsHdr10Marker(first.data)
                             || isDolbyVisionProfileWithHdr10BaseLayer(dvProfile);
-                    return new Result(true, true, hdr10BaseLayer, containsHdr10PlusMarker(tail.data),
-                            firstLooksMatroska || tailLooksMatroska, dvProfile, hdr10BaseLayer,
-                            prefix + ":tail-dovi" + profileSuffix(dvProfile, hdr10BaseLayer));
+                    boolean dvConfirmed = isConfirmedDolbyVisionByteProbe(tailHasDvText, tailHasDvRpu,
+                            tailHasHevcContext, dvProfile, false);
+                    if (dvConfirmed) {
+                        return new Result(true, true, hdr10BaseLayer, containsHdr10PlusMarker(tail.data),
+                                firstLooksMatroska || tailLooksMatroska, dvProfile, hdr10BaseLayer,
+                                prefix + ":tail-dovi" + profileSuffix(dvProfile, hdr10BaseLayer));
+                    }
                 }
                 if (containsHdr10PlusMarker(tail.data) || containsHdr10Marker(tail.data)) {
                     return new Result(true, false, true, containsHdr10PlusMarker(tail.data),
@@ -709,6 +821,43 @@ public final class VideoStreamProbe {
                 || text.contains("dvv1")
                 || text.contains("dovi configuration")
                 || text.contains("dolby vision");
+    }
+
+    private static boolean isConfirmedDolbyVisionByteProbe(boolean hasDvTextMarker,
+                                                           boolean hasDvRpuMarker,
+                                                           boolean hasHevcContext,
+                                                           int dvProfile,
+                                                           boolean localProxyByteProbe) {
+        if (localProxyByteProbe) {
+            if (dvProfile > 0 && hasHevcContext) {
+                return true;
+            }
+            return hasDvRpuMarker && hasHevcContext;
+        }
+        if (dvProfile > 0) {
+            return true;
+        }
+        if (hasDvRpuMarker) {
+            return hasHevcContext || hasDvTextMarker;
+        }
+        if (!hasDvTextMarker) {
+            return false;
+        }
+        return !localProxyByteProbe;
+    }
+
+    private static boolean containsHevcCodecMarker(byte[] data) {
+        if (data == null || data.length == 0) {
+            return false;
+        }
+        String text = new String(data, StandardCharsets.ISO_8859_1).toLowerCase(Locale.US);
+        return text.contains("video/hevc")
+                || text.contains("hev1")
+                || text.contains("hvc1")
+                || text.contains("hevc")
+                || text.contains("h265")
+                || text.contains("v_mpegh/iso/hevc")
+                || text.contains("v_mpegh/iso/hevc");
     }
 
     private static boolean containsHdr10Marker(byte[] data) {

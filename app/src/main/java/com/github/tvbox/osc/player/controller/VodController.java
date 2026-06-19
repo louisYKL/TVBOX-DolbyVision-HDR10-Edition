@@ -881,7 +881,11 @@ public class VodController extends BaseController {
             return;
         }
         try {
-            if (!mControlWrapper.isPlaying()) {
+            boolean resumeNeeded = videoPlayState == VideoView.STATE_PAUSED
+                    || videoPlayState == VideoView.STATE_BUFFERING
+                    || videoPlayState == VideoView.STATE_BUFFERED
+                    || !mControlWrapper.isPlaying();
+            if (resumeNeeded) {
                 Log.i(TAG, "resumePlaybackAfterSeek start reason=" + reason + " state=" + videoPlayState);
                 mControlWrapper.start();
             }
@@ -1089,6 +1093,12 @@ public class VodController extends BaseController {
         mControlWrapper.startFullScreen();
         hideBottom();
         syncFullScreenControlState();
+        post(new Runnable() {
+            @Override
+            public void run() {
+                restorePlaybackFocus();
+            }
+        });
         return true;
     }
 

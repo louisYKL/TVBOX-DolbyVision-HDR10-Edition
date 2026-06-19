@@ -46,7 +46,10 @@ public class SubtitleHelper {
 
     public static int normalizeTextSize(Activity activity, int size) {
         int autoSize = getSubtitleTextAutoSize(activity);
-        return clamp(size, Math.max(14, autoSize - 12), autoSize + 12);
+        boolean tvLike = activity != null && ScreenUtils.isTv(activity);
+        int min = tvLike ? Math.max(28, autoSize - 8) : Math.max(14, autoSize - 10);
+        int max = tvLike ? autoSize + 18 : autoSize + 12;
+        return clamp(size, min, max);
     }
 
     public static int getTimeDelay() {

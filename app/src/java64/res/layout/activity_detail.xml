@@ -1,0 +1,381 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_apple_tv_shell">
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_apple_tv_scrim_bottom" />
+
+    <LinearLayout
+        android:id="@+id/llLayout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/vs_24"
+        android:paddingTop="@dimen/vs_14"
+        android:paddingEnd="@dimen/vs_24"
+        android:paddingBottom="@dimen/vs_14">
+
+        <LinearLayout
+            android:id="@+id/topLayout"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="8"
+            android:background="@drawable/bg_apple_tv_panel"
+            android:gravity="top"
+            android:orientation="horizontal"
+            android:padding="@dimen/vs_16">
+
+            <com.github.tvbox.osc.ui.tv.widget.RoundedPosterLayout
+                android:id="@+id/mediaColumn"
+                android:layout_width="@dimen/vs_420"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="@dimen/vs_18"
+                android:background="@drawable/bg_apple_tv_card"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:padding="@dimen/vs_2">
+
+                <ImageView
+                    android:id="@+id/ivThumb"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:scaleType="centerCrop" />
+
+                <View
+                    android:id="@+id/previewPlayerPlace"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:visibility="gone" />
+
+                <androidx.fragment.app.FragmentContainerView
+                    android:id="@+id/previewPlayer"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@android:color/transparent"
+                    android:visibility="gone" />
+
+                <View
+                    android:id="@+id/previewPlayerBlock"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@drawable/preview_player_block"
+                    android:focusable="true"
+                    android:nextFocusDown="@id/mGridViewFlag"
+                    android:visibility="gone" />
+            </com.github.tvbox.osc.ui.tv.widget.RoundedPosterLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tvName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="2"
+                    android:textColor="@color/apple_tv_text_primary"
+                    android:textSize="@dimen/ts_30"
+                    android:textStyle="bold" />
+
+                <HorizontalScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/vs_10"
+                    android:fadeScrollbars="false"
+                    android:scrollbars="none">
+
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/tvSite"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="@dimen/vs_8"
+                            android:background="@drawable/bg_apple_tv_tag"
+                            android:ellipsize="end"
+                            android:paddingStart="@dimen/vs_10"
+                            android:paddingTop="@dimen/vs_4"
+                            android:paddingEnd="@dimen/vs_10"
+                            android:paddingBottom="@dimen/vs_4"
+                            android:singleLine="true"
+                            android:textColor="@color/apple_tv_text_primary"
+                            android:textSize="@dimen/ts_16" />
+
+                        <TextView
+                            android:id="@+id/tvYear"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="@dimen/vs_8"
+                            android:background="@drawable/bg_apple_tv_tag"
+                            android:ellipsize="end"
+                            android:paddingStart="@dimen/vs_10"
+                            android:paddingTop="@dimen/vs_4"
+                            android:paddingEnd="@dimen/vs_10"
+                            android:paddingBottom="@dimen/vs_4"
+                            android:singleLine="true"
+                            android:textColor="@color/apple_tv_text_primary"
+                            android:textSize="@dimen/ts_16" />
+
+                        <TextView
+                            android:id="@+id/tvArea"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="@dimen/vs_8"
+                            android:background="@drawable/bg_apple_tv_tag"
+                            android:ellipsize="end"
+                            android:paddingStart="@dimen/vs_10"
+                            android:paddingTop="@dimen/vs_4"
+                            android:paddingEnd="@dimen/vs_10"
+                            android:paddingBottom="@dimen/vs_4"
+                            android:singleLine="true"
+                            android:textColor="@color/apple_tv_text_primary"
+                            android:textSize="@dimen/ts_16" />
+
+                        <TextView
+                            android:id="@+id/tvLang"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="@dimen/vs_8"
+                            android:background="@drawable/bg_apple_tv_tag"
+                            android:ellipsize="end"
+                            android:paddingStart="@dimen/vs_10"
+                            android:paddingTop="@dimen/vs_4"
+                            android:paddingEnd="@dimen/vs_10"
+                            android:paddingBottom="@dimen/vs_4"
+                            android:singleLine="true"
+                            android:textColor="@color/apple_tv_text_primary"
+                            android:textSize="@dimen/ts_16" />
+
+                        <TextView
+                            android:id="@+id/tvType"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_apple_tv_tag"
+                            android:ellipsize="end"
+                            android:paddingStart="@dimen/vs_10"
+                            android:paddingTop="@dimen/vs_4"
+                            android:paddingEnd="@dimen/vs_10"
+                            android:paddingBottom="@dimen/vs_4"
+                            android:singleLine="true"
+                            android:textColor="@color/apple_tv_text_primary"
+                            android:textSize="@dimen/ts_16" />
+                    </LinearLayout>
+                </HorizontalScrollView>
+
+                <TextView
+                    android:id="@+id/tvActor"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/vs_10"
+                    android:ellipsize="end"
+                    android:singleLine="true"
+                    android:textColor="@color/apple_tv_text_secondary"
+                    android:textSize="@dimen/ts_18" />
+
+                <TextView
+                    android:id="@+id/tvDirector"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/vs_4"
+                    android:ellipsize="end"
+                    android:singleLine="true"
+                    android:textColor="@color/apple_tv_text_secondary"
+                    android:textSize="@dimen/ts_18" />
+
+                <TextView
+                    android:id="@+id/tvPlayUrl"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/tvDes"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/vs_10"
+                    android:lineSpacingMultiplier="1.15"
+                    android:maxLines="3"
+                    android:textColor="@color/apple_tv_text_secondary"
+                    android:textSize="@dimen/ts_18" />
+
+                <Space
+                    android:layout_width="wrap_content"
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/vs_12"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tvPlay"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/vs_48"
+                        android:layout_marginEnd="@dimen/vs_8"
+                        android:layout_weight="1"
+                        android:background="@drawable/button_detail_play"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:nextFocusUp="@id/previewPlayerBlock"
+                        android:text="立即播放"
+                        android:textColor="@color/apple_tv_chip_text_active"
+                        android:textSize="@dimen/ts_18"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvQuickSearch"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/vs_48"
+                        android:layout_marginEnd="@dimen/vs_8"
+                        android:layout_weight="1"
+                        android:background="@drawable/button_detail_quick_search"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="快速搜索"
+                        android:textColor="@color/apple_tv_text_primary"
+                        android:textSize="@dimen/ts_18" />
+
+                    <TextView
+                        android:id="@+id/tvDesc"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/vs_48"
+                        android:layout_marginEnd="@dimen/vs_8"
+                        android:layout_weight="1"
+                        android:background="@drawable/button_detail_sort"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="简介"
+                        android:textColor="@color/apple_tv_text_primary"
+                        android:textSize="@dimen/ts_18" />
+
+                    <TextView
+                        android:id="@+id/tvCollect"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/vs_48"
+                        android:layout_weight="1"
+                        android:background="@drawable/button_detail_collect"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="加入收藏"
+                        android:textColor="@color/apple_tv_text_primary"
+                        android:textSize="@dimen/ts_18" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/mEmptyPlaylist"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="5"
+            android:gravity="center"
+            android:orientation="horizontal"
+            tools:visibility="gone">
+
+            <ImageView
+                android:layout_width="@dimen/vs_76"
+                android:layout_height="@dimen/vs_76"
+                android:src="@drawable/icon_empty" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/vs_12"
+                android:text="暂无播放数据"
+                android:textColor="@color/apple_tv_text_primary"
+                android:textSize="@dimen/ts_22" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="5"
+            android:layout_marginTop="@dimen/vs_14"
+            android:background="@drawable/bg_apple_tv_panel"
+            android:orientation="vertical"
+            android:padding="@dimen/vs_14">
+
+            <com.owen.tvrecyclerview.widget.TvRecyclerView
+                android:id="@+id/mGridViewFlag"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/vs_52"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:focusable="true"
+                android:nextFocusUp="@id/tvPlay"
+                app:tv_horizontalSpacingWithMargins="@dimen/vs_10"
+                app:tv_selectedItemIsCentered="true" />
+
+            <LinearLayout
+                android:id="@+id/mSeriesGroupTv"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/vs_10"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/mSeriesSortTv"
+                    android:layout_width="wrap_content"
+                    android:layout_height="@dimen/vs_46"
+                    android:background="@drawable/shape_source_series_focus"
+                    android:ellipsize="marquee"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:nextFocusDown="@id/mGridView"
+                    android:nextFocusRight="@id/mSeriesGroupView"
+                    android:nextFocusUp="@id/mGridViewFlag"
+                    android:paddingStart="@dimen/vs_16"
+                    android:paddingEnd="@dimen/vs_16"
+                    android:singleLine="true"
+                    android:text="正序"
+                    android:textColor="@color/apple_tv_text_primary"
+                    android:textSize="@dimen/ts_18" />
+
+                <com.owen.tvrecyclerview.widget.TvRecyclerView
+                    android:id="@+id/mSeriesGroupView"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/vs_46"
+                    android:layout_marginStart="@dimen/vs_10"
+                    android:layout_weight="1"
+                    android:clipChildren="false"
+                    android:clipToPadding="false"
+                    android:focusable="true"
+                    android:nextFocusDown="@id/mGridView"
+                    android:nextFocusLeft="@id/mSeriesSortTv"
+                    android:nextFocusUp="@id/mGridViewFlag"
+                    app:tv_horizontalSpacingWithMargins="@dimen/vs_10"
+                    app:tv_selectedItemIsCentered="true" />
+            </LinearLayout>
+
+            <com.owen.tvrecyclerview.widget.TvRecyclerView
+                android:id="@+id/mGridView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="@dimen/vs_12"
+                android:layout_weight="1"
+                android:minHeight="@dimen/vs_180"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                app:tv_horizontalSpacingWithMargins="@dimen/vs_10"
+                app:tv_selectedItemIsCentered="true"
+                app:tv_verticalSpacingWithMargins="@dimen/vs_10" />
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>

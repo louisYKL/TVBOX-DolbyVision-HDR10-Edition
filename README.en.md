@@ -5,13 +5,13 @@
 > A TV-first TVBox branch focused on native hardware playback, HDR activation, Dolby Vision fallback routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.1.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1">Download 0.1</a> ·
+  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.1">Download 0.1.1</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -25,9 +25,9 @@ This branch is built for real living-room playback: keep native system decoding 
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.1_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build |
-| `TVBox_v0.1_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
-| `TVBox_v0.1_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build |
+| `TVBox_v0.1.1_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build |
+| `TVBox_v0.1.1_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
+| `TVBox_v0.1.1_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build |
 
 ## Preview
 
@@ -56,13 +56,21 @@ The core principle is simple:
 - Keep subtitles, audio passthrough, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
 
-## 0.1 Variants
+## 0.1.1 Variants
 
 | Variant | ABI | Target devices | Notes |
 | --- | --- | --- | --- |
 | `java32` | `armeabi-v7a` | Mainstream 32-bit Android TVs / smart screens | Primary TV build |
 | `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
 | `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Dedicated Hisense build |
+
+## What 0.1.1 focused on
+
+- Tightened HDR / Dolby Vision routing so local-proxy MKV streams do not fall back to SDR too easily after a probe timeout.
+- Improved local `proxy/play` byte-level preflight so MKV / HDR / DV streams can be classified before the native route is chosen.
+- Fixed playback progress and history-key drift by unifying `sourceKey` and `progressKey` resolution across embedded and activity playback flows.
+- Added stronger generation isolation in `PlayActivity` so old WebView sniffing, m3u8 callbacks, and source-switch results cannot leak into a newer playback request.
+- Kept the overall strategy intact: system player first when it is trustworthy, MPV compatibility path when the native chain is not.
 
 ## Highlights
 
@@ -173,4 +181,5 @@ The repository includes a basic Android build workflow for:
 ## Roadmap
 
 - `0.1`: unify the 32-bit TV build, 64-bit Android build, and Hisense 32-bit build.
+- `0.1.1`: continue closing HDR / DV probe issues, playback routing edge cases, progress persistence, and source-switch state isolation.
 - Next: portable Windows build, more device-specific branches, and a proper GitHub Release workflow.

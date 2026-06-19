@@ -3,16 +3,22 @@ package xyz.doikki.videoplayer.player;
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.media.AudioAttributes;
+import android.media.MediaDataSource;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.media.TimedText;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.ParcelFileDescriptor;
+import android.os.storage.StorageManager;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.charset.Charset;
@@ -29,7 +35,8 @@ import xyz.doikki.videoplayer.util.PlaybackUrlNormalizer;
 public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.OnErrorListener,
         MediaPlayer.OnCompletionListener, MediaPlayer.OnInfoListener,
         MediaPlayer.OnBufferingUpdateListener, MediaPlayer.OnPreparedListener,
-        MediaPlayer.OnVideoSizeChangedListener, MediaPlayer.OnTimedTextListener {
+        MediaPlayer.OnVideoSizeChangedListener, MediaPlayer.OnTimedTextListener,
+        MediaPlayer.OnSeekCompleteListener {
     private static final String TAG = "AndroidMediaPlayer";
     private static final int STATE_IDLE = 0;
     private static final int STATE_INITIALIZED = 1;
@@ -58,13 +65,23 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private Surface mLastSurface;
     private SurfaceHolder mLastDisplayHolder;
     private boolean mWasPlayingBeforeSeek;
+    private boolean mPendingResumeAfterSeek;
+    private boolean mPendingStartAfterDisplayReady;
+    private MediaDataSource mCurrentMediaDataSource;
+    private ProxyFdHttpDataSource mCurrentProxyFdDataSource;
+    private ParcelFileDescriptor mCurrentProxyFileDescriptor;
     private static Method sRuntimeLogInfoMethod;
     private static boolean sRuntimeLogLookupDone;
+    private static Handler sProxyFdHandler;
+    private static HandlerThread sProxyFdThread;
 
     private static final int DATA_SOURCE_NONE = 0;
     private static final int DATA_SOURCE_URI = 1;
+    private static final int DATA_SOURCE_MEDIA_DATA_SOURCE = 2;
+    private static final int DATA_SOURCE_PROXY_FILE_DESCRIPTOR = 3;
     private static final String HEADER_PROBE_CONTAINER = "X-TVBox-Probe-Container";
     private static final String HEADER_PROBE_DOLBY_VISION = "X-TVBox-Probe-DolbyVision";
+    private static final String HEADER_PROBE_NATIVE_DV_DEVICE = "X-TVBox-Probe-NativeDvDevice";
 
     public AndroidMediaPlayer(Context context) {
         mAppContext = context.getApplicationContext();
@@ -84,6 +101,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mMediaPlayer.setOnPreparedListener(this);
         mMediaPlayer.setOnVideoSizeChangedListener(this);
         mMediaPlayer.setOnTimedTextListener(this);
+        mMediaPlayer.setOnSeekCompleteListener(this);
         installSubtitleDataListener();
         mMediaPlayer.setScreenOnWhilePlaying(true);
     }
@@ -119,7 +137,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         } catch (Exception e) {
             Log.e(TAG, "setDataSource failed path=" + path, e);
             mState = STATE_ERROR;
-            mPlayerEventListener.onError();
+            if (mPlayerEventListener != null) {
+                mPlayerEventListener.onError();
+            }
         }
     }
 
@@ -158,6 +178,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     @Override
     public void setDataSource(AssetFileDescriptor fd) {
         try {
+            closeCustomDataSourceQuietly();
             mMediaPlayer.setDataSource(fd.getFileDescriptor(), fd.getStartOffset(), fd.getLength());
             mState = STATE_INITIALIZED;
             mLastDataSourceSucceeded = true;
@@ -253,6 +274,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             mMediaPlayer.reset();
+            closeCustomDataSourceQuietly();
             applyAudioOutputConfiguration();
             restoreRequestedVolume();
             mMediaPlayer.setSurface(null);
@@ -265,6 +287,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mCurrentDataSourceUrl = null;
             mCurrentDataSourceHeaders = null;
             mCurrentDataSourceMatroskaLike = false;
+            mPendingResumeAfterSeek = false;
+            mPendingStartAfterDisplayReady = false;
+            mWasPlayingBeforeSeek = false;
         } catch (Exception e) {
             Log.e(TAG, "reset failed in state=" + mState, e);
             mState = STATE_ERROR;
@@ -292,11 +317,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             mWasPlayingBeforeSeek = isPlaying();
+            mPendingResumeAfterSeek = mWasPlayingBeforeSeek || mState == STATE_PREPARED;
             mMediaPlayer.seekTo(PlayerUtils.safeTimeMs(time));
-            if (mWasPlayingBeforeSeek) {
-                mMediaPlayer.start();
-                restoreRequestedVolume();
-                mState = STATE_STARTED;
+            if (!mPendingResumeAfterSeek && canPause()) {
+                mState = STATE_PAUSED;
             }
         } catch (IllegalStateException e) {
             Log.e(TAG, "seekTo failed in state=" + mState, e);
@@ -318,6 +342,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mMediaPlayer.setOnPreparedListener(null);
         mMediaPlayer.setOnVideoSizeChangedListener(null);
         mMediaPlayer.setOnTimedTextListener(null);
+        mMediaPlayer.setOnSeekCompleteListener(null);
         clearSubtitleDataListener();
         final MediaPlayer mediaPlayer = mMediaPlayer;
         mMediaPlayer = null;
@@ -329,6 +354,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mCurrentDataSourceUrl = null;
         mCurrentDataSourceHeaders = null;
         mCurrentDataSourceMatroskaLike = false;
+        mPendingResumeAfterSeek = false;
+        mPendingStartAfterDisplayReady = false;
+        mWasPlayingBeforeSeek = false;
         try {
             mediaPlayer.setSurface(null);
         } catch (Exception e) {
@@ -344,6 +372,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         } catch (Exception e) {
             Log.w(TAG, "release failed", e);
         }
+        closeCustomDataSourceQuietly();
     }
 
     @Override
@@ -386,6 +415,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             mMediaPlayer.setSurface(surface);
+            startIfDisplayReady();
         } catch (Exception e) {
             Log.e(TAG, "setSurface failed in state=" + mState, e);
             mPlayerEventListener.onError();
@@ -401,6 +431,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             mMediaPlayer.setDisplay(holder);
+            startIfDisplayReady();
         } catch (Exception e) {
             Log.e(TAG, "setDisplay failed in state=" + mState, e);
             mPlayerEventListener.onError();
@@ -504,16 +535,50 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     @Override
+    public void onSeekComplete(MediaPlayer mp) {
+        boolean resume = mPendingResumeAfterSeek;
+        mPendingResumeAfterSeek = false;
+        if (mMediaPlayer == null || mp == null || mp != mMediaPlayer) {
+            return;
+        }
+        try {
+            if (resume) {
+                restoreRequestedVolume();
+                if (!mMediaPlayer.isPlaying()) {
+                    mMediaPlayer.start();
+                    restoreRequestedVolume();
+                }
+                mState = STATE_STARTED;
+                mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_BUFFERING_END, 0);
+            } else if (canPause()) {
+                mState = STATE_PAUSED;
+            }
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "onSeekComplete failed in state=" + mState, e);
+            mState = STATE_ERROR;
+            mPlayerEventListener.onError();
+        } finally {
+            mWasPlayingBeforeSeek = false;
+        }
+    }
+
+    @Override
     public void onPrepared(MediaPlayer mp) {
         Log.i(TAG, "onPrepared");
         mState = STATE_PREPARED;
         applyVideoScalingMode(mp);
         restoreRequestedVolume();
         mPlayerEventListener.onPrepared();
-        start();
-        // 修复播放纯音频时状态出错问题
         if (!isVideo()) {
+            start();
             mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_RENDERING_START, 0);
+            return;
+        }
+        if (hasVideoOutputTarget()) {
+            start();
+        } else {
+            mPendingStartAfterDisplayReady = true;
+            Log.i(TAG, "delay start until display target ready");
         }
     }
 
@@ -599,6 +664,33 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 || mState == STATE_STARTED
                 || mState == STATE_PAUSED
                 || mState == STATE_COMPLETED;
+    }
+
+    private boolean hasVideoOutputTarget() {
+        try {
+            if (mLastSurface != null && mLastSurface.isValid()) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            return mLastDisplayHolder != null
+                    && mLastDisplayHolder.getSurface() != null
+                    && mLastDisplayHolder.getSurface().isValid();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private void startIfDisplayReady() {
+        if (!mPendingStartAfterDisplayReady || mMediaPlayer == null || mState != STATE_PREPARED) {
+            return;
+        }
+        if (!hasVideoOutputTarget()) {
+            return;
+        }
+        mPendingStartAfterDisplayReady = false;
+        start();
     }
 
     private boolean canInspectTrackInfo() {
@@ -802,13 +894,145 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                     + " probedMatroska=" + probedMatroska
                     + " probedDv=" + probedDolbyVision);
         }
+        Map<String, String> externalHeaders = cleanExternalHeaders(headers);
+        if (shouldUseProxyBackedDataSource(normalizedUrl, headers)) {
+            try {
+                if (trySetProxyBackedDataSource(normalizedUrl, externalHeaders, matroskaLike)) {
+                    return;
+                }
+            } catch (Throwable proxyBackedError) {
+                closeCustomDataSourceQuietly();
+                logInfo("echo-system-data-source proxy-backed failed fallback uri url="
+                        + normalizedUrl + " err=" + proxyBackedError.getClass().getSimpleName()
+                        + ":" + proxyBackedError.getMessage());
+            }
+        }
         try {
             Uri uri = Uri.parse(normalizedUrl);
-            logInfo("echo-system-data-source uri url=" + uri + " matroska=" + matroskaLike);
-            mMediaPlayer.setDataSource(mAppContext, uri, cleanExternalHeaders(headers));
+            boolean networkUri = isNetworkScheme(uri == null ? null : uri.getScheme());
+            logInfo("echo-system-data-source uri url=" + uri + " matroska=" + matroskaLike + " network=" + networkUri);
+            closeCustomDataSourceQuietly();
+            if (networkUri) {
+                mMediaPlayer.setDataSource(normalizedUrl);
+            } else {
+                mMediaPlayer.setDataSource(mAppContext, uri, externalHeaders);
+            }
             mResolvedDataSourceMode = DATA_SOURCE_URI;
         } catch (Exception uriError) {
             throw uriError;
+        }
+    }
+
+    private boolean shouldUseProxyBackedDataSource(String normalizedUrl, Map<String, String> headers) {
+        if (TextUtils.isEmpty(normalizedUrl) || isHlsLike(normalizedUrl)) {
+            return false;
+        }
+        if (shouldBypassProxyBackedSourceForNativeDv(headers, normalizedUrl)) {
+            logInfo("echo-system-data-source native-dv-direct-localplay url=" + normalizedUrl);
+            return false;
+        }
+        return isLocalProxyPlayUrl(normalizedUrl);
+    }
+
+    private boolean shouldBypassProxyBackedSourceForNativeDv(Map<String, String> headers, String normalizedUrl) {
+        if (!isLocalProxyPlayUrl(normalizedUrl)) {
+            return false;
+        }
+        boolean probedDolbyVision = hasInternalHeaderValue(headers, HEADER_PROBE_DOLBY_VISION, "1");
+        boolean nativeDvDevice = hasInternalHeaderValue(headers, HEADER_PROBE_NATIVE_DV_DEVICE, "1");
+        return probedDolbyVision && nativeDvDevice;
+    }
+
+    private boolean trySetProxyBackedDataSource(String normalizedUrl,
+                                                Map<String, String> headers,
+                                                boolean matroskaLike) throws Exception {
+        closeCustomDataSourceQuietly();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            StorageManager storageManager = (StorageManager) mAppContext.getSystemService(Context.STORAGE_SERVICE);
+            if (storageManager != null) {
+                ProxyFdHttpDataSource proxyFdDataSource = new ProxyFdHttpDataSource(normalizedUrl, headers);
+                ParcelFileDescriptor proxyFd = null;
+                try {
+                    proxyFd = storageManager.openProxyFileDescriptor(
+                            ParcelFileDescriptor.MODE_READ_ONLY,
+                            proxyFdDataSource,
+                            getProxyFdHandler());
+                    mMediaPlayer.setDataSource(proxyFd.getFileDescriptor());
+                    mCurrentProxyFdDataSource = proxyFdDataSource;
+                    mCurrentProxyFileDescriptor = proxyFd;
+                    mResolvedDataSourceMode = DATA_SOURCE_PROXY_FILE_DESCRIPTOR;
+                    logInfo("echo-system-data-source proxy-fd url=" + normalizedUrl + " matroska=" + matroskaLike);
+                    return true;
+                } catch (Throwable th) {
+                    if (proxyFd != null) {
+                        try {
+                            proxyFd.close();
+                        } catch (IOException ignored) {
+                        }
+                    }
+                    try {
+                        proxyFdDataSource.onRelease();
+                    } catch (Throwable ignored) {
+                    }
+                    throw th;
+                }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            HttpRangeMediaDataSource mediaDataSource = new HttpRangeMediaDataSource(normalizedUrl, headers);
+            try {
+                mMediaPlayer.setDataSource(mediaDataSource);
+                mCurrentMediaDataSource = mediaDataSource;
+                mResolvedDataSourceMode = DATA_SOURCE_MEDIA_DATA_SOURCE;
+                logInfo("echo-system-data-source media-data-source url=" + normalizedUrl + " matroska=" + matroskaLike);
+                return true;
+            } catch (Throwable th) {
+                try {
+                    mediaDataSource.close();
+                } catch (Throwable ignored) {
+                }
+                throw th;
+            }
+        }
+        return false;
+    }
+
+    private void closeCustomDataSourceQuietly() {
+        MediaDataSource mediaDataSource = mCurrentMediaDataSource;
+        mCurrentMediaDataSource = null;
+        if (mediaDataSource != null) {
+            try {
+                mediaDataSource.close();
+            } catch (Throwable ignored) {
+            }
+        }
+        ParcelFileDescriptor proxyFileDescriptor = mCurrentProxyFileDescriptor;
+        mCurrentProxyFileDescriptor = null;
+        if (proxyFileDescriptor != null) {
+            try {
+                proxyFileDescriptor.close();
+            } catch (Throwable ignored) {
+            }
+        }
+        ProxyFdHttpDataSource proxyFdDataSource = mCurrentProxyFdDataSource;
+        mCurrentProxyFdDataSource = null;
+        if (proxyFdDataSource != null) {
+            try {
+                proxyFdDataSource.onRelease();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static Handler getProxyFdHandler() {
+        synchronized (AndroidMediaPlayer.class) {
+            if (sProxyFdHandler != null) {
+                return sProxyFdHandler;
+            }
+            sProxyFdThread = new HandlerThread("TVBoxProxyFd");
+            sProxyFdThread.start();
+            sProxyFdHandler = new Handler(sProxyFdThread.getLooper());
+            return sProxyFdHandler;
         }
     }
 
@@ -856,6 +1080,13 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 || lower.contains("format=hls")
                 || lower.contains("type=hls")
                 || lower.contains("application/vnd.apple.mpegurl");
+    }
+
+    private boolean isNetworkScheme(String scheme) {
+        if (TextUtils.isEmpty(scheme)) {
+            return false;
+        }
+        return "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
     }
 
     private boolean isAppStreamProxyUrl(String path) {

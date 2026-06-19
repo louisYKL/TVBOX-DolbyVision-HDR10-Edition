@@ -61,6 +61,8 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
     private boolean deferredLoadScheduled;
     private String lastSubtitleText;
     private OnSubtitleTextListener subtitleTextListener;
+    private OnRuntimeVideoModeListener runtimeVideoModeListener;
+    private boolean runtimeVideoModeNotified;
 
     public MPVCompatPlayer(Context context) {
         this.playerContext = context;
@@ -117,6 +119,8 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         deferredLoadScheduled = false;
         lastSubtitleText = null;
         subtitleTextListener = null;
+        runtimeVideoModeListener = null;
+        runtimeVideoModeNotified = false;
         forceMaxVolume();
     }
 
@@ -140,6 +144,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         lastSeekRequestMs = -1L;
         deferredLoadScheduled = false;
         lastSubtitleText = null;
+        runtimeVideoModeNotified = false;
     }
 
     @Override
@@ -453,6 +458,17 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
 
     public void setOnSubtitleTextListener(@Nullable OnSubtitleTextListener listener) {
         subtitleTextListener = listener;
+    }
+
+    public void setOnRuntimeVideoModeListener(@Nullable OnRuntimeVideoModeListener listener) {
+        runtimeVideoModeListener = listener;
+        if (listener != null && (runtimeStreamHdrDetected || runtimeStreamDolbyVisionDetected)) {
+            dispatchRuntimeVideoMode(listener,
+                    runtimeStreamHdrDetected,
+                    runtimeStreamDolbyVisionDetected,
+                    MPVCompatManager.getOutputMode(),
+                    "listener-bind");
+        }
     }
 
     public void selectAudioTrack(TrackInfoBean track) {
@@ -1075,8 +1091,14 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
                 if (!runtimeHdrPromotionApplied && !MPVCompatManager.shouldRequestHdrOutput()) {
                     runtimeHdrPromotionApplied = true;
                     MPVCompatManager.promoteRuntimeHdrOutput(reason + " " + shrink(summary));
+                    applyPlaybackModeOptionsIfSurfaceReady("runtime-" + reason);
                 }
                 requestHdrWindowMode("runtime-" + reason);
+                dispatchRuntimeVideoMode(runtimeVideoModeListener,
+                        runtimeStreamHdrDetected,
+                        runtimeStreamDolbyVisionDetected,
+                        MPVCompatManager.getOutputMode(),
+                        reason);
             }
             if (!TextUtils.isEmpty(summary)) {
                 logInfo("echo-mpv-runtime-probe reason=" + reason
@@ -1238,7 +1260,27 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         LOG.i(message);
     }
 
+    private void dispatchRuntimeVideoMode(@Nullable OnRuntimeVideoModeListener listener,
+                                          boolean hdr,
+                                          boolean dv,
+                                          String outputMode,
+                                          String reason) {
+        if (listener == null || (!hdr && !dv)) {
+            return;
+        }
+        runtimeVideoModeNotified = true;
+        try {
+            listener.onRuntimeVideoMode(hdr, dv, outputMode, reason);
+        } catch (Throwable th) {
+            logInfo("echo-mpv-runtime-mode-callback failed reason=" + reason + " err=" + th.getMessage());
+        }
+    }
+
     public interface OnSubtitleTextListener {
         void onSubtitleText(String text);
+    }
+
+    public interface OnRuntimeVideoModeListener {
+        void onRuntimeVideoMode(boolean hdr, boolean dolbyVision, String outputMode, String reason);
     }
 }

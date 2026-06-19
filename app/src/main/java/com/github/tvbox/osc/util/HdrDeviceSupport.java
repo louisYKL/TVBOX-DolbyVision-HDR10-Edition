@@ -8,7 +8,11 @@ import android.media.MediaFormat;
 import android.os.Build;
 import android.view.Display;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -20,6 +24,32 @@ import java.util.Locale;
  * 必须把 DV 映射成 HDR10/HDR10+ 再激发 HDR。
  */
 public final class HdrDeviceSupport {
+    private static final String[] CODEC_XML_DIRS = new String[]{
+            "/odm/etc",
+            "/vendor/etc",
+            "/system/etc"
+    };
+    private static final String[] DOLBY_VISION_CODEC_MARKERS = new String[]{
+            "type=\"video/dolby-vision\"",
+            "type='video/dolby-vision'",
+            "c2.qti.dv.decoder",
+            "omx.dolby",
+            "video/dolby-vision"
+    };
+    private static final String[] HEVC_MAIN10_CODEC_MARKERS = new String[]{
+            "type=\"video/hevc\"",
+            "type='video/hevc'",
+            "hevcprofilemain10",
+            "main10",
+            "hdr10",
+            "hdr10plus"
+    };
+    private static final String[] DOLBY_VISION_DECODER_PROPS = new String[]{
+            "persist.sys.feature.dolby_vision",
+            "persist.sys.feature.dolby_vision_app",
+            "vendor.display.force_dv_support",
+            "ro.vendor.oplus.dolby_vision_dpu"
+    };
 
     private HdrDeviceSupport() {
     }
@@ -35,6 +65,8 @@ public final class HdrDeviceSupport {
         public final float desiredMinLuminance;
         // 解码端（盒子能否硬解）
         public final boolean dolbyVisionDecoder;
+        public final boolean codecListDolbyVisionDecoder;
+        public final boolean declaredDolbyVisionDecoder;
         public final boolean hevcMain10Decoder;
         public final String summary;
 
@@ -48,6 +80,8 @@ public final class HdrDeviceSupport {
                              boolean displayDolbyVision, float desiredMaxLuminance,
                              float desiredMaxAverageLuminance, float desiredMinLuminance,
                              boolean dolbyVisionDecoder,
+                             boolean codecListDolbyVisionDecoder,
+                             boolean declaredDolbyVisionDecoder,
                              boolean hevcMain10Decoder, String summary) {
             this.displayHdr10 = displayHdr10;
             this.displayHdr10Plus = displayHdr10Plus;
@@ -57,6 +91,8 @@ public final class HdrDeviceSupport {
             this.desiredMaxAverageLuminance = desiredMaxAverageLuminance;
             this.desiredMinLuminance = desiredMinLuminance;
             this.dolbyVisionDecoder = dolbyVisionDecoder;
+            this.codecListDolbyVisionDecoder = codecListDolbyVisionDecoder;
+            this.declaredDolbyVisionDecoder = declaredDolbyVisionDecoder;
             this.hevcMain10Decoder = hevcMain10Decoder;
             this.summary = summary;
             this.hdr10 = displayHdr10;
@@ -76,7 +112,12 @@ public final class HdrDeviceSupport {
 
         /** 端到端原生杜比视界：既能解 DV 又能显示 DV。 */
         public boolean supportsNativeDolbyVision() {
-            return dolbyVision;
+            return codecListDolbyVisionDecoder && displayDolbyVision;
+        }
+
+        /** 仅表示系统声明/配置里存在杜比能力，不足以作为原生 DV 路由依据。 */
+        public boolean hasDeclaredDolbyVisionDecoder() {
+            return declaredDolbyVisionDecoder;
         }
 
         /**
@@ -148,15 +189,24 @@ public final class HdrDeviceSupport {
             }
         }
 
-        boolean dolbyVisionDecoder = hasDecoderForType("video/dolby-vision");
-        boolean hevcMain10Decoder = hasHevcMain10Decoder();
+        boolean codecListDolbyVisionDecoder = hasDecoderForType("video/dolby-vision");
+        boolean xmlDolbyVisionDecoder = codecListDolbyVisionDecoder || hasDeclaredCodecMarker(DOLBY_VISION_CODEC_MARKERS);
+        boolean propertyDolbyVisionDecoder = codecListDolbyVisionDecoder || xmlDolbyVisionDecoder || hasTruthySystemProperty(DOLBY_VISION_DECODER_PROPS);
+        boolean dolbyVisionDecoder = codecListDolbyVisionDecoder || xmlDolbyVisionDecoder || propertyDolbyVisionDecoder;
+
+        boolean codecListHevcMain10Decoder = hasHevcMain10Decoder();
+        boolean xmlHevcMain10Decoder = codecListHevcMain10Decoder || hasDeclaredCodecMarker(HEVC_MAIN10_CODEC_MARKERS);
+        boolean hevcMain10Decoder = codecListHevcMain10Decoder || xmlHevcMain10Decoder;
 
         Capabilities result = new Capabilities(displayHdr10, displayHdr10Plus, displayHlg,
                 displayDolbyVision, desiredMaxLuminance, desiredMaxAverageLuminance,
-                desiredMinLuminance, dolbyVisionDecoder, hevcMain10Decoder,
+                desiredMinLuminance, dolbyVisionDecoder, codecListDolbyVisionDecoder,
+                xmlDolbyVisionDecoder || propertyDolbyVisionDecoder, hevcMain10Decoder,
                 buildSummary(displayHdr10, displayHdr10Plus, displayHlg, displayDolbyVision,
                         desiredMaxLuminance, desiredMaxAverageLuminance, desiredMinLuminance,
-                        dolbyVisionDecoder, hevcMain10Decoder));
+                        dolbyVisionDecoder, hevcMain10Decoder,
+                        codecListDolbyVisionDecoder, xmlDolbyVisionDecoder, propertyDolbyVisionDecoder,
+                        codecListHevcMain10Decoder, xmlHevcMain10Decoder));
         sCached = result;
         return result;
     }
@@ -229,11 +279,111 @@ public final class HdrDeviceSupport {
         return false;
     }
 
+    private static boolean hasDeclaredCodecMarker(String[] markers) {
+        if (markers == null || markers.length == 0) {
+            return false;
+        }
+        for (String dirPath : CODEC_XML_DIRS) {
+            File dir = new File(dirPath);
+            File[] files = dir.listFiles((file, name) ->
+                    name != null
+                            && name.toLowerCase(Locale.US).contains("codec")
+                            && name.toLowerCase(Locale.US).endsWith(".xml"));
+            if (files == null || files.length == 0) {
+                continue;
+            }
+            Arrays.sort(files, (left, right) -> left.getName().compareToIgnoreCase(right.getName()));
+            for (File file : files) {
+                if (file == null || !file.isFile()) {
+                    continue;
+                }
+                try {
+                    String content = readFileLowercase(file, 1024 * 1024);
+                    if (content == null || content.isEmpty()) {
+                        continue;
+                    }
+                    for (String marker : markers) {
+                        if (marker != null && content.contains(marker.toLowerCase(Locale.US))) {
+                            return true;
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return false;
+    }
+
+    private static String readFileLowercase(File file, int maxBytes) {
+        if (file == null || !file.isFile() || maxBytes <= 0) {
+            return null;
+        }
+        byte[] data = new byte[Math.max(4096, Math.min(maxBytes, 1024 * 1024))];
+        int total = 0;
+        try (InputStream input = new FileInputStream(file)) {
+            while (total < data.length) {
+                int read = input.read(data, total, data.length - total);
+                if (read <= 0) {
+                    break;
+                }
+                total += read;
+            }
+            if (total <= 0) {
+                return null;
+            }
+            return new String(data, 0, total).toLowerCase(Locale.US);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static boolean hasTruthySystemProperty(String[] keys) {
+        if (keys == null || keys.length == 0) {
+            return false;
+        }
+        for (String key : keys) {
+            String value = readSystemProperty(key);
+            if (isTruthy(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String readSystemProperty(String key) {
+        if (key == null || key.isEmpty()) {
+            return "";
+        }
+        try {
+            Class<?> cls = Class.forName("android.os.SystemProperties");
+            return (String) cls.getMethod("get", String.class, String.class).invoke(null, key, "");
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private static boolean isTruthy(String value) {
+        if (value == null) {
+            return false;
+        }
+        String lower = value.trim().toLowerCase(Locale.US);
+        return "1".equals(lower)
+                || "true".equals(lower)
+                || "yes".equals(lower)
+                || "on".equals(lower)
+                || "enabled".equals(lower);
+    }
+
     private static String buildSummary(boolean displayHdr10, boolean displayHdr10Plus, boolean displayHlg,
                                        boolean displayDolbyVision, float desiredMaxLuminance,
                                        float desiredMaxAverageLuminance, float desiredMinLuminance,
                                        boolean dolbyVisionDecoder,
-                                       boolean hevcMain10Decoder) {
+                                       boolean hevcMain10Decoder,
+                                       boolean codecListDolbyVisionDecoder,
+                                       boolean xmlDolbyVisionDecoder,
+                                       boolean propertyDolbyVisionDecoder,
+                                       boolean codecListHevcMain10Decoder,
+                                       boolean xmlHevcMain10Decoder) {
         List<String> display = new ArrayList<>();
         if (displayDolbyVision) display.add("DV");
         if (displayHdr10Plus) display.add("HDR10+");
@@ -244,10 +394,17 @@ public final class HdrDeviceSupport {
         if (dolbyVisionDecoder) decode.add("DV");
         if (hevcMain10Decoder) decode.add("HEVC10");
         String decodePart = decode.isEmpty() ? "none" : android.text.TextUtils.join("/", decode);
+        List<String> detect = new ArrayList<>();
+        if (codecListDolbyVisionDecoder) detect.add("DV-CODEC");
+        else if (xmlDolbyVisionDecoder) detect.add("DV-XML");
+        else if (propertyDolbyVisionDecoder) detect.add("DV-PROP");
+        if (codecListHevcMain10Decoder) detect.add("HEVC10-CODEC");
+        else if (xmlHevcMain10Decoder) detect.add("HEVC10-XML");
+        String detectPart = detect.isEmpty() ? "" : " SRC=" + android.text.TextUtils.join("/", detect);
         String luminance = "LUM=" + formatLuminance(desiredMaxLuminance)
                 + "/" + formatLuminance(desiredMaxAverageLuminance)
                 + "/" + formatLuminance(desiredMinLuminance);
-        return ("display=" + displayPart + " decode=" + decodePart + " " + luminance).toUpperCase(Locale.US);
+        return ("display=" + displayPart + " decode=" + decodePart + detectPart + " " + luminance).toUpperCase(Locale.US);
     }
 
     private static String formatLuminance(float value) {

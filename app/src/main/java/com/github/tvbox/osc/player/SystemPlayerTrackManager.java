@@ -31,7 +31,8 @@ public final class SystemPlayerTrackManager {
             return data;
         }
         int selectedAudio = mediaPlayer.getSelectedTrack(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO);
-        int selectedSubtitle = mediaPlayer.getSelectedTrack(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT);
+        int selectedTimedText = mediaPlayer.getSelectedTrack(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT);
+        int selectedSubtitle = mediaPlayer.getSelectedTrack(MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE);
         for (int i = 0; i < trackInfos.length; i++) {
             MediaPlayer.TrackInfo info = trackInfos[i];
             if (info == null) {
@@ -49,10 +50,17 @@ public final class SystemPlayerTrackManager {
                 bean.trackId = i;
                 bean.index = i;
                 bean.language = language;
+                bean.renderId = type;
                 bean.name = buildDisplayName(type == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO ? "音轨" : "字幕",
                         type == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO ? data.getAudio().size() + 1 : data.getSubtitle().size() + 1,
                         language, "");
-                bean.selected = i == (type == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO ? selectedAudio : selectedSubtitle);
+                if (type == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) {
+                    bean.selected = i == selectedAudio;
+                } else if (type == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE) {
+                    bean.selected = i == selectedSubtitle;
+                } else {
+                    bean.selected = i == selectedTimedText;
+                }
                 if (type == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) {
                     data.addAudio(bean);
                 } else {
@@ -68,7 +76,41 @@ public final class SystemPlayerTrackManager {
         if (mediaPlayer == null || track == null) {
             return;
         }
+        clearSubtitleSelections(mediaPlayer, track);
         mediaPlayer.selectTrack(track.trackId);
+    }
+
+    public static void clearSubtitleSelections(AndroidMediaPlayer mediaPlayer, @Nullable TrackInfoBean exceptTrack) {
+        if (mediaPlayer == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) {
+            return;
+        }
+        MediaPlayer.TrackInfo[] trackInfos = mediaPlayer.getTrackInfo();
+        if (trackInfos == null) {
+            return;
+        }
+        for (int i = 0; i < trackInfos.length; i++) {
+            MediaPlayer.TrackInfo info = trackInfos[i];
+            if (info == null) {
+                continue;
+            }
+            int type;
+            try {
+                type = info.getTrackType();
+            } catch (Throwable ignored) {
+                continue;
+            }
+            if (type != MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE
+                    && type != MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT) {
+                continue;
+            }
+            if (exceptTrack != null && exceptTrack.trackId == i) {
+                continue;
+            }
+            try {
+                mediaPlayer.deselectTrack(i);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     public static int findPreferredSubtitleTrack(TrackInfo trackInfo) {

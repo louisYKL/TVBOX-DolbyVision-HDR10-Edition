@@ -5,13 +5,13 @@
 > 为电视而做的 TVBox 分支，重点优化系统硬解、HDR 激发、杜比视界兼容链路与大屏交互体验。
 
 <p>
-  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.1.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1">下载 0.1</a> ·
+  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.1">下载 0.1.1</a> ·
   <a href="README.en.md">English</a>
 </p>
 
@@ -25,9 +25,9 @@
 
 | 文件 | 适用设备 | 说明 |
 | --- | --- | --- |
-| `TVBox_v0.1_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本 |
-| `TVBox_v0.1_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本 |
-| `TVBox_v0.1_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本 |
+| `TVBox_v0.1.1_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本 |
+| `TVBox_v0.1.1_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本 |
+| `TVBox_v0.1.1_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本 |
 
 ## 项目观感
 
@@ -56,13 +56,21 @@
 - 保持音频直通、字幕、全屏控制、遥控器焦点和返回逻辑在电视场景下更连贯。
 - 把项目拆成更明确的 32 位电视版、64 位 Android 版和海信 32 位版，便于后续长期维护。
 
-## 0.1 当前版本包含
+## 0.1.1 当前版本包含
 
 | 版本 | ABI | 面向设备 | 说明 |
 | --- | --- | --- | --- |
 | `java32` | `armeabi-v7a` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本 |
 | `java64` | `arm64-v8a` | 64 位 Android 手机 / 平板 / 盒子 | 独立 64 位版本 |
 | `hisense` | `armeabi-v7a` | 海信 32 位电视 | 独立海信专用版本 |
+
+## 0.1.1 这次重点修了什么
+
+- 收紧 HDR / Dolby Vision 路由判断：优先依据真实视频流探测结果，不再让本地代理 MKV 在探测超时时轻易掉成 SDR 路径。
+- 修正本地代理快速探测：对本地 `proxy/play` 的 MKV / HDR / DV 流优先走字节级预探测，再决定系统链或兼容链。
+- 修复播放页与全屏之间的进度/历史记录串扰：统一 `sourceKey`、`progressKey` 生成逻辑，避免出现 `key=null`、重播和回放错位。
+- 补齐 `PlayActivity` 的代际隔离：WebView 嗅探、m3u8 回调、切源与回放链路不再把旧请求回灌到当前播放状态。
+- 继续维持系统播放器优先、MPV 兼容链兜底的总体策略，为后续 32 位 HDR 激活和 64 位原生 HDR/DV 路由继续收口。
 
 ## 核心特性
 
@@ -175,4 +183,5 @@ $env:GRADLE_USER_HOME='E:\apk\tvbox\TVBoxOS-main\_runtime\gradle-home'
 ## Roadmap
 
 - `0.1`：完成 32 位电视版、64 位 Android 版、海信 32 位版的版本收口。
+- `0.1.1`：继续修正 HDR / DV 探测、播放器路由、播放进度保存与切源状态隔离。
 - 后续：Windows 便携版、更多设备专项分支、GitHub Release 发布与维护流程。
