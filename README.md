@@ -1,8 +1,40 @@
+<div align="center">
+
 # TV BOX-杜比视界/HDR10支持版
 
 > 为电视而做的 TVBox 分支，重点优化系统硬解、HDR 激发、杜比视界兼容链路与大屏交互体验。
 
-`Version 0.1` ・ [English](README.en.md)
+<p>
+  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
+  <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
+</p>
+
+<p>
+  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1">下载 0.1</a> ·
+  <a href="README.en.md">English</a>
+</p>
+
+</div>
+
+## 一句话介绍
+
+这是一个面向真实客厅场景的 TVBox 分支：能走系统硬解的内容尽量走系统硬解，系统链路不稳的 MKV / WebM / Dolby Vision 场景则切到内置兼容链路，让 HDR、字幕、音频直通和遥控器交互尽可能同时成立。
+
+## 下载版本
+
+| 文件 | 适用设备 | 说明 |
+| --- | --- | --- |
+| `TVBox_v0.1_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本 |
+| `TVBox_v0.1_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本 |
+| `TVBox_v0.1_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本 |
+
+## 项目观感
+
+<p align="center">
+  <img src="1.jpg" alt="TVBOX preview 1" width="48%">
+  <img src="2.webp" alt="TVBOX preview 2" width="48%">
+</p>
 
 ## 项目定位
 
@@ -24,7 +56,7 @@
 - 保持音频直通、字幕、全屏控制、遥控器焦点和返回逻辑在电视场景下更连贯。
 - 把项目拆成更明确的 32 位电视版、64 位 Android 版和海信 32 位版，便于后续长期维护。
 
-## 0.1 版本包含
+## 0.1 当前版本包含
 
 | 版本 | ABI | 面向设备 | 说明 |
 | --- | --- | --- | --- |
@@ -61,6 +93,17 @@
 
 - 以遥控器焦点、全屏控制层、进度操作和返回路径为中心做电视场景适配。
 - UI 使用深色基底，并保留液态玻璃风格组件和 tvOS 风格视觉方向的基础能力。
+
+## 为什么单独做这个分支
+
+很多 TVBox 分支在“内容源”层面做得很多，但在电视播放链路本身上往往比较粗糙：
+
+- HDR 判断依赖标题关键字。
+- MKV / WebM 直接交给系统播放器，然后在部分电视上失败。
+- 音频直通、字幕、全屏控制层和遥控器焦点互相打架。
+- 32 位电视、64 位 Android、品牌机型差异都混在一个包里维护。
+
+这个仓库的目标不是堆更多功能按钮，而是把播放链路、设备能力判断和大屏体验做扎实。
 
 ## 播放架构概览
 
@@ -109,6 +152,12 @@ $env:GRADLE_USER_HOME='E:\apk\tvbox\TVBoxOS-main\_runtime\gradle-home'
 - `TVBox_debug-java32.apk`
 - `TVBox_debug-java64.apk`
 - `TVBox_debug-hisense.apk`
+
+## 适合谁
+
+- 想要在 Android TV / 智慧屏上尽量保留系统硬解与 HDR 激发的人。
+- 需要单独维护 32 位电视版、64 位 Android 版和品牌专项版的人。
+- 想基于 TVBox 做更认真播放器链路改造，而不是只改壳或只换源的人。
 
 ## 说明
 

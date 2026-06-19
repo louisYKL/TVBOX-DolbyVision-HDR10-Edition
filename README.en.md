@@ -1,8 +1,40 @@
+<div align="center">
+
 # TV BOX Dolby Vision / HDR10 Support Edition
 
 > A TV-first TVBox branch focused on native hardware playback, HDR activation, Dolby Vision fallback routing, and living-room friendly interaction.
 
-`Version 0.1` ・ [简体中文](README.md)
+<p>
+  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
+  <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
+</p>
+
+<p>
+  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1">Download 0.1</a> ·
+  <a href="README.md">简体中文</a>
+</p>
+
+</div>
+
+## In one line
+
+This branch is built for real living-room playback: keep native system decoding whenever the device can do it well, route unstable MKV / WebM / Dolby Vision cases to the built-in compatibility path, and keep HDR, subtitles, audio passthrough, and remote interaction working together.
+
+## Downloads
+
+| File | Target devices | Notes |
+| --- | --- | --- |
+| `TVBox_v0.1_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build |
+| `TVBox_v0.1_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
+| `TVBox_v0.1_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build |
+
+## Preview
+
+<p align="center">
+  <img src="1.jpg" alt="TVBOX preview 1" width="48%">
+  <img src="2.webp" alt="TVBOX preview 2" width="48%">
+</p>
 
 ## What this project is
 
@@ -62,6 +94,17 @@ The core principle is simple:
 - The UI and control flow are tuned for remote navigation, fullscreen control layers, seek behavior, and predictable back handling.
 - The visual direction keeps a dark base with liquid-glass style components and a tvOS-inspired UI foundation.
 
+## Why this branch exists
+
+Many TVBox forks put most of the work into source integration, but the playback chain itself is often treated as an afterthought:
+
+- HDR detection is guessed from titles.
+- MKV / WebM is forced into the native player even when vendor firmware cannot handle it.
+- Audio passthrough, subtitles, fullscreen controls, and remote focus fight each other.
+- 32-bit TV, 64-bit Android, and vendor-specific device differences are all mixed into one maintenance path.
+
+This repository is meant to make the playback stack and TV experience more deliberate, not just more crowded.
+
 ## Playback architecture
 
 ```text
@@ -107,6 +150,12 @@ The repository includes a basic Android build workflow for:
 - `TVBox_debug-java32.apk`
 - `TVBox_debug-java64.apk`
 - `TVBox_debug-hisense.apk`
+
+## Who this is for
+
+- Anyone who wants to preserve native hardware decoding and HDR activation on Android TV or smart-screen devices.
+- Anyone who needs separate delivery tracks for 32-bit TV, 64-bit Android, and vendor-specific builds.
+- Anyone who wants to treat the TV playback stack as a product surface, not just a transport layer for content sources.
 
 ## Notes
 
