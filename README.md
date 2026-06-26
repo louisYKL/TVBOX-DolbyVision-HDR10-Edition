@@ -6,23 +6,23 @@
 重点不是堆功能按钮，而是把系统硬解、HDR、Dolby Vision、字幕、音轨、快进和遥控器交互这条链路做扎实。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.7"><img alt="Release" src="https://img.shields.io/badge/release-v0.1.7-111111?style=for-the-badge"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.8"><img alt="Release" src="https://img.shields.io/badge/release-v0.1.8-111111?style=for-the-badge"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%7C%20Android-black?style=for-the-badge">
   <img alt="Variants" src="https://img.shields.io/badge/variants-java32%20%7C%20java64%20%7C%20hisense32-black?style=for-the-badge">
   <img alt="Playback" src="https://img.shields.io/badge/playback-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-black?style=for-the-badge">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.7">下载 v0.1.7</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.8">下载 v0.1.8</a> ·
   <a href="CHANGELOG.md">更新记录</a> ·
-  <a href="RELEASE_NOTES_v0.1.7.md">详细发布说明</a>
+  <a href="RELEASE_NOTES_v0.1.8.md">详细发布说明</a>
 </p>
 
 </div>
 
 ## 最新版本
 
-`0.1.7` 重点修复了两类真实使用问题：
+`0.1.8` 重点修复了两类真实使用问题：
 
 - 点播切源、快进过程里的卡顿、无限加载和卡死
 - `java64` 直播黑屏有声音的问题
@@ -97,15 +97,15 @@
 
 ## Release 交付
 
-`v0.1.7` release 提供三端 APK 与配套发布资料：
+`v0.1.8` release 提供三端 APK 与配套发布资料：
 
 | 文件 | 说明 |
 | --- | --- |
-| `TVBox_v0.1.7_java32.apk` | 32 位电视主线安装包 |
-| `TVBox_v0.1.7_java64.apk` | 64 位 Android 安装包 |
-| `TVBox_v0.1.7_hisense32.apk` | 海信 32 位专项安装包 |
-| `TVBox_v0.1.7_RELEASE_NOTES.md` | 详细发布说明 |
-| `TVBox_v0.1.7_SHA256SUMS.txt` | 产物校验信息 |
+| `TVBox_v0.1.8_java32.apk` | 32 位电视主线安装包 |
+| `TVBox_v0.1.8_java64.apk` | 64 位 Android 安装包 |
+| `TVBox_v0.1.8_hisense32.apk` | 海信 32 位专项安装包 |
+| `TVBox_v0.1.8_RELEASE_NOTES.md` | 详细发布说明 |
+| `TVBox_v0.1.8_SHA256SUMS.txt` | 产物校验信息 |
 
 ## 本地构建
 
