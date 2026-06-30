@@ -160,6 +160,16 @@ public final class VideoStreamProbe {
                 return fastPreflight;
             }
         }
+        // For tv32 local-proxy URLs without a .mkv suffix, peek at the byte header first.
+        // If the content is actually a Matroska container (proxy serving MKV as .mp4), use the
+        // fast preflight path instead of the slow MediaExtractor probe that stalls 20+ seconds.
+        if (ScreenUtils.isTv32Device(context) && isLocalProxyVideoUrl(url)) {
+            Result byteSniff = probeTv32LocalProxyMatroskaPlaybackPreflight(url, headers);
+            if (byteSniff != null && byteSniff.probed && byteSniff.isMatroska) {
+                cacheProbeResult(context, url, cacheKey, byteSniff);
+                return byteSniff;
+            }
+        }
         return probeWithTimeout(context, url, headers, timeoutMs);
     }
 
@@ -206,6 +216,15 @@ public final class VideoStreamProbe {
                 return copyResult(byteResult, true,
                         byteResult.isMatroska || containsMatroskaMarkerInUrl(url),
                         "local-proxy-byte-fast:" + byteResult.summary);
+            }
+            // Byte header says matroska even though the URL has no .mkv suffix (e.g. proxy
+            // rewraps MKV as .mp4). Use the tv32 fast path to avoid MediaExtractor on 32-bit,
+            // which stalls for 20+ seconds on large MKV files served through the local proxy.
+            if (byteResult != null && byteResult.isMatroska && ScreenUtils.isTv32Device(context)) {
+                Result safeResult = probeTv32LocalProxyMatroskaSafe(context, url, headers);
+                if (safeResult != null) {
+                    return safeResult;
+                }
             }
             Result extractorResult = probeExtractorResult(context, url, headers);
             return mergeLocalProxyProbeResult(url, byteResult, extractorResult);

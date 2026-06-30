@@ -33,10 +33,9 @@ public class MyVideoView extends VideoView {
 
     public void persistProgressNow() {
         long resolvedPosition = resolvePersistablePosition();
-        if (resolvedPosition > 0L) {
-            mCurrentPosition = resolvedPosition;
+        if (resolvedPosition >= 0L) {
+            saveProgress(resolvedPosition);
         }
-        saveProgress();
     }
 
     public long getCachedProgressPosition() {
@@ -44,29 +43,21 @@ public class MyVideoView extends VideoView {
     }
 
     public long resolvePersistablePosition() {
-        long cachedPosition = Math.max(0L, mCurrentPosition);
         if (mMediaPlayer == null) {
-            return cachedPosition;
+            return resolvePersistableProgressPosition();
         }
         if (mMediaPlayer instanceof AndroidMediaPlayer
                 && ((AndroidMediaPlayer) mMediaPlayer).isPositionQueryUnstable()) {
-            return cachedPosition;
+            return resolvePersistableProgressPosition();
         }
         try {
             long livePosition = getCurrentPosition();
             if (livePosition > 0L) {
-                return livePosition;
+                mCurrentPosition = livePosition;
             }
         } catch (Throwable ignored) {
         }
-        try {
-            long livePosition = mMediaPlayer.getCurrentPosition();
-            if (livePosition > 0L) {
-                return livePosition;
-            }
-        } catch (Throwable ignored) {
-        }
-        return cachedPosition;
+        return resolvePersistableProgressPosition();
     }
 
     public boolean isPlaybackActive() {

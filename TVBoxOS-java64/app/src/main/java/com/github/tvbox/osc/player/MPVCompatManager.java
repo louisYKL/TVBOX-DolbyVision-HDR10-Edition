@@ -46,6 +46,7 @@ public final class MPVCompatManager {
     }
     private static volatile boolean tv32AudioSafeMode = false;
     private static volatile boolean currentFileAllowsPassthrough = false;
+    private static volatile boolean currentFileForcesTv32LocalProxyPcm = false;
     private static final String VO_GPU = "gpu";
     private static final String VO_MEDIACODEC_EMBED = "mediacodec_embed";
 
@@ -158,6 +159,8 @@ public final class MPVCompatManager {
     }
 
     public static void resetPlaybackState() {
+        currentPlayIsDolbyVision = false;
+        currentFileForcesTv32LocalProxyPcm = false;
         synchronized (MPVCompatManager.class) {
             if (!INITIALIZED.get() || !CREATED.get()) {
                 return;
@@ -191,6 +194,7 @@ public final class MPVCompatManager {
             }
             resetPlaybackState();
             currentPlayIsDolbyVision = false;
+            currentFileForcesTv32LocalProxyPcm = false;
             try {
                 MPVLib.destroy();
             } catch (Throwable th) {
@@ -252,6 +256,14 @@ public final class MPVCompatManager {
         }
     }
 
+    public static void setCurrentFileForcesTv32LocalProxyPcm(boolean forced) {
+        currentFileForcesTv32LocalProxyPcm = forced;
+        LOG.i("echo-mpv-audio tv32LocalProxyPcm=" + forced);
+        if (INITIALIZED.get() && CREATED.get()) {
+            applyAudioOutputOptions();
+        }
+    }
+
     public static void applyPlaybackModeOptions() {
         boolean hdr = isHdrOutputMode();
         boolean mapping = isMappingMode();
@@ -270,6 +282,7 @@ public final class MPVCompatManager {
             setRuntimeString("opengl-es", "yes");
             setRuntimeString("fbo-format", resolveFboFormat(hdr));
         }
+        setRuntimeString("video-sync", currentFileForcesTv32LocalProxyPcm ? "display-desync" : "audio");
         setRuntimeString("framedrop", "vo");
         setRuntimeString("video-output-levels", "limited");
         applySubtitleOutputOptions();
@@ -326,9 +339,19 @@ public final class MPVCompatManager {
             appendFileOption(builder, "opengl-es", "yes");
             appendFileOption(builder, "fbo-format", resolveFboFormat(hdr));
         }
-        appendFileOption(builder, "video-sync", "audio");
+        appendFileOption(builder, "video-sync",
+                currentFileForcesTv32LocalProxyPcm ? "display-desync" : "audio");
         appendFileOption(builder, "framedrop", "vo");
         appendFileOption(builder, "interpolation", "no");
+        if (currentFileForcesTv32LocalProxyPcm) {
+            appendFileOption(builder, "ao", "audiotrack");
+            appendFileOption(builder, "audio-spdif", "");
+            appendFileOption(builder, "audio-exclusive", "no");
+            appendFileOption(builder, "audio-channels", "stereo");
+            appendFileOption(builder, "audio-normalize-downmix", "yes");
+            appendFileOption(builder, "audio-buffer", "1.0");
+            appendFileOption(builder, "audio-stream-silence", "yes");
+        }
         // slang contains commas; passing it through loadfile's comma-separated
         // option string makes mpv treat later language tokens as option names.
         // Keep it as a runtime property via applySubtitleOutputOptions().
@@ -373,6 +396,9 @@ public final class MPVCompatManager {
         if (java64PhoneAudioSafeMode) {
             passthrough = false;
         }
+        if (currentFileForcesTv32LocalProxyPcm) {
+            passthrough = false;
+        }
         boolean effectivePassthrough = passthrough
                 && currentFileAllowsPassthrough
                 && !java64PhoneAudioSafeMode;
@@ -405,12 +431,14 @@ public final class MPVCompatManager {
             // tv32 must only passthrough when probe already confirmed a supported
             // compressed track. If probe metadata is incomplete, stay on PCM decode
             // to avoid the repeated "video ok but no sound" regressions.
-            setRuntimeString("audio-channels", "auto");
+            setRuntimeString("audio-channels", currentFileForcesTv32LocalProxyPcm ? "stereo" : "auto");
             setRuntimeString("ad", "auto");
             setRuntimeString("audio-file-auto", "all");
             setRuntimeString("audio-exclusive", effectivePassthrough ? "yes" : "no");
             setRuntimeString("audio-spdif", effectivePassthrough ? spdifCodecs : "");
             setRuntimeString("audio-normalize-downmix", effectivePassthrough ? "no" : "yes");
+            setRuntimeString("audio-buffer", currentFileForcesTv32LocalProxyPcm ? "1.0" : "0.2");
+            setRuntimeString("audio-stream-silence", currentFileForcesTv32LocalProxyPcm ? "yes" : "no");
             setRuntimeString("audio-fallback-to-null", "no");
             // 保持容器默认音轨，用户手动切换时再改。
             setRuntimeString("alang", "");
@@ -426,9 +454,10 @@ public final class MPVCompatManager {
                 + " fileAllowed=" + currentFileAllowsPassthrough
                 + " volume=100 safePhoneMode=" + java64PhoneAudioSafeMode
                 + " safeTv32Mode=" + tv32AudioSafeMode
+                + " tv32LocalProxyPcm=" + currentFileForcesTv32LocalProxyPcm
                 + " exclusive=" + (effectivePassthrough && !java64PhoneAudioSafeMode)
                 + " spdif=" + (effectivePassthrough ? spdifCodecs : "")
-                + " channels=auto");
+                + " channels=" + (currentFileForcesTv32LocalProxyPcm ? "stereo" : "auto"));
     }
 
     private static boolean isJava64Phone(@NonNull Context context) {

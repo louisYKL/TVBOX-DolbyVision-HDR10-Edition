@@ -164,6 +164,29 @@ public final class VideoStreamProbe {
     }
 
     @Nullable
+    public static Result probeFastLocalProxyPlaybackPreflight(Context context,
+                                                              String url,
+                                                              Map<String, String> headers) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN
+                || context == null
+                || TextUtils.isEmpty(url)) {
+            return null;
+        }
+        url = PlaybackUrlNormalizer.normalizeHttpUrl(unwrapAppStreamProxy(url));
+        if (!ScreenUtils.isTv32Device(context) || !isLocalProxyVideoUrl(url)) {
+            return null;
+        }
+        Result byteResult = probeContainerBytes(url, headers, "tv32-preflight-byte", LOCAL_PROXY_PROBE_BYTES, false);
+        if (byteResult == null || !byteResult.probed) {
+            return byteResult;
+        }
+        return copyResult(byteResult,
+                true,
+                byteResult.isMatroska || containsMatroskaMarkerInUrl(url),
+                "tv32-preflight:" + byteResult.summary);
+    }
+
+    @Nullable
     private static Result tryTv32LocalProxyMatroskaFastProbe(Context context,
                                                              String url,
                                                              Map<String, String> headers,

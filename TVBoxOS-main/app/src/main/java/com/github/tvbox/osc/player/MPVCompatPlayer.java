@@ -16,6 +16,7 @@ import androidx.annotation.Nullable;
 import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
+import com.github.tvbox.osc.util.ScreenUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -172,6 +173,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         PlaybackUrlNormalizer.UrlWithHeaders parsed = PlaybackUrlNormalizer.splitUrlAndHeaders(path, headers);
         dataSource = PlaybackUrlNormalizer.normalizeHttpUrl(parsed.url);
         requestHeaders = parsed.headers == null ? new HashMap<String, String>() : new HashMap<>(parsed.headers);
+        MPVCompatManager.setCurrentFileForcesTv32LocalProxyPcm(isTv32LocalProxyPlayback(dataSource));
         MPVCompatManager.setCurrentFileAllowsPassthrough(isAudioPassthroughAllowedForCurrentFile(requestHeaders));
         fileLoadRequested = false;
         prepared = false;
@@ -198,6 +200,10 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
     }
 
     private boolean isAudioPassthroughAllowedForCurrentFile(@Nullable Map<String, String> headers) {
+        if (isTv32LocalProxyPlayback(dataSource)) {
+            logInfo("echo-mpv-audio force-pcm tv32-local-proxy url=" + safeUrlForLog(dataSource));
+            return false;
+        }
         if (headers == null || headers.isEmpty()) {
             return false;
         }
@@ -207,6 +213,43 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             return "1".equals(allowed);
         }
         return false;
+    }
+
+    private boolean isTv32LocalProxyPlayback(@Nullable String url) {
+        if (TextUtils.isEmpty(url) || !ScreenUtils.isTv32Device(appContext)) {
+            return false;
+        }
+        String lower = decodeUrlForAudioRoute(url).toLowerCase(Locale.US);
+        boolean localHost = lower.startsWith("http://127.0.0.1")
+                || lower.startsWith("https://127.0.0.1")
+                || lower.startsWith("http://localhost")
+                || lower.startsWith("https://localhost");
+        return localHost
+                && lower.contains("/proxy/play/")
+                && !PlaybackUrlNormalizer.isHlsLike(lower);
+    }
+
+    private String decodeUrlForAudioRoute(String value) {
+        String decoded = value;
+        for (int i = 0; i < 2; i++) {
+            try {
+                String next = java.net.URLDecoder.decode(decoded, "UTF-8");
+                if (TextUtils.isEmpty(next) || TextUtils.equals(next, decoded)) {
+                    break;
+                }
+                decoded = next;
+            } catch (Throwable ignored) {
+                break;
+            }
+        }
+        return decoded;
+    }
+
+    private String safeUrlForLog(@Nullable String url) {
+        if (TextUtils.isEmpty(url)) {
+            return "";
+        }
+        return url.length() > 220 ? url.substring(0, 220) + "..." : url;
     }
 
     private String getHeaderValue(@Nullable Map<String, String> headers, String key) {
@@ -867,7 +910,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         }
         parseSubtitleTrackLog(prefix, text);
         String lower = text.toLowerCase(Locale.US);
-        if (lower.contains("error") || lower.contains("failed")) {
+        if (lower.contains("error") || lower.contains("failed") || lower.contains("underrun")) {
             Log.w(TAG, prefix + ": " + text);
             LOG.i("echo-mpv-log " + prefix + ": " + text);
         }

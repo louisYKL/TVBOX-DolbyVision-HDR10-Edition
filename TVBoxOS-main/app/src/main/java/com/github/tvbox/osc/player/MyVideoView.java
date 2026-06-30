@@ -34,7 +34,6 @@ public class MyVideoView extends VideoView {
     public void persistProgressNow() {
         long resolvedPosition = resolvePersistablePosition();
         if (resolvedPosition >= 0L) {
-            mCurrentPosition = resolvedPosition;
             saveProgress(resolvedPosition);
         }
     }

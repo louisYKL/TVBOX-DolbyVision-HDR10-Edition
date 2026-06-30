@@ -195,6 +195,41 @@ public final class DolbyVisionPlaybackRouter {
                     PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT, reason);
         }
 
+        if (shouldRouteTv32LocalProxyHevcToSystemHdr(context, url, streamProbe, extraHints)
+                && caps.displaySupportsHdr()
+                && caps.hevcMain10Decoder) {
+            LOG.i("echo-dolby-route route=tv32-local-proxy-hevc-system-hdr player="
+                    + PlayerHelper.PLAYER_TYPE_SYSTEM
+                    + " caps=" + caps.summary
+                    + " videoMime=" + streamProbe.primaryVideoMime
+                    + " audioMime=" + streamProbe.primaryAudioMime
+                    + " hevc=" + streamProbe.hasHevcVideo
+                    + " hdr10=" + streamProbe.hasHdr10
+                    + " hdr10Plus=" + streamProbe.hasHdr10Plus
+                    + " probe=" + streamProbe.summary
+                    + " url=" + safeSnippet(url));
+            return new Decision(false, false, false, false, false, "", true,
+                    PlayerHelper.PLAYER_TYPE_SYSTEM,
+                    "tv32-local-proxy-hevc-system-hdr");
+        }
+
+        // Huawei tv32 firmware can route local-proxy VOD through NuPlayer audio offload even
+        // for AAC/MP4-like SDR files, causing silent audio plus severe video underruns. Keep
+        // HDR/DV on the existing native routes, but decode SDR local-proxy VOD in MPV so audio
+        // is rendered as PCM instead of broken firmware passthrough/offload.
+        if (shouldRouteTv32LocalProxySdrVodToCompat(context, url, streamProbe, extraHints)) {
+            LOG.i("echo-dolby-route route=tv32-local-proxy-sdr-compat player="
+                    + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
+                    + " caps=" + caps.summary
+                    + " audioMime=" + streamProbe.primaryAudioMime
+                    + " matroska=" + matroskaLike
+                    + " probe=" + streamProbe.summary
+                    + " url=" + safeSnippet(url));
+            return new Decision(false, true, false, true, false, "sdr", false,
+                    PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT,
+                    "tv32-local-proxy-sdr-audio-safe");
+        }
+
         // 路由3：普通 SDR/HDR10/HDR10+ 且容器系统播放器能打开（MP4/TS）→ 系统播放器原生硬解 + 原生 HDR。
         if (systemCanOpenContainer) {
             LOG.i("echo-dolby-route route=system-native player=" + nativeRequestedPlayerType
@@ -235,6 +270,105 @@ public final class DolbyVisionPlaybackRouter {
                 mkvPreferHdr ? "base-hdr" : "sdr", mkvPreferHdr,
                 PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT,
                 mkvPreferHdr ? "matroska-compat-hdr" : "matroska-compat-sdr");
+    }
+
+    private static boolean shouldRouteTv32LocalProxyHevcToSystemHdr(Context context,
+                                                                     String url,
+                                                                     VideoStreamProbe.Result streamProbe,
+                                                                     String... extraHints) {
+        if (context == null || !ScreenUtils.isTv32Device(context) || streamProbe == null) {
+            return false;
+        }
+        if (isHlsLike(url) || containsHlsLike(extraHints)) {
+            return false;
+        }
+        if (!isLocalProxyVodLike(url) && !containsLocalProxyVodLike(extraHints)) {
+            return false;
+        }
+        if (streamProbe.hasHdr10 || streamProbe.hasHdr10Plus) {
+            return true;
+        }
+        return streamProbe.hasHevcVideo && streamProbe.hasImmersiveOrCompressedAudio();
+    }
+
+    private static boolean shouldRouteTv32LocalProxySdrVodToCompat(Context context,
+                                                                    String url,
+                                                                    VideoStreamProbe.Result streamProbe,
+                                                                    String... extraHints) {
+        if (context == null || !ScreenUtils.isTv32Device(context) || streamProbe == null) {
+            return false;
+        }
+        if (streamProbe.hasDolbyVision || streamProbe.hasHdr10 || streamProbe.hasHdr10Plus) {
+            return false;
+        }
+        if (isHlsLike(url) || containsHlsLike(extraHints)) {
+            return false;
+        }
+        return isLocalProxyVodLike(url) || containsLocalProxyVodLike(extraHints);
+    }
+
+    private static boolean containsLocalProxyVodLike(String... values) {
+        if (values == null) {
+            return false;
+        }
+        for (String value : values) {
+            if (isLocalProxyVodLike(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsHlsLike(String... values) {
+        if (values == null) {
+            return false;
+        }
+        for (String value : values) {
+            if (isHlsLike(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isLocalProxyVodLike(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        String lower = decodeForRoute(value).toLowerCase(Locale.US);
+        boolean local = lower.startsWith("http://127.0.0.1")
+                || lower.startsWith("https://127.0.0.1")
+                || lower.startsWith("http://localhost")
+                || lower.startsWith("https://localhost");
+        return local && lower.contains("/proxy/play/") && !isHlsLike(lower);
+    }
+
+    private static boolean isHlsLike(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        String lower = decodeForRoute(value).toLowerCase(Locale.US);
+        return lower.contains(".m3u8")
+                || lower.contains("type=hls")
+                || lower.contains("format=hls")
+                || lower.contains("/m3u8")
+                || lower.contains("index.m3u");
+    }
+
+    private static String decodeForRoute(String value) {
+        String decoded = value;
+        for (int i = 0; i < 2; i++) {
+            try {
+                String next = java.net.URLDecoder.decode(decoded, "UTF-8");
+                if (next == null || next.equals(decoded)) {
+                    break;
+                }
+                decoded = next;
+            } catch (Throwable ignored) {
+                break;
+            }
+        }
+        return decoded;
     }
 
     private static boolean isMatroskaLike(String url, String... extraHints) {

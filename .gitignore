@@ -16,3 +16,4 @@
 
 # Local release staging
 artifacts/
+release/*-github-assets/

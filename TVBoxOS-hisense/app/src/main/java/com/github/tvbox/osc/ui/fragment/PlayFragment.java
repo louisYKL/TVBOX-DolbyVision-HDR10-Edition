@@ -74,7 +74,9 @@ import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
+import com.github.tvbox.osc.util.PlayerCapability;
 import com.github.tvbox.osc.util.PlayerHelper;
+import com.github.tvbox.osc.util.ScreenUtils;
 import com.github.tvbox.osc.util.SubtitleHelper;
 import com.github.tvbox.osc.util.VideoStreamProbe;
 import com.github.tvbox.osc.util.VideoParseRuler;
@@ -635,14 +637,34 @@ public class PlayFragment extends BaseLazyFragment {
                         syncHdrWindowForCurrentPlayback("fragment-state-" + playState);
                         scheduleSubtitleInitRetry(currentPlayGeneration(), 1);
                     }
+                } else if (playState == VideoView.STATE_PAUSED
+                        || playState == VideoView.STATE_PLAYBACK_COMPLETED) {
+                    // A user pause (or natural completion) is not a stall. Disarm any buffer-stall
+                    // safety-net timeout so it can't fire a spurious "播放超时" while legitimately
+                    // paused/finished. Buffering will re-arm it if it resumes and stalls again.
+                    cancelPlayTimeout();
+                    hideTipSafe();
+                } else if (playState == VideoView.STATE_ERROR) {
+                    // Player hit an error. Disarm the play/buffer-stall timeout immediately so it
+                    // cannot fire a spurious "播放超时" on top of the error UI that VodController's
+                    // errReplay() already shows (e.g. the 120s proxy timeout that would otherwise
+                    // fire long after the error is already displayed to the user).
+                    cancelPlayTimeout();
                 }
                 if (playState == VideoView.STATE_PREPARING && !playbackRenderedFirstFrame) {
                     setTip("正在准备播放", true, false);
                 }
                 if (playState == VideoView.STATE_BUFFERING) {
                     if (playbackRenderedFirstFrame) {
-                        cancelPlayTimeout();
+                        // Playback already started, so don't nag the user with a spinner for
+                        // a transient mid-playback re-buffer (common right after a seek). But we
+                        // MUST keep a safety-net timeout armed: on 32-bit TV with large MKV the
+                        // MediaPlayer can stall permanently in BUFFERING after multiple seeks and
+                        // never emit PLAYING/BUFFERED again, which previously froze the player with
+                        // no recovery path. Arm the buffer-stall timeout so a stuck buffer recovers
+                        // via errorWithRetry; it is cancelled the moment STATE_PLAYING/BUFFERED returns.
                         hideTipSafe();
+                        startPlayTimeout(currentPlaybackUrl, BUFFER_STALL_TIMEOUT_MS, "buffer-stall-post-render");
                         return;
                     }
                     setTip("正在缓冲视频", true, false);
@@ -1258,6 +1280,9 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     void errorWithRetry(String err, boolean finish) {
+        if (!finish && tryDolbyVisionFallback()) {
+            return;
+        }
         if (!isAdded()) return;
         requireActivity().runOnUiThread(new Runnable() {
             @Override
@@ -1882,14 +1907,43 @@ public class PlayFragment extends BaseLazyFragment {
         if (probe.hasHdr10Plus) {
             headers.put("X-TVBox-Probe-Hdr10Plus", "1");
         }
+        if (shouldForceTv32SystemSafePcm(playbackUrl, probe)) {
+            headers.put("X-TVBox-Probe-Tv32SafePcm", "1");
+        }
     }
 
     private boolean shouldCreateInternalPlaybackHeaders(String playbackUrl, VideoStreamProbe.Result probe) {
         return probe != null && (probe.isMatroska
                 || probe.hasDolbyVision
                 || probe.hasHdr10
-                || probe.hasHdr10Plus)
+                || probe.hasHdr10Plus
+                || shouldForceTv32SystemSafePcm(playbackUrl, probe))
                 || isMatroskaPlaybackUrl(playbackUrl);
+    }
+
+    private boolean shouldForceTv32SystemSafePcm(String playbackUrl, VideoStreamProbe.Result probe) {
+        if (mContext == null || probe == null || !ScreenUtils.isTv32Device(mContext)) {
+            return false;
+        }
+        if (!isLocalProxyPlayUrl(playbackUrl) || PlaybackUrlNormalizer.isHlsLike(playbackUrl)) {
+            return false;
+        }
+        if (probe.hasDolbyVision || probe.hasHdr10 || probe.hasHdr10Plus) {
+            return true;
+        }
+        return probe.hasHevcVideo && probe.hasImmersiveOrCompressedAudio();
+    }
+
+    private boolean isLocalProxyPlayUrl(String playbackUrl) {
+        if (TextUtils.isEmpty(playbackUrl)) {
+            return false;
+        }
+        String lower = playbackUrl.toLowerCase(Locale.US);
+        boolean localHost = lower.startsWith("http://127.0.0.1")
+                || lower.startsWith("https://127.0.0.1")
+                || lower.startsWith("http://localhost")
+                || lower.startsWith("https://localhost");
+        return localHost && lower.contains("/proxy/play/");
     }
 
     private boolean isMatroskaPlaybackUrl(String playbackUrl) {
@@ -1907,10 +1961,30 @@ public class PlayFragment extends BaseLazyFragment {
         if (!Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false)) {
             return false;
         }
-        if (probe.hasTrueHdAudio || probe.hasAtmosLikeAudio) {
+        if (!hasPassthroughAudio(probe)) {
             return false;
         }
-        return probe.hasAc3Audio || probe.hasEac3Audio || probe.hasDtsAudio;
+        if (probe.hasTrueHdAudio || probe.hasAtmosLikeAudio) {
+            LOG.i("echo-audio-passthrough blocked lossless-or-atmos audioMime=" + probe.primaryAudioMime);
+            return false;
+        }
+        boolean supported = PlayerCapability.supportsAudioPassthrough(probe);
+        if (!supported) {
+            LOG.i("echo-audio-passthrough blocked unsupported-output audioMime=" + probe.primaryAudioMime
+                    + " ac3=" + probe.hasAc3Audio
+                    + " eac3=" + probe.hasEac3Audio
+                    + " dts=" + probe.hasDtsAudio);
+        }
+        return supported;
+    }
+
+    private boolean hasPassthroughAudio(VideoStreamProbe.Result probe) {
+        return probe != null
+                && (probe.hasAc3Audio
+                || probe.hasEac3Audio
+                || probe.hasDtsAudio
+                || probe.hasTrueHdAudio
+                || probe.hasAtmosLikeAudio);
     }
 
     private void handleMissingPlayableUrl(String reason) {
@@ -2824,9 +2898,6 @@ public class PlayFragment extends BaseLazyFragment {
             handleMissingPlayableUrl("missing-source-key", "播放源信息错误");
             return;
         }
-        subtitleCacheKey = resolvedSourceKey + "-" + mVodInfo.id + "-" + mVodInfo.playFlag + "-" + mVodInfo.playIndex+ "-" + vs.name + "-subt";
-        progressKey = resolvedSourceKey + "|" + mVodInfo.id + "|" + mVodInfo.playFlag + "|" + mVodInfo.playIndex;
-        final int generation = beginPlayGeneration(progressKey, subtitleCacheKey);
         if (reset) {
             dolbyVisionFallbackTried = false;
         }
@@ -2856,10 +2927,15 @@ public class PlayFragment extends BaseLazyFragment {
             disableSystemSubtitleOverlayPassThrough(mVideoView.getMediaPlayer());
         }
         hideOverlaySubtitleView();
+        // 先用上一集的 key 落盘进度并释放播放器，再切换到新集的 key，
+        // 避免在重设 progressKey 之后再持久化，把旧进度错误写到新集（32 位预览播放器特有顺序）。
         if(mVideoView!=null) {
             persistPlaybackProgress();
             forceReleaseCurrentPlayer("fragment-play-switch");
         }
+        subtitleCacheKey = resolvedSourceKey + "-" + mVodInfo.id + "-" + mVodInfo.playFlag + "-" + mVodInfo.playIndex+ "-" + vs.name + "-subt";
+        progressKey = resolvedSourceKey + "|" + mVodInfo.id + "|" + mVodInfo.playFlag + "|" + mVodInfo.playIndex;
+        final int generation = beginPlayGeneration(progressKey, subtitleCacheKey);
         activePlayRequestKey = buildPlayRequestKey(resolvedSourceKey, mVodInfo.playFlag, mVodInfo.playIndex, vs, generation);
         //重新播放清除现有进度
         bindPlaybackIdentity(resolvedSourceKey, mVodInfo.playFlag, mVodInfo.playIndex);

@@ -11,13 +11,17 @@ import java.io.InputStream;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import okhttp3.ConnectionPool;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.Response;
 
@@ -28,6 +32,7 @@ public class Proxy {
     private static final long LOCAL_PROXY_FETCH_CHUNK_SIZE = 32L * 1024L * 1024L;
     private static final long LOCAL_PROXY_MAX_RANGE_DISCARD = 8L * 1024L * 1024L;
     private static final int LOCAL_PROXY_MAX_PREMATURE_EOF = 12;
+    private static volatile OkHttpClient localProxyStreamClient;
     private static final String[] PASSTHROUGH_REQUEST_HEADERS = new String[]{
             "Range",
             "User-Agent",
@@ -195,9 +200,9 @@ public class Proxy {
             }
             throw new IOException("Local proxy stream request failed with code: " + (response == null ? "unknown" : response.code()));
         }
-        ContentRangeInfo contentRangeInfo = parseContentRange(response.header("Content-Range"));
-        long totalLength = resolveTotalLength(response, contentRangeInfo);
         RangeRequestInfo requestRange = parseRangeRequest(findHeaderValue(requestHeaders, "Range"));
+        ContentRangeInfo contentRangeInfo = parseContentRange(response.header("Content-Range"));
+        long totalLength = resolveTotalLength(response, contentRangeInfo, requestRange);
         if (requestRange != null && totalLength > 0L) {
             long rangeStart;
             long rangeEnd;
@@ -226,7 +231,7 @@ public class Proxy {
                     throw new IOException("Local proxy range reopen failed: " + rangeStart + "-" + firstChunkEnd);
                 }
                 contentRangeInfo = parseContentRange(response.header("Content-Range"));
-                totalLength = resolveTotalLength(response, contentRangeInfo);
+                totalLength = resolveTotalLength(response, contentRangeInfo, requestRange);
             }
             return buildStreamingRangeResult(url, requestHeaders, response, rangeStart, rangeEnd, totalLength, contentRangeInfo, requestRange.hasEnd);
         }
@@ -451,7 +456,15 @@ public class Proxy {
         int maxAttempts = localProxyPlayUrl ? LOCAL_PROXY_STREAM_MAX_RETRIES : 1;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                return executeRequest(OkGoHelper.ItvClient, buildRequest(url, requestHeaders));
+                Response response = executeRequest(getStreamClient(localProxyPlayUrl), buildRequest(url, requestHeaders));
+                if (localProxyPlayUrl) {
+                    SpiderDebug.log("passthroughStream response attempt=" + attempt
+                            + " code=" + response.code()
+                            + " rangeReq=" + findHeaderValue(requestHeaders, "Range")
+                            + " rangeResp=" + response.header("Content-Range")
+                            + " length=" + (response.body() == null ? -1L : response.body().contentLength()));
+                }
+                return response;
             } catch (IOException e) {
                 lastException = e;
                 SpiderDebug.log("passthroughStream retry " + attempt + "/" + maxAttempts
@@ -468,6 +481,33 @@ public class Proxy {
             }
         }
         throw lastException == null ? new IOException("Unknown stream proxy failure") : lastException;
+    }
+
+    private static OkHttpClient getStreamClient(boolean localProxyPlayUrl) {
+        if (!localProxyPlayUrl) {
+            return OkGoHelper.ItvClient;
+        }
+        OkHttpClient client = localProxyStreamClient;
+        if (client != null) {
+            return client;
+        }
+        synchronized (Proxy.class) {
+            client = localProxyStreamClient;
+            if (client == null) {
+                OkHttpClient baseClient = OkGoHelper.ItvClient;
+                OkHttpClient.Builder builder = baseClient != null
+                        ? baseClient.newBuilder()
+                        : new OkHttpClient.Builder();
+                // Seek-heavy local proxy playback is much more stable when each range reopen avoids
+                // OkHttp's long-lived HTTP/2 stream reuse.
+                builder.protocols(Collections.singletonList(Protocol.HTTP_1_1));
+                builder.connectionPool(new ConnectionPool(0, 1, TimeUnit.MILLISECONDS));
+                builder.retryOnConnectionFailure(true);
+                client = builder.build();
+                localProxyStreamClient = client;
+            }
+        }
+        return client;
     }
 
     private static Response openChunkResponse(String url, Map<String, String> requestHeaders, long start, long end) throws IOException {
@@ -832,6 +872,12 @@ public class Proxy {
     }
 
     private static long resolveTotalLength(Response response, ContentRangeInfo contentRangeInfo) {
+        return resolveTotalLength(response, contentRangeInfo, null);
+    }
+
+    private static long resolveTotalLength(Response response,
+                                           ContentRangeInfo contentRangeInfo,
+                                           RangeRequestInfo requestRange) {
         if (contentRangeInfo != null && contentRangeInfo.total > 0L) {
             return contentRangeInfo.total;
         }
@@ -839,7 +885,26 @@ public class Proxy {
             return -1L;
         }
         long bodyLength = response.body().contentLength();
-        return bodyLength > 0L ? bodyLength : -1L;
+        if (bodyLength <= 0L) {
+            return -1L;
+        }
+        if (requestRange != null && !requestRange.suffix && requestRange.start >= 0L) {
+            // Some upstreams answer seek reopens with 206 + Content-Length but omit Content-Range.
+            // In that case bodyLength is only the remaining window, not the file size.
+            if (contentRangeInfo == null && (response.code() == 200 || response.code() == 206)) {
+                long inferredTotal = requestRange.hasEnd
+                        ? Math.max(requestRange.end + 1L, requestRange.start + bodyLength)
+                        : requestRange.start + bodyLength;
+                SpiderDebug.log("passthroughLocalProxyRange inferredTotal"
+                        + " start=" + requestRange.start
+                        + " end=" + (requestRange.hasEnd ? requestRange.end : -1L)
+                        + " bodyLength=" + bodyLength
+                        + " code=" + response.code()
+                        + " inferred=" + inferredTotal);
+                return inferredTotal;
+            }
+        }
+        return bodyLength;
     }
 
     private static ContentRangeInfo parseContentRange(String headerValue) {

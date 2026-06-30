@@ -910,19 +910,11 @@ public class VodController extends BaseController {
     }
 
     private void resumePlaybackAfterSeek(String reason) {
-        if (!shouldControllerActivelyResumeAfterSeek()) {
-            try {
-                if (mControlWrapper != null) {
-                    mControlWrapper.startProgress();
-                    mControlWrapper.startFadeOut();
-                }
-            } catch (Throwable ignored) {
-            }
-            return;
-        }
-        restorePlaybackAfterSeek(reason);
+        // Cancel any pending resume retry left over from a previous seek so rapid, repeated
+        // seeks never stack multiple delayed start() runnables on top of each other.
         mHandler.removeCallbacks(seekResumeCheckRunnable);
         seekResumeCheckCount = 0;
+        restorePlaybackAfterSeek(reason);
         mHandler.postDelayed(seekResumeCheckRunnable, 220);
     }
 
@@ -931,6 +923,11 @@ public class VodController extends BaseController {
             return;
         }
         try {
+            // Force a start() whenever the player is not actually playing. This is the recovery
+            // net that lifts the player out of BUFFERED back into PLAYING after a seek — Huawei
+            // 32-bit firmware can otherwise stay stuck in BUFFERED forever. The duplicate-start
+            // race that used to lock playback is now handled inside AndroidMediaPlayer.start(),
+            // which defers to onSeekComplete() while a seek is still in flight.
             boolean resumeNeeded = videoPlayState == VideoView.STATE_PAUSED
                     || videoPlayState == VideoView.STATE_BUFFERING
                     || videoPlayState == VideoView.STATE_BUFFERED
