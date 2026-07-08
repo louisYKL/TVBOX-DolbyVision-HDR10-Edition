@@ -50,6 +50,9 @@ import xyz.doikki.videoplayer.util.PlayerUtils;
 public class VideoView<P extends AbstractPlayer> extends FrameLayout
         implements MediaPlayerControl, AbstractPlayer.PlayerEventListener {
     private static final String TAG = "VideoView";
+    private static final long COMPLETION_END_TOLERANCE_MS = 10_000L;
+    private static final long PERSIST_END_TOLERANCE_MS = COMPLETION_END_TOLERANCE_MS;
+    protected static final long PERSIST_PROGRESS_SKIP = -1L;
 
     protected P mMediaPlayer;//播放器
     protected PlayerFactory<P> mPlayerFactory;//工厂类，用于实例化播放核心
@@ -82,7 +85,11 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     protected Map<String, String> mHeaders;//当前视频地址的请求头
     protected AssetFileDescriptor mAssetFileDescriptor;//assets文件
 
-    protected long mCurrentPosition;//当前正在播放视频的位置
+    protected long mCurrentPosition;//最后一次确认的真实播放位置
+    protected long mResumePosition;//启动/重试时待恢复的目标位置
+    protected long mLastKnownDuration;
+    protected boolean mPendingResumeSeekAfterRender;
+    protected boolean mResumeSeekAppliedAfterRender;
 
     //播放器的各种状态
     public static final int STATE_ERROR = -1;
@@ -257,9 +264,13 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             mAudioFocusHelper = new AudioFocusHelper(this);
         }
         //读取播放进度
-        if (mProgressManager != null) {
-            mCurrentPosition = mProgressManager.getSavedProgress(mProgressKey == null ? mUrl : mProgressKey);
+        mCurrentPosition = 0L;
+        if (mProgressManager != null && mResumePosition <= 0L) {
+            mResumePosition = Math.max(0L,
+                    mProgressManager.getSavedProgress(mProgressKey == null ? mUrl : mProgressKey));
         }
+        mPendingResumeSeekAfterRender = false;
+        mResumeSeekAppliedAfterRender = false;
         initPlayer();
         addDisplay();
         startPrepare(false);
@@ -499,10 +510,67 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 保存播放进度
      */
     protected void saveProgress() {
-        if (mProgressManager != null && mCurrentPosition > 0) {
-            L.d("saveProgress: " + mCurrentPosition);
-            mProgressManager.saveProgress(mProgressKey == null ? mUrl : mProgressKey, mCurrentPosition);
+        long persistablePosition = resolvePersistableProgressPosition();
+        if (persistablePosition >= 0L) {
+            saveProgress(persistablePosition);
         }
+    }
+
+    protected void saveProgress(long persistablePosition) {
+        if (mProgressManager != null && persistablePosition >= 0L) {
+            L.d("saveProgress: " + persistablePosition);
+            mProgressManager.saveProgress(mProgressKey == null ? mUrl : mProgressKey, persistablePosition);
+        }
+    }
+
+    /**
+     * Resolve a progress value that is safe to persist as a resume point.
+     * Positions near the end are treated as completed playback and cleared.
+     */
+    protected long resolvePersistableProgressPosition() {
+        if (mCurrentPlayState == STATE_PLAYBACK_COMPLETED) {
+            return 0L;
+        }
+        if (mCurrentPlayState == STATE_START_ABORT
+                || mCurrentPlayState == STATE_IDLE
+                || mCurrentPlayState == STATE_ERROR
+                || mCurrentPlayState == STATE_PREPARING
+                || mCurrentPlayState == STATE_BUFFERING) {
+            return PERSIST_PROGRESS_SKIP;
+        }
+        long position = Math.max(0L, mCurrentPosition);
+        if (position <= 0L) {
+            return PERSIST_PROGRESS_SKIP;
+        }
+        if (mMediaPlayer instanceof AndroidMediaPlayer) {
+            AndroidMediaPlayer player = (AndroidMediaPlayer) mMediaPlayer;
+            if (player.isPositionQueryUnstable() || player.isSeekInFlight()) {
+                return PERSIST_PROGRESS_SKIP;
+            }
+        }
+        long duration = resolvePersistableDuration();
+        if (duration > 0L) {
+            long finishThreshold = Math.max(0L, duration - PERSIST_END_TOLERANCE_MS);
+            if (position >= finishThreshold) {
+                return 0L;
+            }
+        }
+        return position;
+    }
+
+    protected long resolvePersistableDuration() {
+        if (mMediaPlayer == null) {
+            return mLastKnownDuration;
+        }
+        try {
+            long duration = mMediaPlayer.getDuration();
+            if (duration > 0L) {
+                mLastKnownDuration = duration;
+                return duration;
+            }
+        } catch (Throwable ignored) {
+        }
+        return mLastKnownDuration;
     }
 
     /**
@@ -538,9 +606,12 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void replay(boolean resetPosition) {
-        if (resetPosition) {
-            mCurrentPosition = 0;
-        }
+        long resumePosition = resetPosition ? 0L
+                : Math.max(0L, mCurrentPosition > 0L ? mCurrentPosition : mResumePosition);
+        mCurrentPosition = 0L;
+        mResumePosition = resumePosition;
+        mPendingResumeSeekAfterRender = false;
+        mResumeSeekAppliedAfterRender = false;
         addDisplay();
         startPrepare(true);
     }
@@ -551,9 +622,17 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     @Override
     public long getDuration() {
         if (isInPlaybackState()) {
-            return mMediaPlayer.getDuration();
+            try {
+                long duration = mMediaPlayer.getDuration();
+                if (duration > 0L) {
+                    mLastKnownDuration = duration;
+                    return duration;
+                }
+            } catch (Throwable ignored) {
+                return mLastKnownDuration;
+            }
         }
-        return 0;
+        return mLastKnownDuration;
     }
 
     /**
@@ -562,8 +641,19 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     @Override
     public long getCurrentPosition() {
         if (isInPlaybackState()) {
-            mCurrentPosition = mMediaPlayer.getCurrentPosition();
-            return mCurrentPosition;
+            try {
+                if (mMediaPlayer instanceof AndroidMediaPlayer
+                        && ((AndroidMediaPlayer) mMediaPlayer).isPositionQueryUnstable()) {
+                    return Math.max(0L, mCurrentPosition);
+                }
+                long position = mMediaPlayer.getCurrentPosition();
+                if (position > 0L) {
+                    mCurrentPosition = position;
+                }
+                return mCurrentPosition;
+            } catch (Throwable ignored) {
+                return Math.max(0L, mCurrentPosition);
+            }
         }
         return 0;
     }
@@ -619,11 +709,22 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     @Override
     public void onPrepared() {
         setPlayState(STATE_PREPARED);
+        resolvePersistableDuration();
+        long resumePosition = sanitizeResumePosition(mResumePosition);
+        if (resumePosition != mResumePosition && resumePosition == 0L) {
+            saveProgress(0L);
+        }
+        mResumePosition = resumePosition;
         if (mAudioFocusHelper != null) {
             mAudioFocusHelper.requestFocus();
         }
-        if (mCurrentPosition > 0) {
-            seekTo(mCurrentPosition);
+        if (resumePosition > 0L) {
+            if (shouldDelayInitialSeekUntilRenderingStart()) {
+                mPendingResumeSeekAfterRender = true;
+                mResumeSeekAppliedAfterRender = false;
+            } else {
+                seekTo(resumePosition);
+            }
         }
     }
 
@@ -642,6 +743,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             case AbstractPlayer.MEDIA_INFO_RENDERING_START: // 视频/音频开始渲染
                 setPlayState(STATE_PLAYING);
                 mPlayerContainer.setKeepScreenOn(true);
+                applyDeferredResumeSeekAfterRender();
                 break;
             case AbstractPlayer.MEDIA_INFO_VIDEO_ROTATION_CHANGED:
                 if (mRenderView != null) mRenderView.setVideoRotation(extra);
@@ -663,13 +765,64 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void onCompletion() {
-        mPlayerContainer.setKeepScreenOn(false);
-        mCurrentPosition = 0;
-        if (mProgressManager != null) {
-            //播放完成，清除进度
-            mProgressManager.saveProgress(mProgressKey == null ? mUrl : mProgressKey, 0);
+        if (mCurrentPlayState == STATE_IDLE
+                || mCurrentPlayState == STATE_START_ABORT
+                || mMediaPlayer == null) {
+            L.d("ignore late completion state=" + mCurrentPlayState);
+            return;
         }
+        mPlayerContainer.setKeepScreenOn(false);
+        if (!shouldTreatCompletionAsPlaybackFinished()) {
+            L.d("ignore abnormal completion position=" + mCurrentPosition);
+            return;
+        }
+        mCurrentPosition = 0;
+        mResumePosition = 0L;
+        saveProgress(0L);
         setPlayState(STATE_PLAYBACK_COMPLETED);
+    }
+
+    private boolean shouldTreatCompletionAsPlaybackFinished() {
+        long duration = resolveCompletionDurationForGuard();
+        if (duration <= 0L) {
+            return false;
+        }
+        long position = resolveCompletionPositionForGuard();
+        long finishThreshold = Math.max(0L, duration - COMPLETION_END_TOLERANCE_MS);
+        return position >= finishThreshold;
+    }
+
+    private long resolveCompletionPositionForGuard() {
+        if (mCurrentPosition > 0L) {
+            return mCurrentPosition;
+        }
+        if (mMediaPlayer == null) {
+            return 0L;
+        }
+        try {
+            long position = mMediaPlayer.getCurrentPosition();
+            if (position > 0L) {
+                mCurrentPosition = position;
+            }
+            return position;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    private long resolveCompletionDurationForGuard() {
+        if (mMediaPlayer == null) {
+            return mLastKnownDuration;
+        }
+        try {
+            long duration = mMediaPlayer.getDuration();
+            if (duration > 0L) {
+                mLastKnownDuration = duration;
+                return duration;
+            }
+        } catch (Throwable ignored) {
+        }
+        return mLastKnownDuration;
     }
 
     /**
@@ -729,6 +882,9 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mAssetFileDescriptor = null;
         mUrl = url;
         mHeaders = headers;
+        mCurrentPosition = 0L;
+        mResumePosition = 0L;
+        mLastKnownDuration = 0L;
     }
 
     /**
@@ -737,6 +893,9 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public void setAssetFileDescriptor(AssetFileDescriptor fd) {
         mUrl = null;
         this.mAssetFileDescriptor = fd;
+        mCurrentPosition = 0L;
+        mResumePosition = 0L;
+        mLastKnownDuration = 0L;
     }
 
     public void setProgressKey(String key) {
@@ -747,7 +906,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 一开始播放就seek到预先设置好的位置
      */
     public void skipPositionWhenPlay(int position) {
-        this.mCurrentPosition = position;
+        mCurrentPosition = 0L;
+        mResumePosition = Math.max(0L, position);
     }
 
     /**
@@ -767,6 +927,46 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     public void setProgressManager(@Nullable ProgressManager progressManager) {
         this.mProgressManager = progressManager;
+    }
+
+    private boolean shouldDelayInitialSeekUntilRenderingStart() {
+        return mMediaPlayer instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) mMediaPlayer).shouldDelayResumeSeekUntilRenderingStart();
+    }
+
+    private void applyDeferredResumeSeekAfterRender() {
+        if (!mPendingResumeSeekAfterRender
+                || mResumeSeekAppliedAfterRender
+                || mResumePosition <= 0L
+                || mMediaPlayer == null) {
+            return;
+        }
+        final long target = mResumePosition;
+        mPendingResumeSeekAfterRender = false;
+        mResumeSeekAppliedAfterRender = true;
+        post(() -> {
+            if (mMediaPlayer == null || mCurrentPlayState == STATE_ERROR) {
+                return;
+            }
+            seekTo(target);
+        });
+    }
+
+    private long sanitizeResumePosition(long position) {
+        long sanitized = Math.max(0L, position);
+        if (sanitized <= 0L) {
+            return 0L;
+        }
+        long duration = resolvePersistableDuration();
+        if (duration <= 0L) {
+            return sanitized;
+        }
+        long finishThreshold = Math.max(0L, duration - PERSIST_END_TOLERANCE_MS);
+        if (sanitized > duration || sanitized >= finishThreshold) {
+            L.d("clear stale resume position=" + sanitized + " duration=" + duration);
+            return 0L;
+        }
+        return sanitized;
     }
 
     /**
@@ -974,6 +1174,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         setPlayerState(PLAYER_NORMAL);
     }
 
+    @Override
     public boolean isFullScreenViewMoving() {
         return mIsFullScreenViewMoving;
     }

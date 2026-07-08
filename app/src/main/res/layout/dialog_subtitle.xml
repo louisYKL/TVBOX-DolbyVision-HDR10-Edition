@@ -30,7 +30,7 @@
                 android:padding="@dimen/vs_10"
                 android:text="选择内置字幕"
                 android:visibility="gone"
-                android:textColor="@color/color_FFFFFF"
+                android:textColor="@color/search_word_text"
                 android:textSize="@dimen/ts_20" />
 
             <TextView
@@ -45,7 +45,7 @@
                 android:padding="@dimen/vs_10"
                 android:text="选择片源字幕"
                 android:visibility="gone"
-                android:textColor="@color/color_FFFFFF"
+                android:textColor="@color/search_word_text"
                 android:textSize="@dimen/ts_20" />
 
             <TextView
@@ -59,7 +59,7 @@
                 android:gravity="center"
                 android:padding="@dimen/vs_10"
                 android:text="选择本地字幕"
-                android:textColor="@color/color_FFFFFF"
+                android:textColor="@color/search_word_text"
                 android:textSize="@dimen/ts_20" />
 
             <TextView
@@ -73,7 +73,7 @@
                 android:gravity="center"
                 android:padding="@dimen/vs_10"
                 android:text="在线搜索字幕"
-                android:textColor="@color/color_FFFFFF"
+                android:textColor="@color/search_word_text"
                 android:textSize="@dimen/ts_20" />
 
             <LinearLayout
@@ -93,7 +93,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="字号减小"
-                    android:textColor="@color/color_FFFFFF"
+                    android:textColor="@color/search_word_text"
                     android:textSize="@dimen/ts_20" />
 
                 <TextView
@@ -119,7 +119,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="字号增大"
-                    android:textColor="@color/color_FFFFFF"
+                    android:textColor="@color/search_word_text"
                     android:textSize="@dimen/ts_20" />
 
             </LinearLayout>
@@ -141,7 +141,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="字幕样式一"
-                    android:textColor="@color/color_FFFFFF"
+                    android:textColor="@color/search_word_text"
                     android:shadowColor="@color/color_CC000000"
                     android:shadowRadius="2"
                     android:shadowDx="1"
@@ -169,7 +169,7 @@
                     android:padding="@dimen/vs_10"
                     android:text="字幕样式二"
                     android:textStyle="bold"
-                    android:textColor="@color/color_FFB6C1"
+                    android:textColor="@color/search_word_text"
                     android:shadowColor="@color/color_FFFFFF"
                     android:shadowRadius="2"
                     android:shadowDx="1"
@@ -214,7 +214,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="字幕提前"
-                    android:textColor="@color/color_FFFFFF"
+                    android:textColor="@color/search_word_text"
                     android:textSize="@dimen/ts_20" />
 
                 <TextView
@@ -240,7 +240,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="字幕推迟"
-                    android:textColor="@color/color_FFFFFF"
+                    android:textColor="@color/search_word_text"
                     android:textSize="@dimen/ts_20" />
 
             </LinearLayout>

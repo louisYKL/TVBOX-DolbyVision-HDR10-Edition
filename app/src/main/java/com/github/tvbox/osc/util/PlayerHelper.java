@@ -35,7 +35,7 @@ public class PlayerHelper {
     public static final int PLAYER_TYPE_SYSTEM = 0;
     public static final int PLAYER_TYPE_DOLBY_VISION_COMPAT = 6;
 
-    private static boolean shouldUseTextureRenderForSystemPlayer(@androidx.annotation.Nullable Context context) {
+    private static boolean isJava64TouchPhone(@androidx.annotation.Nullable Context context) {
         if (!com.github.tvbox.osc.base.App.isJava64Build()) {
             return false;
         }
@@ -58,6 +58,17 @@ public class PlayerHelper {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP;
     }
 
+    private static boolean shouldUseTextureRenderForSystemPlayer(@androidx.annotation.Nullable Context context,
+                                                                 @androidx.annotation.Nullable JSONObject playerCfg) {
+        if (!isJava64TouchPhone(context)) {
+            return false;
+        }
+        String outputMode = playerCfg == null ? "" : playerCfg.optString("dvm", "");
+        boolean hdrOutputRequested = (playerCfg != null && playerCfg.optInt("hro", 0) == 1)
+                || (!TextUtils.isEmpty(outputMode) && !"sdr".equalsIgnoreCase(outputMode));
+        return !hdrOutputRequested;
+    }
+
     public static void updateCfg(VideoView videoView, JSONObject playerCfg) {
         updateCfg(videoView,playerCfg,-1);
     }
@@ -67,7 +78,7 @@ public class PlayerHelper {
         int scale = Hawk.get(HawkConfig.PLAY_SCALE, 0);
         boolean preferHdrOutput = true;
         Context context = videoView == null ? null : videoView.getContext();
-        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(context);
+        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(context, playerCfg);
         try {
             playerType = playerCfg.getInt("pl");
             renderType = playerCfg.getInt("pr");
@@ -110,13 +121,27 @@ public class PlayerHelper {
                         ? TextureRenderViewFactory.create()
                         : SurfaceRenderViewFactory.create();
             }
+            String routeMode = "";
+            int hdrOut = 0;
+            if (playerCfg != null) {
+                hdrOut = playerCfg.optInt("hro", 0);
+                if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
+                    routeMode = playerCfg.optString("dvm", "");
+                }
+            }
+            LOG.i("echo-player-cfg player=" + playerType
+                    + " render=" + getRenderName(renderType)
+                    + " java64TouchPhone=" + isJava64TouchPhone(context)
+                    + " hdrOut=" + hdrOut
+                    + " dvm=" + routeMode
+                    + " scale=" + scale);
             videoView.setRenderViewFactory(renderViewFactory);
             videoView.setScreenScaleType(VideoView.SCREEN_SCALE_DEFAULT);
         }
     }
 
     public static void updateCfg(VideoView videoView) {
-        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(videoView == null ? null : videoView.getContext());
+        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(videoView == null ? null : videoView.getContext(), null);
         int renderType = preferTextureSystemRender ? 0 : 1;
         RenderViewFactory renderViewFactory = null;
         switch (renderType) {

@@ -71,6 +71,11 @@ public class ControlWrapper implements MediaPlayerControl, IVideoController {
     }
 
     @Override
+    public boolean isFullScreenViewMoving() {
+        return mPlayerControl.isFullScreenViewMoving();
+    }
+
+    @Override
     public void setMute(boolean isMute) {
         mPlayerControl.setMute(isMute);
     }

@@ -161,7 +161,7 @@ public class DefaultSubtitleEngine implements SubtitleEngine {
         mSubtitles = thisSubtitles;
     }
 
-    private static String playSubtitleCacheKey;
+    private String playSubtitleCacheKey;
     public void setPlaySubtitleCacheKey(String cacheKey) {
         playSubtitleCacheKey = cacheKey;
     }

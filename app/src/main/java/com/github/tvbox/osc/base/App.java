@@ -3,7 +3,6 @@ package com.github.tvbox.osc.base;
 import android.app.Activity;
 import androidx.multidex.MultiDexApplication;
 
-import com.github.tvbox.osc.BuildConfig;
 import com.github.tvbox.osc.bean.VodInfo;
 import com.github.tvbox.osc.callback.EmptyCallback;
 import com.github.tvbox.osc.callback.LoadingCallback;
@@ -141,7 +140,7 @@ public class App extends MultiDexApplication {
     }
 
     public static boolean isJava64Build() {
-        return "java64".equals(BuildConfig.FLAVOR) || "python64".equals(BuildConfig.FLAVOR);
+        return false;
     }
 
     public void setDashData(String data) {

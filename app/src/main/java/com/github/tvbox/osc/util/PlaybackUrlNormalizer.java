@@ -3,6 +3,7 @@ package com.github.tvbox.osc.util;
 import android.net.Uri;
 import android.text.TextUtils;
 
+import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.server.ControlManager;
 
 import org.json.JSONObject;
@@ -162,16 +163,7 @@ public final class PlaybackUrlNormalizer {
             return path;
         }
         String normalizedPath = normalizeHttpUrl(path);
-        if (isAppLocalProxyUrl(normalizedPath)) {
-            return normalizedPath;
-        }
-        if (isForeignLocalProxyUrl(normalizedPath)) {
-            return wrapWithStreamProxy(normalizedPath, headers);
-        }
-        if (!live && !isHlsLike(normalizedPath)) {
-            return wrapWithStreamProxy(normalizedPath, headers);
-        }
-        return resolvePlaybackUrl(normalizedPath, headers, live);
+        return resolveSystemPlaybackUrl(normalizedPath, headers, live);
     }
 
     public static String resolveCompatPlaybackUrl(String path, Map<String, String> headers, boolean live) {
@@ -179,21 +171,26 @@ public final class PlaybackUrlNormalizer {
             return path;
         }
         String normalizedPath = normalizeHttpUrl(path);
-        if (isAppLocalProxyUrl(normalizedPath)) {
+        if (isAnyLocalProxyPlayUrl(normalizedPath)) {
             LOG.i("echo-playback-url compat-direct-local-proxy-play -> " + safeSnippet(normalizedPath));
             return normalizedPath;
         }
-        if (isForeignLocalProxyPlayUrl(normalizedPath)) {
-            String wrapped = wrapWithStreamProxy(normalizedPath, headers);
-            LOG.i("echo-playback-url compat-wrap-foreign-local-play -> " + safeSnippet(wrapped));
-            return wrapped;
+        if (isAppLocalProxyUrl(normalizedPath)) {
+            String nested = unwrapAppStreamProxyToForeignLocalPlay(normalizedPath);
+            if (!TextUtils.isEmpty(nested)) {
+                LOG.i("echo-playback-url compat-unwrap-app-stream -> " + safeSnippet(nested));
+                return nested;
+            }
+            LOG.i("echo-playback-url compat-direct-app-local-proxy -> " + safeSnippet(normalizedPath));
+            return normalizedPath;
         }
-        if (isAnyLocalProxyPlayUrl(normalizedPath)) {
-            LOG.i("echo-playback-url compat-direct-local-proxy-play-fallback -> " + safeSnippet(normalizedPath));
+        if (isForeignLocalProxyPlayUrl(normalizedPath)) {
+            LOG.i("echo-playback-url compat-direct-foreign-local-play -> " + safeSnippet(normalizedPath));
             return normalizedPath;
         }
         if (isForeignLocalProxyUrl(normalizedPath)) {
-            return wrapWithStreamProxy(normalizedPath, headers);
+            LOG.i("echo-playback-url compat-direct-foreign-local-proxy -> " + safeSnippet(normalizedPath));
+            return normalizedPath;
         }
         if (!live && !isHlsLike(normalizedPath)) {
             return normalizedPath;
@@ -400,6 +397,21 @@ public final class PlaybackUrlNormalizer {
         }
         String lower = key.trim().toLowerCase(Locale.US);
         return lower.startsWith("x-tvbox-probe-");
+    }
+
+    private static boolean hasInternalHeaderValue(Map<String, String> headers, String headerName, String expectedValue) {
+        if (headers == null || TextUtils.isEmpty(headerName) || TextUtils.isEmpty(expectedValue)) {
+            return false;
+        }
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() != null
+                    && headerName.equalsIgnoreCase(entry.getKey())
+                    && entry.getValue() != null
+                    && expectedValue.equalsIgnoreCase(entry.getValue().trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static final class UrlWithHeaders {

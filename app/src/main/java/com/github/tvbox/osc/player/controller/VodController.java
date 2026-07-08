@@ -8,11 +8,13 @@ import android.graphics.Color;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Message;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.webkit.WebView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -29,6 +31,7 @@ import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.base.BaseActivity;
 import com.github.tvbox.osc.bean.ParseBean;
+import com.github.tvbox.osc.player.MyVideoView;
 import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.server.RemoteServer;
@@ -82,6 +85,7 @@ import static xyz.doikki.videoplayer.util.PlayerUtils.seconds2Time;
 import static xyz.doikki.videoplayer.util.PlayerUtils.safeTimeMs;
 
 public class VodController extends BaseController {
+    private static final long COMPLETION_GUARD_MS = 10_000L;
     private static final String TAG = "VodController";
     private boolean consumeBackKeyUpAfterFullScreenExit = false;
     private boolean embeddedPreviewMode = true;
@@ -328,23 +332,6 @@ public class VodController extends BaseController {
                 showLockView();
             }
         });
-        View rootView = findViewById(R.id.rootView);
-        rootView.setOnTouchListener(new OnTouchListener() {
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                if (isLock) {
-                    if (event.getAction() == MotionEvent.ACTION_UP) {
-                        showLockView();
-                    }
-                    return true;
-                }
-                if (isJava64TouchPhone()) {
-                    return VodController.this.onTouchEvent(event);
-                }
-                return false;
-            }
-        });
-
         initSubtitleInfo();
 
         myHandle = new Handler();
@@ -753,6 +740,7 @@ public class VodController extends BaseController {
 
     public void resetSpeed() {
         skipEnd = true;
+        skipEndGuardUntilMs = System.currentTimeMillis() + 4500L;
         mHandler.removeMessages(1004);
         mHandler.sendEmptyMessageDelayed(1004, 100);
     }
@@ -788,6 +776,7 @@ public class VodController extends BaseController {
     private VodControlListener listener;
 
     private boolean skipEnd = true;
+    private long skipEndGuardUntilMs = 0L;
 
     @SuppressLint("SetTextI18n")
     @Override
@@ -797,14 +786,17 @@ public class VodController extends BaseController {
             return;
         }
         super.setProgress(duration, position);
-        if (skipEnd && position != 0 && duration != 0) {
+        boolean skipEndGuardActive = System.currentTimeMillis() < skipEndGuardUntilMs;
+        if (skipEnd && !skipEndGuardActive && position != 0 && duration != 0) {
             int et = 0;
             try {
                 et = mPlayerConfig.getInt("et");
             } catch (JSONException e) {
                 e.printStackTrace();
             }
-            if (et > 0 && position + (et * 1000) >= duration) {
+            long remainingMs = duration - position;
+            long allowedTailMs = et > 0 ? Math.min(et * 1000L, COMPLETION_GUARD_MS) : 0L;
+            if (allowedTailMs > 0L && remainingMs <= allowedTailMs) {
                 skipEnd = false;
                 listener.playNext(true);
             }
@@ -833,6 +825,28 @@ public class VodController extends BaseController {
     private long lastSlideTime = 0;
     private long lastRemoteSeekCommitTime = 0;
     private boolean simSeekCommitted = false;
+    private static final long FULLSCREEN_SEEK_COMMIT_GUARD_MS = 520L;
+    private int pendingSeekRetryCount = 0;
+    private String pendingSeekReason = null;
+    private final Runnable pendingRemoteSeekCommitRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (TextUtils.isEmpty(pendingSeekReason) || simSeekPosition < 0) {
+                pendingSeekRetryCount = 0;
+                pendingSeekReason = null;
+                return;
+            }
+            if (shouldDelaySeekUntilFullscreenStable() && pendingSeekRetryCount < 4) {
+                pendingSeekRetryCount++;
+                mHandler.postDelayed(this, FULLSCREEN_SEEK_COMMIT_GUARD_MS / 2);
+                return;
+            }
+            String reason = pendingSeekReason;
+            pendingSeekReason = null;
+            pendingSeekRetryCount = 0;
+            commitRemoteSeekNow(reason + "-stable");
+        }
+    };
     private int seekResumeCheckCount = 0;
     private final Runnable seekResumeCheckRunnable = new Runnable() {
         @Override
@@ -864,6 +878,20 @@ public class VodController extends BaseController {
         if (mControlWrapper == null || simSeekPosition < 0) {
             return;
         }
+        if (shouldDelaySeekUntilFullscreenStable()) {
+            pendingSeekReason = reason;
+            mHandler.removeCallbacks(pendingRemoteSeekCommitRunnable);
+            mHandler.postDelayed(pendingRemoteSeekCommitRunnable, FULLSCREEN_SEEK_COMMIT_GUARD_MS);
+            Log.i(TAG, "commitRemoteSeek delayed reason=" + reason + " pos=" + simSeekPosition);
+            return;
+        }
+        commitRemoteSeekNow(reason);
+    }
+
+    private void commitRemoteSeekNow(String reason) {
+        if (mControlWrapper == null || simSeekPosition < 0) {
+            return;
+        }
         long now = System.currentTimeMillis();
         if (now - lastRemoteSeekCommitTime < 160 && !"remote-stop".equals(reason)) {
             return;
@@ -875,10 +903,18 @@ public class VodController extends BaseController {
         resumePlaybackAfterSeek(reason);
     }
 
+    private boolean shouldDelaySeekUntilFullscreenStable() {
+        return mControlWrapper != null
+                && mControlWrapper.isFullScreen()
+                && mControlWrapper.isFullScreenViewMoving();
+    }
+
     private void resumePlaybackAfterSeek(String reason) {
-        restorePlaybackAfterSeek(reason);
+        // Cancel any pending resume retry left over from a previous seek so rapid, repeated
+        // seeks never stack multiple delayed start() runnables on top of each other.
         mHandler.removeCallbacks(seekResumeCheckRunnable);
         seekResumeCheckCount = 0;
+        restorePlaybackAfterSeek(reason);
         mHandler.postDelayed(seekResumeCheckRunnable, 220);
     }
 
@@ -887,6 +923,11 @@ public class VodController extends BaseController {
             return;
         }
         try {
+            // Force a start() whenever the player is not actually playing. This is the recovery
+            // net that lifts the player out of BUFFERED back into PLAYING after a seek — Huawei
+            // 32-bit firmware can otherwise stay stuck in BUFFERED forever. The duplicate-start
+            // race that used to lock playback is now handled inside AndroidMediaPlayer.start(),
+            // which defers to onSeekComplete() while a seek is still in flight.
             boolean resumeNeeded = videoPlayState == VideoView.STATE_PAUSED
                     || videoPlayState == VideoView.STATE_BUFFERING
                     || videoPlayState == VideoView.STATE_BUFFERED
@@ -1006,9 +1047,15 @@ public class VodController extends BaseController {
 
     public void setForceFullScreenInputMode(boolean forceFullScreenInputMode) {
         this.forceFullScreenInputMode = forceFullScreenInputMode;
+        if (forceFullScreenInputMode) {
+            embeddedPreviewMode = false;
+        }
     }
 
     public void setEmbeddedPreviewMode(boolean previewMode) {
+        if (previewMode && forceFullScreenInputMode) {
+            previewMode = false;
+        }
         embeddedPreviewMode = previewMode;
         if (previewMode) {
             forceFullScreenInputMode = false;
@@ -1017,8 +1064,10 @@ public class VodController extends BaseController {
     }
 
     public void syncFullScreenControlState() {
-        setEmbeddedPreviewMode(!isPlayerFullScreen());
-        if (isPlayerFullScreen()) {
+        boolean fullScreen = isPlayerFullScreen();
+        embeddedPreviewMode = !fullScreen;
+        applyEmbeddedPreviewMode();
+        if (fullScreen) {
             updateBottomMenuFocusMode(false);
             restorePlaybackFocus();
         } else {
@@ -1068,18 +1117,23 @@ public class VodController extends BaseController {
 
     private void setControllerTreeInteractive(boolean enabled) {
         boolean touchPhone = isJava64TouchPhone();
-        setFocusable(enabled);
-        setFocusableInTouchMode(enabled || touchPhone);
-        setClickable(enabled || touchPhone);
+        boolean interactive = enabled || touchPhone;
+        setFocusable(interactive);
+        setFocusableInTouchMode(interactive);
+        setClickable(interactive);
+        setEnabled(true);
         if (!enabled) {
             clearFocus();
         }
         if (mPlaybackFocusAnchor != null) {
-            mPlaybackFocusAnchor.setFocusable(enabled);
-            mPlaybackFocusAnchor.setFocusableInTouchMode(enabled || touchPhone);
-            mPlaybackFocusAnchor.setClickable(enabled || touchPhone);
+            mPlaybackFocusAnchor.setFocusable(interactive);
+            mPlaybackFocusAnchor.setFocusableInTouchMode(interactive);
+            // 64-bit 手机全屏触控必须直接落到控制器本身，不能被铺满全屏的 root anchor 吞掉。
+            mPlaybackFocusAnchor.setClickable(!touchPhone && enabled);
+            mPlaybackFocusAnchor.setLongClickable(false);
+            mPlaybackFocusAnchor.setEnabled(true);
             if (mPlaybackFocusAnchor instanceof ViewGroup) {
-                ((ViewGroup) mPlaybackFocusAnchor).setDescendantFocusability(enabled
+                ((ViewGroup) mPlaybackFocusAnchor).setDescendantFocusability(interactive
                         ? ViewGroup.FOCUS_BEFORE_DESCENDANTS
                         : ViewGroup.FOCUS_BLOCK_DESCENDANTS);
             }
@@ -1101,16 +1155,19 @@ public class VodController extends BaseController {
         if (mControlWrapper == null || !isInPlaybackState()) {
             return false;
         }
-        if (mControlWrapper.isFullScreen()) {
+        if (isPlayerFullScreen()) {
             return true;
         }
         LOG.i(TAG + " enterFullScreenFromPreview");
+        forceFullScreenInputMode = true;
+        embeddedPreviewMode = false;
+        applyEmbeddedPreviewMode();
         mControlWrapper.startFullScreen();
         hideBottom();
-        syncFullScreenControlState();
         post(new Runnable() {
             @Override
             public void run() {
+                syncFullScreenControlState();
                 restorePlaybackFocus();
             }
         });
@@ -1258,9 +1315,11 @@ public class VodController extends BaseController {
         if (mPlaybackFocusAnchor == null) {
             return;
         }
+        boolean touchPhone = isJava64TouchPhone();
         boolean anchorEnabled = !bottomControlsVisible;
         mPlaybackFocusAnchor.setFocusable(anchorEnabled);
         mPlaybackFocusAnchor.setFocusableInTouchMode(anchorEnabled);
+        mPlaybackFocusAnchor.setClickable(!touchPhone && anchorEnabled);
         if (mPlaybackFocusAnchor instanceof ViewGroup) {
             ((ViewGroup) mPlaybackFocusAnchor).setDescendantFocusability(bottomControlsVisible
                     ? ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -1750,8 +1809,7 @@ public class VodController extends BaseController {
                     resumeFromBottomMenu();
                     return true;
                 }
-                clickFocusedBottomMenuButton();
-                return true;
+                return clickFocusedBottomMenuButton();
             }
             if (action == KeyEvent.ACTION_UP && isConfirmKey) {
                 return true;
@@ -1842,6 +1900,12 @@ public class VodController extends BaseController {
     @SuppressLint("ClickableViewAccessibility")
     @Override
     public boolean onTouchEvent(MotionEvent e) {
+        if (isLock) {
+            if (e != null && e.getAction() == MotionEvent.ACTION_UP) {
+                showLockView();
+            }
+            return true;
+        }
         if (e.getAction() == MotionEvent.ACTION_UP) {
             speedPlayEnd();
         }
@@ -1901,8 +1965,7 @@ public class VodController extends BaseController {
                     resumeFromBottomMenu();
                     return true;
                 }
-                clickFocusedBottomMenuButton();
-                return true;
+                return clickFocusedBottomMenuButton();
             }
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP ) {
                 if(mPlayerTimeStartBtn.hasFocus()){
@@ -1973,10 +2036,59 @@ public class VodController extends BaseController {
         return super.onKeyUp(keyCode, event);
     }
 
+    private boolean shouldControllerActivelyResumeAfterSeek() {
+        MyVideoView videoView = findVideoView(this);
+        if (videoView == null || videoView.getMediaPlayer() == null) {
+            return true;
+        }
+        return !(videoView.getMediaPlayer() instanceof xyz.doikki.videoplayer.player.AndroidMediaPlayer);
+    }
+
+    private MyVideoView findVideoView(View view) {
+        if (view instanceof MyVideoView) {
+            return (MyVideoView) view;
+        }
+        ViewParent parent = view == null ? null : view.getParent();
+        while (parent instanceof View) {
+            View parentView = (View) parent;
+            if (parentView instanceof MyVideoView) {
+                return (MyVideoView) parentView;
+            }
+            if (parentView instanceof ViewGroup) {
+                MyVideoView nested = findVideoViewInChildren((ViewGroup) parentView);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+            parent = parentView.getParent();
+        }
+        return null;
+    }
+
+    private MyVideoView findVideoViewInChildren(ViewGroup group) {
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof MyVideoView) {
+                return (MyVideoView) child;
+            }
+            if (child instanceof ViewGroup) {
+                MyVideoView nested = findVideoViewInChildren((ViewGroup) child);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        }
+        return null;
+    }
+
     @Override
     public boolean onSingleTapConfirmed(MotionEvent e) {
+        LOG.i(TAG + " singleTap fullscreen=" + isPlayerFullScreen()
+                + " bottomVisible=" + isBottomVisible()
+                + " preview=" + embeddedPreviewMode
+                + " forceFs=" + forceFullScreenInputMode);
         if (!isPlayerFullScreen()) {
-            return true;
+            return enterFullScreenFromPreview();
         }
         myHandle.removeCallbacks(myRunnable);
         if (!isBottomVisible()) {
@@ -1987,6 +2099,14 @@ public class VodController extends BaseController {
             hideBottom();
         }
         return true;
+    }
+
+    @Override
+    public boolean onTouch(View v, MotionEvent event) {
+        if (event != null && isJava64TouchPhone() && isPlayerFullScreen()) {
+            setControllerTreeInteractive(true);
+        }
+        return super.onTouch(v, event);
     }
     
     private class LockRunnable implements Runnable {
@@ -2042,6 +2162,7 @@ public class VodController extends BaseController {
         super.onDetachedFromWindow();
         mHandler.removeCallbacks(myRunnable2);
         mHandler.removeCallbacks(seekResumeCheckRunnable);
+        mHandler.removeCallbacks(pendingRemoteSeekCommitRunnable);
     }
 
 
@@ -2218,14 +2339,13 @@ public class VodController extends BaseController {
     {
         try {
             JSONArray urlArray = new JSONArray(url);
-            for (int i = 0; i < urlArray.length(); i++) {
-                String item = urlArray.getString(i);
-                if (item.contains("http")) {
-                    url = item;
-                    break; // 找到第一个立即终止循环
-                }
+            if (urlArray.length() > 0) {
+                String firstItem = urlArray.optString(0, url);
+                LOG.i("echo-play-array strict-first count=" + urlArray.length());
+                return firstItem;
             }
         } catch (JSONException e) {
+            LOG.i("echo-play-array parse-failed " + e.getMessage());
         }
         return url;
     }

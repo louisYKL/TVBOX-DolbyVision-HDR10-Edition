@@ -6,18 +6,32 @@ import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.util.parser.SuperParse;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import okhttp3.ConnectionPool;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.Response;
 
@@ -25,9 +39,37 @@ public class Proxy {
     private static final Pattern M3U8_URI_ATTRIBUTE_PATTERN = Pattern.compile("URI=(\"([^\"]*)\"|'([^']*)')");
     private static final int LOCAL_PROXY_STREAM_MAX_RETRIES = 4;
     private static final long LOCAL_PROXY_STREAM_RETRY_DELAY_MS = 150L;
-    private static final long LOCAL_PROXY_FETCH_CHUNK_SIZE = 32L * 1024L * 1024L;
+    private static final long LOCAL_PROXY_FETCH_CHUNK_SIZE = 128L * 1024L * 1024L;
     private static final long LOCAL_PROXY_MAX_RANGE_DISCARD = 8L * 1024L * 1024L;
     private static final int LOCAL_PROXY_MAX_PREMATURE_EOF = 12;
+    private static final String[] HLS_PREFETCH_KEY_HEADERS = new String[]{
+            "User-Agent",
+            "Referer",
+            "Origin",
+            "Cookie",
+            "Accept-Language"
+    };
+    private static final int HLS_PREFETCH_LOOKAHEAD_SEGMENTS = 12;
+    private static final int HLS_PREFETCH_MAX_PLAYLISTS = 12;
+    private static final long HLS_PREFETCH_MAX_CACHE_BYTES = 128L * 1024L * 1024L;
+    private static final long HLS_PREFETCH_WAIT_MS = 2500L;
+    private static final int HLS_PREFETCH_STARTUP_SEGMENTS = 6;
+    private static final long HLS_PREFETCH_STARTUP_WAIT_MS = 3500L;
+    private static final long HLS_PREFETCH_FUTURE_POLL_WAIT_MS = 250L;
+    private static final int HLS_PREFETCH_MAX_SEGMENT_BYTES = 16 * 1024 * 1024;
+    private static final long HLS_PREFETCH_CACHE_BYTES = resolveHlsPrefetchCacheBytes();
+    private static volatile OkHttpClient localProxyStreamClient;
+    private static final ExecutorService HLS_PREFETCH_EXECUTOR = Executors.newFixedThreadPool(4);
+    private static final Object HLS_PREFETCH_LOCK = new Object();
+    private static final LinkedHashMap<String, HlsSegmentCacheEntry> HLS_SEGMENT_CACHE =
+            new LinkedHashMap<>(16, 0.75f, true);
+    private static final LinkedHashMap<String, HlsPlaylistState> HLS_PLAYLISTS =
+            new LinkedHashMap<>(8, 0.75f, true);
+    private static final Map<String, HlsSegmentRef> HLS_SEGMENT_INDEX = new HashMap<>();
+    private static final Map<String, String> HLS_SEGMENT_URL_ALIAS = new HashMap<>();
+    private static final Map<String, Future<?>> HLS_PREFETCH_INFLIGHT = new HashMap<>();
+    private static volatile boolean hlsPrefetchConfigLogged;
+    private static long hlsSegmentCacheBytes;
     private static final String[] PASSTHROUGH_REQUEST_HEADERS = new String[]{
             "Range",
             "User-Agent",
@@ -78,7 +120,6 @@ public class Proxy {
     }
     public static Object[] itv(Map<String, String> params) throws Exception {
         try {
-            Object[] result = new Object[3];
             String url = params.get("url");
             String type = params.get("type");
             if (url == null || type == null) {
@@ -86,42 +127,39 @@ public class Proxy {
             }
             url = URLDecoder.decode(url,"UTF-8");
             Map<String, String> requestHeaders = extractProxyHeaders(params);
+            mergeRequestHeadersFromSession(params, requestHeaders);
 
             OkHttpClient client = OkGoHelper.ItvClient;
             assert type != null;
             if (type.equals("m3u8")) {
-                String redirectUrl = getRedirectedUrl(url, requestHeaders);
-
-                Request request = buildRequest(redirectUrl, requestHeaders);
-                try (Response response = executeRequest(client, request)) {
-                    if (response.isSuccessful()) {
-                        assert response.body() != null;
-                        String respContent = response.body().string();
-                        String m3u8Content = processM3u8Content(respContent, redirectUrl, requestHeaders);
-                        result[0] = 200;
-                        result[1] = "application/vnd.apple.mpegurl";
-                        result[2] = new ByteArrayInputStream(m3u8Content.getBytes());
-                    } else {
-                        throw new IOException("M3U8 Request failed with code: " + response.code());
+                M3u8FetchResult fetchResult = fetchM3u8(client, url, requestHeaders);
+                String m3u8Content = processM3u8Content(fetchResult.content, fetchResult.effectiveUrl, requestHeaders);
+                return buildStaticPayloadResult(
+                        200,
+                        "application/vnd.apple.mpegurl",
+                        m3u8Content.getBytes(StandardCharsets.UTF_8)
+                );
+            }
+            if (type.equals("ts")) {
+                Object[] cachedResult = tryServePrefetchedHlsSegment(url, requestHeaders);
+                if (cachedResult != null) {
+                    scheduleHlsPrefetchAfterSegment(url, requestHeaders);
+                    return cachedResult;
+                }
+                boolean waitedForPrefetch = awaitPrefetchedHlsSegment(url, requestHeaders);
+                if (waitedForPrefetch) {
+                    Object[] waitedResult = tryServePrefetchedHlsSegment(url, requestHeaders);
+                    if (waitedResult != null) {
+                        scheduleHlsPrefetchAfterSegment(url, requestHeaders);
+                        return waitedResult;
                     }
                 }
-            } else if (type.equals("ts")) {
+                scheduleHlsPrefetchAfterSegment(url, requestHeaders);
                 Request request = buildRequest(url, requestHeaders);
                 Response response = executeRequest(client, request);
-                if (response.isSuccessful() && response.body() != null) {
-                    result[0] = 200;
-                    result[1] = normalizePassthroughContentType(url, response.header("Content-Type"));
-                    result[2] = new ResponseClosingInputStream(response.body().byteStream(), response);
-                } else {
-                    if (response != null) {
-                        response.close();
-                    }
-                    throw new IOException("TS Request failed with code: " + (response == null ? "unknown" : response.code()));
-                }
-            } else {
-                throw new IllegalArgumentException("Invalid type: " + type);
+                return buildPassthroughResult(url, requestHeaders, response);
             }
-            return result;
+            throw new IllegalArgumentException("Invalid type: " + type);
         } catch (Exception e) {
             SpiderDebug.log(e);
             return null;
@@ -130,31 +168,23 @@ public class Proxy {
 
     public static Object[] removeBOMFromM3U8(Map<String, String> params) throws Exception {
         try {
-            Object[] result = new Object[3];
             String url = params.get("url");
             url = URLDecoder.decode(url,"UTF-8");
             Map<String, String> requestHeaders = extractProxyHeaders(params);
 
             OkHttpClient client = OkGoHelper.ItvClient;
-            String redirectUrl = getRedirectedUrl(url, requestHeaders);
-
-            Request request = buildRequest(redirectUrl, requestHeaders);
-            try (Response response = executeRequest(client, request)) {
-                if (response.isSuccessful()) {
-                    assert response.body() != null;
-                    String m3u8Content = response.body().string();
-                    // 检查并去除 UTF-8 BOM 头（BOM 为 \uFEFF）
-                    if (m3u8Content.startsWith("\ufeff")) {
-                        m3u8Content = m3u8Content.substring(1);
-                    }
-                    result[0] = 200;
-                    result[1] = "application/vnd.apple.mpegurl";
-                    result[2] = new ByteArrayInputStream(processM3u8Content(m3u8Content, redirectUrl, requestHeaders).getBytes());
-                } else {
-                    throw new IOException("M3U8 Request failed with code: " + response.code());
-                }
+            M3u8FetchResult fetchResult = fetchM3u8(client, url, requestHeaders);
+            String m3u8Content = fetchResult.content;
+            // 检查并去除 UTF-8 BOM 头（BOM 为 \uFEFF）
+            if (m3u8Content.startsWith("\ufeff")) {
+                m3u8Content = m3u8Content.substring(1);
             }
-            return result;
+            String processed = processM3u8Content(m3u8Content, fetchResult.effectiveUrl, requestHeaders);
+            return buildStaticPayloadResult(
+                    200,
+                    "application/vnd.apple.mpegurl",
+                    processed.getBytes(StandardCharsets.UTF_8)
+            );
         } catch (Exception e) {
             SpiderDebug.log(e);
             return null;
@@ -195,9 +225,9 @@ public class Proxy {
             }
             throw new IOException("Local proxy stream request failed with code: " + (response == null ? "unknown" : response.code()));
         }
-        ContentRangeInfo contentRangeInfo = parseContentRange(response.header("Content-Range"));
-        long totalLength = resolveTotalLength(response, contentRangeInfo);
         RangeRequestInfo requestRange = parseRangeRequest(findHeaderValue(requestHeaders, "Range"));
+        ContentRangeInfo contentRangeInfo = parseContentRange(response.header("Content-Range"));
+        long totalLength = resolveTotalLength(response, contentRangeInfo, requestRange);
         if (requestRange != null && totalLength > 0L) {
             long rangeStart;
             long rangeEnd;
@@ -226,7 +256,7 @@ public class Proxy {
                     throw new IOException("Local proxy range reopen failed: " + rangeStart + "-" + firstChunkEnd);
                 }
                 contentRangeInfo = parseContentRange(response.header("Content-Range"));
-                totalLength = resolveTotalLength(response, contentRangeInfo);
+                totalLength = resolveTotalLength(response, contentRangeInfo, requestRange);
             }
             return buildStreamingRangeResult(url, requestHeaders, response, rangeStart, rangeEnd, totalLength, contentRangeInfo, requestRange.hasEnd);
         }
@@ -451,7 +481,15 @@ public class Proxy {
         int maxAttempts = localProxyPlayUrl ? LOCAL_PROXY_STREAM_MAX_RETRIES : 1;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                return executeRequest(OkGoHelper.ItvClient, buildRequest(url, requestHeaders));
+                Response response = executeRequest(getStreamClient(localProxyPlayUrl), buildRequest(url, requestHeaders));
+                if (localProxyPlayUrl) {
+                    SpiderDebug.log("passthroughStream response attempt=" + attempt
+                            + " code=" + response.code()
+                            + " rangeReq=" + findHeaderValue(requestHeaders, "Range")
+                            + " rangeResp=" + response.header("Content-Range")
+                            + " length=" + (response.body() == null ? -1L : response.body().contentLength()));
+                }
+                return response;
             } catch (IOException e) {
                 lastException = e;
                 SpiderDebug.log("passthroughStream retry " + attempt + "/" + maxAttempts
@@ -468,6 +506,49 @@ public class Proxy {
             }
         }
         throw lastException == null ? new IOException("Unknown stream proxy failure") : lastException;
+    }
+
+    private static M3u8FetchResult fetchM3u8(OkHttpClient client,
+                                             String url,
+                                             Map<String, String> requestHeaders) throws IOException {
+        Request request = buildRequest(url, requestHeaders);
+        try (Response response = executeRequest(client, request)) {
+            if (!response.isSuccessful() || response.body() == null) {
+                throw new IOException("M3U8 Request failed with code: " + response.code());
+            }
+            String effectiveUrl = url;
+            if (response.request() != null && response.request().url() != null) {
+                effectiveUrl = response.request().url().toString();
+            }
+            return new M3u8FetchResult(effectiveUrl, response.body().string());
+        }
+    }
+
+    private static OkHttpClient getStreamClient(boolean localProxyPlayUrl) {
+        if (!localProxyPlayUrl) {
+            return OkGoHelper.ItvClient;
+        }
+        OkHttpClient client = localProxyStreamClient;
+        if (client != null) {
+            return client;
+        }
+        synchronized (Proxy.class) {
+            client = localProxyStreamClient;
+            if (client == null) {
+                OkHttpClient baseClient = OkGoHelper.ItvClient;
+                OkHttpClient.Builder builder = baseClient != null
+                        ? baseClient.newBuilder()
+                        : new OkHttpClient.Builder();
+                // Seek-heavy local proxy playback is much more stable when each range reopen avoids
+                // OkHttp's long-lived HTTP/2 stream reuse.
+                builder.protocols(Collections.singletonList(Protocol.HTTP_1_1));
+                builder.connectionPool(new ConnectionPool(0, 1, TimeUnit.MILLISECONDS));
+                builder.retryOnConnectionFailure(true);
+                client = builder.build();
+                localProxyStreamClient = client;
+            }
+        }
+        return client;
     }
 
     private static Response openChunkResponse(String url, Map<String, String> requestHeaders, long start, long end) throws IOException {
@@ -489,6 +570,7 @@ public class Proxy {
         }
         String[] m3u8Lines = m3u8Content.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
         StringBuilder processedM3u8 = new StringBuilder();
+        List<String> mediaSegmentUrls = new ArrayList<>();
 
         for (String rawLine : m3u8Lines) {
             String line = rawLine == null ? "" : rawLine.trim();
@@ -497,15 +579,23 @@ public class Proxy {
                 continue;
             }
             if (line.startsWith("#")) {
-                processedM3u8.append(rewriteM3u8DirectiveLine(rawLine, m3u8Url, headers)).append("\n");
+                processedM3u8.append(rewriteM3u8DirectiveLine(rawLine, m3u8Url, headers, mediaSegmentUrls)).append("\n");
             } else {
-                processedM3u8.append(joinUrl(m3u8Url, line, headers)).append("\n");
+                String resolvedUrl = resolveUrl(m3u8Url, line);
+                if (!TextUtils.isEmpty(resolvedUrl) && !looksLikeM3u8(resolvedUrl)) {
+                    mediaSegmentUrls.add(resolvedUrl);
+                }
+                processedM3u8.append(rewriteResolvedUrl(line, resolvedUrl, headers)).append("\n");
             }
         }
+        registerHlsPlaylist(m3u8Url, headers, mediaSegmentUrls);
         return processedM3u8.toString();
     }
 
-    private static String rewriteM3u8DirectiveLine(String rawLine, String baseUrl, Map<String, String> headers) {
+    private static String rewriteM3u8DirectiveLine(String rawLine,
+                                                   String baseUrl,
+                                                   Map<String, String> headers,
+                                                   List<String> mediaSegmentUrls) {
         if (TextUtils.isEmpty(rawLine) || !rawLine.contains("URI=")) {
             return rawLine;
         }
@@ -514,7 +604,11 @@ public class Proxy {
         boolean replaced = false;
         while (matcher.find()) {
             String target = matcher.group(2) != null ? matcher.group(2) : matcher.group(3);
-            String rewritten = joinUrl(baseUrl, target, headers);
+            String resolvedUrl = resolveUrl(baseUrl, target);
+            if (!TextUtils.isEmpty(resolvedUrl) && !looksLikeM3u8(resolvedUrl) && mediaSegmentUrls != null) {
+                mediaSegmentUrls.add(resolvedUrl);
+            }
+            String rewritten = rewriteResolvedUrl(target, resolvedUrl, headers);
             String quote = matcher.group(1) != null && matcher.group(1).startsWith("'") ? "'" : "\"";
             matcher.appendReplacement(buffer, Matcher.quoteReplacement("URI=" + quote + rewritten + quote));
             replaced = true;
@@ -527,26 +621,39 @@ public class Proxy {
     }
 
     private static String joinUrl(String base, String url, Map<String, String> headers) {
+        return rewriteResolvedUrl(url, resolveUrl(base, url), headers);
+    }
+
+    private static String rewriteResolvedUrl(String originalUrl, String resolvedUrl, Map<String, String> headers) {
+        if (TextUtils.isEmpty(resolvedUrl)) {
+            return originalUrl == null ? "" : originalUrl;
+        }
+        try {
+            return buildLiveProxyUrl(resolvedUrl, headers);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return originalUrl == null ? resolvedUrl : originalUrl;
+        }
+    }
+
+    private static String resolveUrl(String base, String url) {
         if (base == null) base = "";
         if (url == null) url = "";
         try {
             URI baseUri = new URI(base.trim());
             url = url.trim();
             URI urlUri = new URI(url);
-            String resolvedUrl;
             if (url.startsWith("http://") || url.startsWith("https://")) {
-                resolvedUrl = urlUri.toString();
+                return urlUri.toString();
             } else if (url.startsWith("://")) {
-                resolvedUrl = new URI(baseUri.getScheme() + url).toString();
+                return new URI(baseUri.getScheme() + url).toString();
             } else if (url.startsWith("//")) {
-                resolvedUrl = new URI(baseUri.getScheme() + ":" + url).toString();
-            } else {
-                resolvedUrl = baseUri.resolve(url).toString();
+                return new URI(baseUri.getScheme() + ":" + url).toString();
             }
-            return buildLiveProxyUrl(resolvedUrl, headers);
+            return baseUri.resolve(url).toString();
         } catch (Exception e) {
             e.printStackTrace();
-            return url;
+            return null;
         }
     }
 
@@ -696,9 +803,511 @@ public class Proxy {
             if (headerJson.length() == 0) {
                 return "";
             }
-            return "&header=" + URLEncoder.encode(headerJson.toString(), "UTF-8");
+        return "&header=" + URLEncoder.encode(headerJson.toString(), "UTF-8");
         } catch (Exception ignored) {
             return "";
+        }
+    }
+
+    private static Object[] tryServePrefetchedHlsSegment(String url, Map<String, String> requestHeaders) {
+        if (!TextUtils.isEmpty(findHeaderValue(requestHeaders, "Range"))) {
+            return null;
+        }
+        String segmentKey = resolveHlsSegmentLookupKey(url, requestHeaders);
+        HlsSegmentCacheEntry cacheEntry;
+        synchronized (HLS_PREFETCH_LOCK) {
+            cacheEntry = HLS_SEGMENT_CACHE.get(segmentKey);
+        }
+        if (cacheEntry == null) {
+            return null;
+        }
+        SpiderDebug.log("hls-prefetch hit"
+                + " bytes=" + cacheEntry.data.length
+                + " cache=" + (hlsSegmentCacheBytes / 1024L / 1024L) + "MB"
+                + " url=" + abbreviateUrl(url));
+        Object[] result = new Object[4];
+        result[0] = 200;
+        result[1] = cacheEntry.contentType;
+        result[2] = new ByteArrayInputStream(cacheEntry.data);
+        Map<String, String> responseHeaders = new HashMap<>();
+        responseHeaders.put("Content-Length", String.valueOf(cacheEntry.data.length));
+        responseHeaders.put("Cache-Control", "no-transform");
+        responseHeaders.put("Accept-Ranges", "bytes");
+        result[3] = responseHeaders;
+        return result;
+    }
+
+    private static boolean awaitPrefetchedHlsSegment(String url, Map<String, String> requestHeaders) {
+        if (!TextUtils.isEmpty(findHeaderValue(requestHeaders, "Range"))) {
+            return false;
+        }
+        String segmentKey = resolveHlsSegmentLookupKey(url, requestHeaders);
+        Future<?> future;
+        synchronized (HLS_PREFETCH_LOCK) {
+            future = HLS_PREFETCH_INFLIGHT.get(segmentKey);
+        }
+        if (future == null) {
+            return false;
+        }
+        SpiderDebug.log("hls-prefetch wait"
+                + " timeoutMs=" + HLS_PREFETCH_WAIT_MS
+                + " url=" + abbreviateUrl(url));
+        try {
+            future.get(HLS_PREFETCH_WAIT_MS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            SpiderDebug.log("hls-prefetch wait-timeout url=" + abbreviateUrl(url));
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (ExecutionException ignored) {
+            return false;
+        }
+        synchronized (HLS_PREFETCH_LOCK) {
+            return HLS_SEGMENT_CACHE.containsKey(segmentKey);
+        }
+    }
+
+    private static void scheduleHlsPrefetchAfterSegment(String url, Map<String, String> requestHeaders) {
+        HlsSegmentRef segmentRef = findHlsSegmentRef(url, requestHeaders);
+        if (segmentRef == null) {
+            return;
+        }
+        scheduleHlsPrefetchWindow(segmentRef.playlistKey, segmentRef.index + 1);
+    }
+
+    private static void registerHlsPlaylist(String playlistUrl,
+                                            Map<String, String> headers,
+                                            List<String> mediaSegmentUrls) {
+        if (TextUtils.isEmpty(playlistUrl) || mediaSegmentUrls == null || mediaSegmentUrls.isEmpty()) {
+            return;
+        }
+        String playlistKey = buildHlsPlaylistKey(playlistUrl, headers);
+        HlsPlaylistState newState = new HlsPlaylistState(
+                playlistKey,
+                copyHlsPrefetchHeaders(headers),
+                new ArrayList<>(mediaSegmentUrls)
+        );
+        synchronized (HLS_PREFETCH_LOCK) {
+            HlsPlaylistState previous = HLS_PLAYLISTS.remove(playlistKey);
+            if (previous != null) {
+                removePlaylistIndexLocked(previous);
+            }
+            HLS_PLAYLISTS.put(playlistKey, newState);
+            for (int i = 0; i < newState.segmentUrls.size(); i++) {
+                String segmentUrl = newState.segmentUrls.get(i);
+                String segmentKey = buildHlsSegmentKey(segmentUrl, newState.headers);
+                HLS_SEGMENT_INDEX.put(segmentKey, new HlsSegmentRef(playlistKey, i));
+                HLS_SEGMENT_URL_ALIAS.put(segmentUrl, segmentKey);
+            }
+            while (HLS_PLAYLISTS.size() > HLS_PREFETCH_MAX_PLAYLISTS) {
+                Map.Entry<String, HlsPlaylistState> eldest = HLS_PLAYLISTS.entrySet().iterator().next();
+                HLS_PLAYLISTS.remove(eldest.getKey());
+                removePlaylistIndexLocked(eldest.getValue());
+            }
+        }
+        logHlsPrefetchConfigIfNeeded();
+        SpiderDebug.log("hls-prefetch playlist"
+                + " segments=" + mediaSegmentUrls.size()
+                + " budget=" + (HLS_PREFETCH_CACHE_BYTES / 1024L / 1024L) + "MB"
+                + " url=" + abbreviateUrl(playlistUrl));
+        scheduleHlsPrefetchWindow(playlistKey, 0);
+        warmupHlsPlaylist(playlistKey);
+    }
+
+    private static void scheduleHlsPrefetchWindow(String playlistKey, int startIndex) {
+        HlsPlaylistState playlistState;
+        synchronized (HLS_PREFETCH_LOCK) {
+            playlistState = HLS_PLAYLISTS.get(playlistKey);
+        }
+        if (playlistState == null || playlistState.segmentUrls.isEmpty()) {
+            return;
+        }
+        int scheduledLookahead = 0;
+        int safeStart = Math.max(0, startIndex);
+        for (int i = safeStart; i < playlistState.segmentUrls.size(); i++) {
+            String segmentUrl = playlistState.segmentUrls.get(i);
+            String segmentKey = buildHlsSegmentKey(segmentUrl, playlistState.headers);
+            boolean alreadyCovered;
+            synchronized (HLS_PREFETCH_LOCK) {
+                alreadyCovered = HLS_SEGMENT_CACHE.containsKey(segmentKey) || HLS_PREFETCH_INFLIGHT.containsKey(segmentKey);
+            }
+            if (!alreadyCovered) {
+                scheduleHlsSegmentPrefetch(playlistState, i, segmentUrl, segmentKey);
+            }
+            scheduledLookahead++;
+            if (scheduledLookahead >= HLS_PREFETCH_LOOKAHEAD_SEGMENTS) {
+                break;
+            }
+        }
+    }
+
+    private static void warmupHlsPlaylist(String playlistKey) {
+        HlsPlaylistState playlistState;
+        synchronized (HLS_PREFETCH_LOCK) {
+            playlistState = HLS_PLAYLISTS.get(playlistKey);
+        }
+        if (playlistState == null || playlistState.segmentUrls.isEmpty()) {
+            return;
+        }
+        int targetSegments = Math.min(HLS_PREFETCH_STARTUP_SEGMENTS, playlistState.segmentUrls.size());
+        if (targetSegments <= 0) {
+            return;
+        }
+        long deadline = System.currentTimeMillis() + HLS_PREFETCH_STARTUP_WAIT_MS;
+        int readySegments = 0;
+        while (System.currentTimeMillis() < deadline) {
+            Future<?> pendingFuture;
+            synchronized (HLS_PREFETCH_LOCK) {
+                readySegments = countWarmupReadySegmentsLocked(playlistState, targetSegments);
+                if (readySegments >= targetSegments) {
+                    break;
+                }
+                pendingFuture = findWarmupFutureLocked(playlistState, targetSegments);
+            }
+            if (pendingFuture == null) {
+                scheduleHlsPrefetchWindow(playlistKey, readySegments);
+                long sleepMs = Math.min(HLS_PREFETCH_FUTURE_POLL_WAIT_MS, Math.max(1L, deadline - System.currentTimeMillis()));
+                try {
+                    Thread.sleep(sleepMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                continue;
+            }
+            long remainingMs = deadline - System.currentTimeMillis();
+            if (remainingMs <= 0L) {
+                break;
+            }
+            try {
+                pendingFuture.get(Math.min(remainingMs, HLS_PREFETCH_FUTURE_POLL_WAIT_MS), TimeUnit.MILLISECONDS);
+            } catch (TimeoutException ignored) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (ExecutionException ignored) {
+            }
+        }
+        synchronized (HLS_PREFETCH_LOCK) {
+            readySegments = countWarmupReadySegmentsLocked(playlistState, targetSegments);
+        }
+        SpiderDebug.log("hls-prefetch warmup"
+                + " ready=" + readySegments + "/" + targetSegments
+                + " cache=" + (hlsSegmentCacheBytes / 1024L / 1024L) + "MB"
+                + " timeoutMs=" + HLS_PREFETCH_STARTUP_WAIT_MS
+                + " url=" + abbreviateUrl(playlistState.segmentUrls.get(0)));
+    }
+
+    private static int countWarmupReadySegmentsLocked(HlsPlaylistState playlistState, int targetSegments) {
+        int ready = 0;
+        int limit = Math.min(targetSegments, playlistState.segmentUrls.size());
+        for (int i = 0; i < limit; i++) {
+            String segmentKey = buildHlsSegmentKey(playlistState.segmentUrls.get(i), playlistState.headers);
+            if (HLS_SEGMENT_CACHE.containsKey(segmentKey)) {
+                ready++;
+            }
+        }
+        return ready;
+    }
+
+    private static Future<?> findWarmupFutureLocked(HlsPlaylistState playlistState, int targetSegments) {
+        int limit = Math.min(targetSegments, playlistState.segmentUrls.size());
+        for (int i = 0; i < limit; i++) {
+            String segmentKey = buildHlsSegmentKey(playlistState.segmentUrls.get(i), playlistState.headers);
+            if (HLS_SEGMENT_CACHE.containsKey(segmentKey)) {
+                continue;
+            }
+            Future<?> future = HLS_PREFETCH_INFLIGHT.get(segmentKey);
+            if (future != null) {
+                return future;
+            }
+        }
+        return null;
+    }
+
+    private static void scheduleHlsSegmentPrefetch(final HlsPlaylistState playlistState,
+                                                   final int index,
+                                                   final String segmentUrl,
+                                                   final String segmentKey) {
+        synchronized (HLS_PREFETCH_LOCK) {
+            if (HLS_SEGMENT_CACHE.containsKey(segmentKey) || HLS_PREFETCH_INFLIGHT.containsKey(segmentKey)) {
+                return;
+            }
+            Future<?> future = HLS_PREFETCH_EXECUTOR.submit(new Runnable() {
+                @Override
+                public void run() {
+                    prefetchHlsSegment(playlistState, index, segmentUrl, segmentKey);
+                }
+            });
+            HLS_PREFETCH_INFLIGHT.put(segmentKey, future);
+        }
+    }
+
+    private static void prefetchHlsSegment(HlsPlaylistState playlistState,
+                                           int index,
+                                           String segmentUrl,
+                                           String segmentKey) {
+        try {
+            SpiderDebug.log("hls-prefetch start"
+                    + " index=" + index
+                    + " url=" + abbreviateUrl(segmentUrl));
+            HlsSegmentCacheEntry cacheEntry = fetchHlsSegment(segmentUrl, playlistState.headers);
+            if (cacheEntry != null) {
+                storeHlsSegmentCacheEntry(segmentKey, cacheEntry);
+                SpiderDebug.log("hls-prefetch store"
+                        + " index=" + index
+                        + " bytes=" + cacheEntry.data.length
+                        + " cache=" + (hlsSegmentCacheBytes / 1024L / 1024L) + "MB"
+                        + " url=" + abbreviateUrl(segmentUrl));
+            }
+        } catch (Throwable e) {
+            SpiderDebug.log("hls-prefetch fail"
+                    + " index=" + index
+                    + " url=" + abbreviateUrl(segmentUrl)
+                    + " err=" + e.getMessage());
+        } finally {
+            synchronized (HLS_PREFETCH_LOCK) {
+                HLS_PREFETCH_INFLIGHT.remove(segmentKey);
+            }
+        }
+    }
+
+    private static HlsSegmentCacheEntry fetchHlsSegment(String url,
+                                                        Map<String, String> requestHeaders) throws IOException {
+        Request request = buildRequest(url, requestHeaders);
+        try (Response response = executeRequest(OkGoHelper.ItvClient, request)) {
+            if (!response.isSuccessful() || response.body() == null) {
+                throw new IOException("Prefetch request failed with code: " + response.code());
+            }
+            long declaredLength = response.body().contentLength();
+            if (declaredLength > HLS_PREFETCH_MAX_SEGMENT_BYTES) {
+                SpiderDebug.log("hls-prefetch skip-oversize"
+                        + " declared=" + declaredLength
+                        + " url=" + abbreviateUrl(url));
+                return null;
+            }
+            byte[] payload = readBodyCapped(response.body().byteStream(), HLS_PREFETCH_MAX_SEGMENT_BYTES);
+            if (payload == null || payload.length == 0) {
+                return null;
+            }
+            String contentType = normalizePassthroughContentType(url, response.header("Content-Type"));
+            return new HlsSegmentCacheEntry(contentType, payload);
+        }
+    }
+
+    private static byte[] readBodyCapped(InputStream inputStream, int maxBytes) throws IOException {
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream(Math.min(maxBytes, 512 * 1024));
+        byte[] buffer = new byte[32 * 1024];
+        int total = 0;
+        while (true) {
+            int count = inputStream.read(buffer);
+            if (count < 0) {
+                break;
+            }
+            total += count;
+            if (total > maxBytes) {
+                return null;
+            }
+            outputStream.write(buffer, 0, count);
+        }
+        return outputStream.toByteArray();
+    }
+
+    private static void storeHlsSegmentCacheEntry(String segmentKey, HlsSegmentCacheEntry cacheEntry) {
+        if (cacheEntry == null || cacheEntry.data == null || cacheEntry.data.length == 0) {
+            return;
+        }
+        synchronized (HLS_PREFETCH_LOCK) {
+            HlsSegmentCacheEntry previous = HLS_SEGMENT_CACHE.put(segmentKey, cacheEntry);
+            if (previous != null) {
+                hlsSegmentCacheBytes -= previous.data.length;
+            }
+            hlsSegmentCacheBytes += cacheEntry.data.length;
+            while (hlsSegmentCacheBytes > HLS_PREFETCH_CACHE_BYTES && !HLS_SEGMENT_CACHE.isEmpty()) {
+                Map.Entry<String, HlsSegmentCacheEntry> eldest = HLS_SEGMENT_CACHE.entrySet().iterator().next();
+                HLS_SEGMENT_CACHE.remove(eldest.getKey());
+                hlsSegmentCacheBytes -= eldest.getValue().data.length;
+                SpiderDebug.log("hls-prefetch evict"
+                        + " bytes=" + eldest.getValue().data.length
+                        + " cache=" + (hlsSegmentCacheBytes / 1024L / 1024L) + "MB");
+            }
+        }
+    }
+
+    private static void removePlaylistIndexLocked(HlsPlaylistState playlistState) {
+        if (playlistState == null) {
+            return;
+        }
+        for (String segmentUrl : playlistState.segmentUrls) {
+            String segmentKey = buildHlsSegmentKey(segmentUrl, playlistState.headers);
+            HlsSegmentRef currentRef = HLS_SEGMENT_INDEX.get(segmentKey);
+            if (currentRef != null && playlistState.playlistKey.equals(currentRef.playlistKey)) {
+                HLS_SEGMENT_INDEX.remove(segmentKey);
+            }
+            String aliasKey = HLS_SEGMENT_URL_ALIAS.get(segmentUrl);
+            if (segmentKey.equals(aliasKey)) {
+                HLS_SEGMENT_URL_ALIAS.remove(segmentUrl);
+            }
+        }
+    }
+
+    private static HlsSegmentRef findHlsSegmentRef(String url, Map<String, String> requestHeaders) {
+        String segmentKey = resolveHlsSegmentLookupKey(url, requestHeaders);
+        synchronized (HLS_PREFETCH_LOCK) {
+            return HLS_SEGMENT_INDEX.get(segmentKey);
+        }
+    }
+
+    private static String resolveHlsSegmentLookupKey(String url, Map<String, String> requestHeaders) {
+        String directKey = buildHlsSegmentKey(url, requestHeaders);
+        synchronized (HLS_PREFETCH_LOCK) {
+            if (HLS_SEGMENT_CACHE.containsKey(directKey)
+                    || HLS_PREFETCH_INFLIGHT.containsKey(directKey)
+                    || HLS_SEGMENT_INDEX.containsKey(directKey)) {
+                return directKey;
+            }
+            String aliasKey = HLS_SEGMENT_URL_ALIAS.get(url);
+            if (aliasKey != null && !aliasKey.equals(directKey)) {
+                SpiderDebug.log("hls-prefetch alias"
+                        + " url=" + abbreviateUrl(url));
+                return aliasKey;
+            }
+            return directKey;
+        }
+    }
+
+    private static Map<String, String> copyHlsPrefetchHeaders(Map<String, String> headers) {
+        HashMap<String, String> copiedHeaders = new HashMap<>();
+        if (headers == null || headers.isEmpty()) {
+            return copiedHeaders;
+        }
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) {
+                continue;
+            }
+            String value = entry.getValue().trim();
+            if (value.isEmpty() || "Range".equalsIgnoreCase(entry.getKey())) {
+                continue;
+            }
+            copiedHeaders.put(entry.getKey(), value);
+        }
+        return copiedHeaders;
+    }
+
+    private static String buildHlsPlaylistKey(String playlistUrl, Map<String, String> headers) {
+        return playlistUrl + "|" + buildHlsHeaderFingerprint(headers);
+    }
+
+    private static String buildHlsSegmentKey(String segmentUrl, Map<String, String> headers) {
+        return segmentUrl + "|" + buildHlsHeaderFingerprint(headers);
+    }
+
+    private static String buildHlsHeaderFingerprint(Map<String, String> headers) {
+        StringBuilder fingerprint = new StringBuilder();
+        for (String headerName : HLS_PREFETCH_KEY_HEADERS) {
+            String value = findHeaderValue(headers, headerName);
+            fingerprint.append(headerName).append('=');
+            if (value != null) {
+                fingerprint.append(value.trim());
+            }
+            fingerprint.append(';');
+        }
+        return fingerprint.toString();
+    }
+
+    private static Object[] buildStaticPayloadResult(int statusCode, String contentType, byte[] payload) {
+        Object[] result = new Object[4];
+        result[0] = statusCode;
+        result[1] = contentType;
+        result[2] = new ByteArrayInputStream(payload);
+        Map<String, String> responseHeaders = new HashMap<>();
+        responseHeaders.put("Content-Length", String.valueOf(payload.length));
+        responseHeaders.put("Cache-Control", "no-transform");
+        result[3] = responseHeaders;
+        return result;
+    }
+
+    private static void logHlsPrefetchConfigIfNeeded() {
+        if (hlsPrefetchConfigLogged) {
+            return;
+        }
+        synchronized (HLS_PREFETCH_LOCK) {
+            if (hlsPrefetchConfigLogged) {
+                return;
+            }
+            hlsPrefetchConfigLogged = true;
+            SpiderDebug.log("hls-prefetch config"
+                    + " heap=" + (Runtime.getRuntime().maxMemory() / 1024L / 1024L) + "MB"
+                    + " budget=" + (HLS_PREFETCH_CACHE_BYTES / 1024L / 1024L) + "MB"
+                    + " threads=4"
+                    + " lookahead=" + HLS_PREFETCH_LOOKAHEAD_SEGMENTS
+                    + " startup=" + HLS_PREFETCH_STARTUP_SEGMENTS + "/" + HLS_PREFETCH_STARTUP_WAIT_MS
+                    + " maxSegment=" + (HLS_PREFETCH_MAX_SEGMENT_BYTES / 1024 / 1024) + "MB");
+        }
+    }
+
+    private static long resolveHlsPrefetchCacheBytes() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory <= 0L) {
+            return 64L * 1024L * 1024L;
+        }
+        long preferred = maxMemory / 3L;
+        long minBudget = Math.max(16L * 1024L * 1024L, maxMemory / 6L);
+        if (preferred < minBudget) {
+            preferred = minBudget;
+        }
+        return Math.min(preferred, HLS_PREFETCH_MAX_CACHE_BYTES);
+    }
+
+    private static String abbreviateUrl(String url) {
+        if (TextUtils.isEmpty(url) || url.length() <= 120) {
+            return url;
+        }
+        return url.substring(0, 56) + "..." + url.substring(url.length() - 56);
+    }
+
+    private static final class M3u8FetchResult {
+        private final String effectiveUrl;
+        private final String content;
+
+        private M3u8FetchResult(String effectiveUrl, String content) {
+            this.effectiveUrl = effectiveUrl;
+            this.content = content;
+        }
+    }
+
+    private static final class HlsPlaylistState {
+        private final String playlistKey;
+        private final Map<String, String> headers;
+        private final List<String> segmentUrls;
+
+        private HlsPlaylistState(String playlistKey,
+                                 Map<String, String> headers,
+                                 List<String> segmentUrls) {
+            this.playlistKey = playlistKey;
+            this.headers = headers;
+            this.segmentUrls = segmentUrls;
+        }
+    }
+
+    private static final class HlsSegmentRef {
+        private final String playlistKey;
+        private final int index;
+
+        private HlsSegmentRef(String playlistKey, int index) {
+            this.playlistKey = playlistKey;
+            this.index = index;
+        }
+    }
+
+    private static final class HlsSegmentCacheEntry {
+        private final String contentType;
+        private final byte[] data;
+
+        private HlsSegmentCacheEntry(String contentType, byte[] data) {
+            this.contentType = contentType;
+            this.data = data;
         }
     }
 
@@ -832,6 +1441,12 @@ public class Proxy {
     }
 
     private static long resolveTotalLength(Response response, ContentRangeInfo contentRangeInfo) {
+        return resolveTotalLength(response, contentRangeInfo, null);
+    }
+
+    private static long resolveTotalLength(Response response,
+                                           ContentRangeInfo contentRangeInfo,
+                                           RangeRequestInfo requestRange) {
         if (contentRangeInfo != null && contentRangeInfo.total > 0L) {
             return contentRangeInfo.total;
         }
@@ -839,7 +1454,26 @@ public class Proxy {
             return -1L;
         }
         long bodyLength = response.body().contentLength();
-        return bodyLength > 0L ? bodyLength : -1L;
+        if (bodyLength <= 0L) {
+            return -1L;
+        }
+        if (requestRange != null && !requestRange.suffix && requestRange.start >= 0L) {
+            // Some upstreams answer seek reopens with 206 + Content-Length but omit Content-Range.
+            // In that case bodyLength is only the remaining window, not the file size.
+            if (contentRangeInfo == null && (response.code() == 200 || response.code() == 206)) {
+                long inferredTotal = requestRange.hasEnd
+                        ? Math.max(requestRange.end + 1L, requestRange.start + bodyLength)
+                        : requestRange.start + bodyLength;
+                SpiderDebug.log("passthroughLocalProxyRange inferredTotal"
+                        + " start=" + requestRange.start
+                        + " end=" + (requestRange.hasEnd ? requestRange.end : -1L)
+                        + " bodyLength=" + bodyLength
+                        + " code=" + response.code()
+                        + " inferred=" + inferredTotal);
+                return inferredTotal;
+            }
+        }
+        return bodyLength;
     }
 
     private static ContentRangeInfo parseContentRange(String headerValue) {
@@ -1037,6 +1671,9 @@ public class Proxy {
         private long absoluteCursor;
         private long currentChunkEnd;
         private int prematureEofCount;
+        private long lastOpenStart = -1L;
+        private long lastOpenEnd = -1L;
+        private int reopenCountForSameRange;
 
         private ReconnectingRangeInputStream(String url,
                                              Map<String, String> requestHeaders,
@@ -1156,6 +1793,17 @@ public class Proxy {
                 }
                 throw new IOException("Chunk reopen failed for " + absoluteCursor + "-" + end);
             }
+            if (lastOpenStart == absoluteCursor && lastOpenEnd == end) {
+                reopenCountForSameRange++;
+            } else {
+                lastOpenStart = absoluteCursor;
+                lastOpenEnd = end;
+                reopenCountForSameRange = 0;
+            }
+            if (reopenCountForSameRange > LOCAL_PROXY_MAX_PREMATURE_EOF + 1) {
+                response.close();
+                throw new IOException("Local proxy chunk reopen loop at " + absoluteCursor + "-" + end + " for " + url);
+            }
             currentResponse = response;
             currentStream = response.body().byteStream();
             ContentRangeInfo rangeInfo = parseContentRange(response.header("Content-Range"));
@@ -1227,6 +1875,12 @@ public class Proxy {
             if (discard <= 0L) {
                 return;
             }
+            if (rangeInfo.start == 0L && expectedStart > 0L && discard <= LOCAL_PROXY_MAX_RANGE_DISCARD) {
+                SpiderDebug.log("passthroughLocalProxyRange tolerateRestartFromZero phase=" + phase
+                        + " expected=" + expectedStart
+                        + " got=" + rangeInfo.rawValue
+                        + " discard=" + discard);
+            }
             if (discard > LOCAL_PROXY_MAX_RANGE_DISCARD) {
                 closeCurrentChunk();
                 SpiderDebug.log("passthroughLocalProxyRange upstreamIgnoredRange phase=" + phase
@@ -1244,6 +1898,9 @@ public class Proxy {
 
         @Override
         public void close() throws IOException {
+            lastOpenStart = -1L;
+            lastOpenEnd = -1L;
+            reopenCountForSameRange = 0;
             closeCurrentChunk();
         }
 

@@ -21,6 +21,6 @@
         android:gravity="center"
         android:singleLine="true"
         android:text=""
-        android:textColor="@android:color/white"
+        android:textColor="@color/search_word_text"
         android:textSize="@dimen/ts_20" />
 </LinearLayout>

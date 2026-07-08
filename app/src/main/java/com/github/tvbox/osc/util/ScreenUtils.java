@@ -11,8 +11,6 @@ import android.telephony.TelephonyManager;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
 
-import com.github.tvbox.osc.BuildConfig;
-
 public class ScreenUtils {
 
     public static double getSqrt(Activity activity) {
@@ -58,8 +56,12 @@ public class ScreenUtils {
         return false;
     }
 
+    public static boolean isTv32Device(Context context) {
+        return context != null && !isJava64Build() && isTv(context);
+    }
+
     private static boolean isJava64Build() {
-        return "java64".equals(BuildConfig.FLAVOR) || "python64".equals(BuildConfig.FLAVOR);
+        return false;
     }
 
 
