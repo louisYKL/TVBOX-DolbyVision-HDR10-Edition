@@ -34,6 +34,20 @@ public class TextureRenderView extends TextureView implements IRenderView, Textu
     @Override
     public void attachToPlayer(@NonNull AbstractPlayer player) {
         this.mMediaPlayer = player;
+        refreshSurface();
+    }
+
+    @Override
+    public void refreshSurface() {
+        if (mMediaPlayer == null || mSurface == null) {
+            return;
+        }
+        try {
+            if (mSurface.isValid()) {
+                mMediaPlayer.setSurface(mSurface);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
@@ -85,16 +99,14 @@ public class TextureRenderView extends TextureView implements IRenderView, Textu
     public void onSurfaceTextureAvailable(SurfaceTexture surfaceTexture, int width, int height) {
         if (mSurfaceTexture != null) {
             setSurfaceTexture(mSurfaceTexture);
-            if (mMediaPlayer != null && mSurface != null) {
-                mMediaPlayer.setSurface(mSurface);
+            if (mSurface == null || !mSurface.isValid()) {
+                mSurface = new Surface(mSurfaceTexture);
             }
         } else {
             mSurfaceTexture = surfaceTexture;
             mSurface = new Surface(surfaceTexture);
-            if (mMediaPlayer != null) {
-                mMediaPlayer.setSurface(mSurface);
-            }
         }
+        refreshSurface();
     }
 
     @Override

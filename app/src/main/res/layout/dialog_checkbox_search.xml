@@ -29,7 +29,7 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:padding="@dimen/vs_30"
-                android:textColor="@color/color_FFFFFF"
+                android:textColor="@color/apple_tv_button_text_light_focus"
                 android:textSize="@dimen/ts_26"
                 android:text="全选" />
 
@@ -46,7 +46,7 @@
                 android:focusable="true"
                 android:padding="@dimen/vs_30"
                 android:text="全不选"
-                android:textColor="@color/color_FFFFFF"
+                android:textColor="@color/apple_tv_button_text_light_focus"
                 android:textSize="@dimen/ts_26" />
         </LinearLayout>
 

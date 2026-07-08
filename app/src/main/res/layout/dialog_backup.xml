@@ -54,7 +54,7 @@
                 android:gravity="center"
                 android:padding="@dimen/vs_10"
                 android:text="立即备份"
-                android:textColor="@color/color_FFFFFF"
+                android:textColor="@color/apple_tv_button_text_light_focus"
                 android:textSize="@dimen/ts_22" />
 
             <TextView
@@ -70,7 +70,7 @@
                 android:gravity="center"
                 android:padding="@dimen/vs_10"
                 android:text="存储权限"
-                android:textColor="@color/color_FFFFFF"
+                android:textColor="@color/apple_tv_button_text_light_focus"
                 android:textSize="@dimen/ts_22" />
         </LinearLayout>
 

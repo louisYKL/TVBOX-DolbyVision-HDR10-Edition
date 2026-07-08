@@ -58,7 +58,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="历史直播"
-                    android:textColor="@color/apple_tv_text_primary"
+                    android:textColor="@color/apple_tv_button_text_light_focus"
                     android:textSize="@dimen/ts_22"
                     android:layout_marginRight="@dimen/vs_5" />
 
@@ -73,7 +73,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="存储权限"
-                    android:textColor="@color/apple_tv_text_primary"
+                    android:textColor="@color/apple_tv_button_text_light_focus"
                     android:textSize="@dimen/ts_22"
                     android:layout_marginLeft="@dimen/vs_5" />
             </LinearLayout>
@@ -128,7 +128,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="确定"
-                    android:textColor="@color/apple_tv_text_primary"
+                    android:textColor="@color/apple_tv_button_text_light_focus"
                     android:textSize="@dimen/ts_22"
                     android:layout_marginLeft="@dimen/vs_5" />
             </LinearLayout>
@@ -182,7 +182,7 @@
                     android:gravity="center"
                     android:padding="@dimen/vs_10"
                     android:text="确定"
-                    android:textColor="@color/apple_tv_text_primary"
+                    android:textColor="@color/apple_tv_button_text_light_focus"
                     android:textSize="@dimen/ts_22"
                     android:layout_marginLeft="@dimen/vs_5" />
             </LinearLayout>

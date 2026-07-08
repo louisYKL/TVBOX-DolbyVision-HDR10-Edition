@@ -22,6 +22,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsetsController;
+import android.graphics.Rect;
 import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
 import android.widget.TextView;
@@ -73,7 +74,7 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         if (isJava64Build()) {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
         }
         try {
             if (screenRatio < 0) {
@@ -100,6 +101,7 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
     @Override
     protected void onResume() {
         super.onResume();
+        ensureLandscapeContentInflated();
         hideSysBar();
         configureWindowMaterial();
         if (isTvDevice()) {
@@ -117,6 +119,7 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
+            ensureLandscapeContentInflated();
             hideSysBar();
             configureWindowMaterial();
             if (isTvDevice()) {
@@ -295,6 +298,10 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
 
     @Override
     protected void onDestroy() {
+        View decor = getWindow() == null ? null : getWindow().getDecorView();
+        if (decor != null) {
+            decor.removeCallbacks(mEnsureLandscapeContentRunnable);
+        }
         if (isTvDevice()) {
             LiquidGlassSnapshotManager.detach(this);
         }
@@ -378,6 +385,33 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         return !(screenRatio >= 4.0f);
     }
 
+    private void updateAutoSizeConfigForLandscape() {
+        try {
+            int width = 0;
+            int height = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Rect bounds = getWindowManager().getCurrentWindowMetrics().getBounds();
+                if (bounds != null) {
+                    width = bounds.width();
+                    height = bounds.height();
+                }
+            } else {
+                DisplayMetrics metrics = new DisplayMetrics();
+                getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+                width = metrics.widthPixels;
+                height = metrics.heightPixels;
+            }
+            if (width > 0 && height > 0) {
+                int landscapeWidth = Math.max(width, height);
+                int landscapeHeight = Math.min(width, height);
+                me.jessyan.autosize.AutoSizeConfig.getInstance()
+                        .setScreenWidth(landscapeWidth)
+                        .setScreenHeight(landscapeHeight);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     public boolean shouldApplyLandscapeDensity() {
         if (isTvDevice()) {
             return true;
@@ -385,7 +419,8 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         if (!isJava64Build()) {
             return false;
         }
-        return isLandscapeReadyForJava64Phone();
+        updateAutoSizeConfigForLandscape();
+        return true;
     }
 
     public boolean isTvDevice() {
@@ -446,7 +481,8 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
 
     private boolean isLandscapeReadyForJava64Phone() {
         Configuration configuration = super.getResources().getConfiguration();
-        return configuration != null && configuration.orientation == Configuration.ORIENTATION_LANDSCAPE;
+        return hasLandscapeWindowMetrics()
+                || (configuration != null && configuration.orientation == Configuration.ORIENTATION_LANDSCAPE);
     }
 
     private void showDeferredLandscapePlaceholder() {
@@ -462,6 +498,12 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
     private void ensureLandscapeContentInflated() {
         if (!contentInitialized && !shouldDeferLandscapeContent()) {
             inflateActivityContentIfNeeded();
+        } else if (!contentInitialized && deferredLandscapeContent) {
+            View decor = getWindow() == null ? null : getWindow().getDecorView();
+            if (decor != null) {
+                decor.removeCallbacks(mEnsureLandscapeContentRunnable);
+                decor.postDelayed(mEnsureLandscapeContentRunnable, 32L);
+            }
         }
     }
 
@@ -482,6 +524,39 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         }
         AppManager.getInstance().addActivity(this);
         activityRegistered = true;
+    }
+
+    private final Runnable mEnsureLandscapeContentRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isFinishing() || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed())) {
+                return;
+            }
+            ensureLandscapeContentInflated();
+        }
+    };
+
+    private boolean hasLandscapeWindowMetrics() {
+        if (!isJava64Build() || isTvDevice()) {
+            return false;
+        }
+        try {
+            int width;
+            int height;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Rect bounds = getWindowManager().getCurrentWindowMetrics().getBounds();
+                width = bounds == null ? 0 : bounds.width();
+                height = bounds == null ? 0 : bounds.height();
+            } else {
+                DisplayMetrics metrics = new DisplayMetrics();
+                getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+                width = metrics.widthPixels;
+                height = metrics.heightPixels;
+            }
+            return width > 0 && height > 0 && width > height;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     protected static BitmapDrawable globalWp = null;

@@ -16,6 +16,6 @@
         android:marqueeRepeatLimit="marquee_forever"
         android:padding="@dimen/vs_10"
         android:singleLine="true"
-        android:textColor="@android:color/white"
+        android:textColor="@color/search_word_text"
         android:textSize="@dimen/ts_20" />
 </LinearLayout>

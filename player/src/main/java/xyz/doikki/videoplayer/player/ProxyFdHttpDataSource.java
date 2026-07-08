@@ -14,7 +14,7 @@ final class ProxyFdHttpDataSource extends ProxyFileDescriptorCallback {
     private final HttpRangeMediaDataSource delegate;
 
     ProxyFdHttpDataSource(String url, Map<String, String> headers) {
-        delegate = new HttpRangeMediaDataSource(url, headers);
+        delegate = HttpRangeMediaDataSource.createForStreamingPlayback(url, headers);
     }
 
     @Override

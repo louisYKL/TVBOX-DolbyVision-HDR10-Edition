@@ -20,6 +20,10 @@ public class ControlWrapper implements MediaPlayerControl, IVideoController {
         mController = controller;
     }
 
+    public MediaPlayerControl getPlayerControl() {
+        return mPlayerControl;
+    }
+
     @Override
     public void start() {
         mPlayerControl.start();
@@ -68,6 +72,11 @@ public class ControlWrapper implements MediaPlayerControl, IVideoController {
     @Override
     public boolean isFullScreen() {
         return mPlayerControl.isFullScreen();
+    }
+
+    @Override
+    public boolean isFullScreenViewMoving() {
+        return mPlayerControl.isFullScreenViewMoving();
     }
 
     @Override

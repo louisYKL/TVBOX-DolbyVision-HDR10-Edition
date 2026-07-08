@@ -10,5 +10,5 @@
     android:gravity="center"
     android:padding="@dimen/vs_10"
     android:singleLine="true"
-    android:textColor="@color/apple_tv_text_primary"
+    android:textColor="@color/apple_tv_button_text_light_focus"
     android:textSize="@dimen/ts_20" />

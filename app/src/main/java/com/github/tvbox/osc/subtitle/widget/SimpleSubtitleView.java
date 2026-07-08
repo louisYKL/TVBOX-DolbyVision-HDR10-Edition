@@ -65,6 +65,7 @@ public class SimpleSubtitleView extends TextView
         SubtitleEngine.OnSubtitlePreparedListener {
 
     private static final String EMPTY_TEXT = "";
+    private static final String MANUAL_SUBTITLE_SELECTION_SUFFIX = "@manual";
 
     private SubtitleEngine mSubtitleEngine;
     private static final Pattern ASS_PRIMARY_COLOR =
@@ -226,10 +227,44 @@ public class SimpleSubtitleView extends TextView
         return mSubtitleEngine.getPlaySubtitleCacheKey();
     }
 
+    private String getManualSubtitleCacheKey() {
+        String subtitleCacheKey = getPlaySubtitleCacheKey();
+        if (TextUtils.isEmpty(subtitleCacheKey)) {
+            return null;
+        }
+        return subtitleCacheKey + MANUAL_SUBTITLE_SELECTION_SUFFIX;
+    }
+
+    public void setManualExternalSubtitleSelection(boolean manualSelection) {
+        String manualCacheKey = getManualSubtitleCacheKey();
+        if (TextUtils.isEmpty(manualCacheKey)) {
+            return;
+        }
+        String cacheKey = MD5.string2MD5(manualCacheKey);
+        if (manualSelection) {
+            CacheManager.save(cacheKey, "1");
+        } else {
+            CacheManager.delete(cacheKey, "");
+        }
+    }
+
+    public boolean hasManualExternalSubtitleSelection() {
+        String manualCacheKey = getManualSubtitleCacheKey();
+        if (TextUtils.isEmpty(manualCacheKey)) {
+            return false;
+        }
+        Object cached = CacheManager.getCache(MD5.string2MD5(manualCacheKey));
+        return "1".equals(String.valueOf(cached));
+    }
+
     public void clearSubtitleCache() {
         String subtitleCacheKey = getPlaySubtitleCacheKey();
         if (subtitleCacheKey != null && subtitleCacheKey.length() > 0) {
             CacheManager.delete(MD5.string2MD5(subtitleCacheKey), "");
+        }
+        String manualCacheKey = getManualSubtitleCacheKey();
+        if (!TextUtils.isEmpty(manualCacheKey)) {
+            CacheManager.delete(MD5.string2MD5(manualCacheKey), "");
         }
     }
 
@@ -407,12 +442,14 @@ public class SimpleSubtitleView extends TextView
 
     private void drawBackGroundText() {
         TextPaint tp = backGroundText.getPaint();
-        //设置描边宽度
+        // Render the background layer as outline only. Filling the duplicated
+        // text body creates a second gray subtitle layer on TV panels.
         tp.setStrokeWidth(10);
-        //背景描边并填充全部
-        tp.setStyle(Paint.Style.FILL_AND_STROKE);
-        //设置描边颜色
-        backGroundText.setTextColor(Color.BLACK);
+        tp.setStyle(Paint.Style.STROKE);
+        tp.setStrokeJoin(Paint.Join.ROUND);
+        tp.setStrokeMiter(10f);
+        tp.setAntiAlias(true);
+        backGroundText.setTextColor(hdrSubtitleMode ? dimForHdr(Color.BLACK) : Color.BLACK);
         //将背景的文字对齐方式做同步
         backGroundText.setGravity(getGravity());
     }

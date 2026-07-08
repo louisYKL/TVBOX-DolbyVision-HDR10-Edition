@@ -8,6 +8,8 @@ public class Subtitle {
 
     private boolean isZip;
 
+    private boolean selected;
+
     public boolean getIsZip() {
         return isZip;
     }
@@ -18,6 +20,10 @@ public class Subtitle {
 
     public String getUrl() {
         return url;
+    }
+
+    public boolean isSelected() {
+        return selected;
     }
 
     public void setName(String name) {
@@ -32,12 +38,17 @@ public class Subtitle {
         isZip = zip;
     }
 
+    public void setSelected(boolean selected) {
+        this.selected = selected;
+    }
+
     @Override
     public String toString() {
         return "Subtitle{" +
                 "name='" + name + '\'' +
                 ", url='" + url + '\'' +
                 ", isZip=" + isZip +
+                ", selected=" + selected +
                 '}';
     }
 }

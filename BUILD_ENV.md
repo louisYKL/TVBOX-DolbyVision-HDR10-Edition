@@ -4,6 +4,8 @@ All Android build dependencies for this project are already vendored under `E:\a
 
 Do not re-download SDK, JDK, Gradle, or write build caches to `C:`.
 
+Before touching playback routing or player code, also read `DEBUG_MEMORY.md`.
+
 ## Vendored paths
 
 - JDK: `_runtime/jdk/temurin11/jdk-11.0.31+11`
