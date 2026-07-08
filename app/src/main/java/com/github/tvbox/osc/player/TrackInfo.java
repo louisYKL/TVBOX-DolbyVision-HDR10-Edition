@@ -30,7 +30,7 @@ public class TrackInfo {
             if (trackInfoBean.selected) return track ? trackInfoBean.trackId : i;
             i++;
         }
-        return 99999;
+        return list.isEmpty() ? 99999 : 0;
     }
 
     public void addAudio(TrackInfoBean audio) {

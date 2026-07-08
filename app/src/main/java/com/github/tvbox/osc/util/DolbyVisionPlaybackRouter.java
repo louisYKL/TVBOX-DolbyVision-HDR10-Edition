@@ -87,115 +87,126 @@ public final class DolbyVisionPlaybackRouter {
         // 原生 DV 路由必须以“真实存在 DV 解码器 + 显示端支持 DV”为前提。
         // 仅有系统属性/XML 宣称支持，但 MediaCodecList 没有 video/dolby-vision 解码器时，
         // 32/64 位都不能冒险走原生杜比，否则会出现偏色、黑屏或只出声不出画。
-        boolean localProxyMatroskaDvNeedsCompat = looksLikeDolbyVision
+        boolean java64TouchPhone = context != null && App.isJava64Build() && !ScreenUtils.isTv(context);
+        boolean localProxyMatroskaDv = looksLikeDolbyVision
                 && matroskaLike
                 && url != null
-                && url.contains("/proxy/play/")
-                && (!streamProbe.hasHdr10BaseLayer || streamProbe.dolbyVisionProfile <= 0);
-        boolean nativeDolbyVisionDevice = caps.supportsNativeDolbyVision() && caps.displaySupportsHdr();
-        if (nativeDolbyVisionDevice) {
-            // 真实具备原生杜比视界解码器 + 显示能力的设备，不应因为 local proxy / Matroska
-            // 预探测缺少 hdr10Base/profile 就被错误压到兼容链。这里统一保留系统原生 DV。
-            localProxyMatroskaDvNeedsCompat = false;
-        }
-        boolean preferNativeHdrSystem = nativeDolbyVisionDevice
-                && !localProxyMatroskaDvNeedsCompat;
-        boolean allowSystemForHdrContainer = preferNativeHdrSystem && requiresHdrOutput;
+                && url.contains("/proxy/play/");
+        boolean nativeDolbyVisionRouteDevice = caps.supportsNativeDolbyVisionRoute(java64TouchPhone);
+        boolean dvHasHdr10BaseLayer = streamProbe.hasHdr10BaseLayer
+                || (streamProbe.hasDolbyVision && streamProbe.hasHdr10)
+                || streamProbe.dolbyVisionProfile == 7
+                || streamProbe.dolbyVisionProfile == 8;
+        boolean singleLayerDolbyVision = looksLikeDolbyVision && !dvHasHdr10BaseLayer;
+        boolean allowSystemForHdrContainer = requiresHdrOutput
+                && (!matroskaLike || localProxyMatroskaDv || caps.hevcMain10Decoder || nativeDolbyVisionRouteDevice);
         boolean systemCanOpenContainer = !matroskaLike
-                || allowSystemForHdrContainer
-                || (matroskaLike && !looksLikeDolbyVision && caps.hevcMain10Decoder);
-        int nativeRequestedPlayerType = allowSystemForHdrContainer
-                ? PlayerHelper.PLAYER_TYPE_SYSTEM
-                : requestedPlayerType;
+                || allowSystemForHdrContainer;
+        int nativeRequestedPlayerType = PlayerHelper.PLAYER_TYPE_SYSTEM;
 
         if (looksLikeDolbyVision) {
-            // 路由2：设备能端到端原生 DV 且容器系统播放器能打开 → 系统播放器原生杜比视界。
-            if (nativeDolbyVisionDevice && systemCanOpenContainer && !localProxyMatroskaDvNeedsCompat) {
+            // java64 触屏机型的 DV MKV 本地代理链，不再一刀切强制 MPV。
+            // 对真正具备 DV 解码能力的设备，改走 java64 专用 MediaCodec/Exo 链路：
+            // 继续保留 compat 路由类型，只是底层工厂由 PlayerHelper 在 java64 上切到 Java64CodecPlayer，
+            // 这样可以保住 seekable 本地流和音轨枚举，同时把 HDR/DV 视频真正交给系统解码器。
+            if (java64TouchPhone && localProxyMatroskaDv && nativeDolbyVisionRouteDevice) {
+                LOG.i("echo-dolby-route route=java64-dv-codec player=" + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
+                        + " caps=" + caps.summary
+                        + " streamDv=" + streamDetectedDv
+                        + " profile=" + streamProbe.dolbyVisionProfile
+                        + " hdr10Base=" + dvHasHdr10BaseLayer
+                        + " matroska=" + matroskaLike
+                        + " localProxy=" + localProxyMatroskaDv
+                        + " probe=" + streamProbe.summary
+                        + " url=" + safeSnippet(url));
+                return new Decision(true, true, false, false, false, "dv-base-hdr", true,
+                        PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT, "java64-native-dv-codec");
+            }
+
+            // 支持杜比视界的设备：无论单层/双层都走系统解码器。
+            if (nativeDolbyVisionRouteDevice && systemCanOpenContainer) {
                 LOG.i("echo-dolby-route route=native-dv player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
                         + " caps=" + caps.summary
-                        + " nativeHdrSystem=" + preferNativeHdrSystem
                         + " streamDv=" + streamDetectedDv
-                        + " localProxyMatroskaCompat=" + localProxyMatroskaDvNeedsCompat
+                        + " matroska=" + matroskaLike
+                        + " localProxy=" + localProxyMatroskaDv
+                        + " profile=" + streamProbe.dolbyVisionProfile
+                        + " hdr10Base=" + dvHasHdr10BaseLayer
                         + " probe=" + streamProbe.summary + " url=" + safeSnippet(url));
                 return new Decision(true, false, false, false, false, "", true,
                         PlayerHelper.PLAYER_TYPE_SYSTEM, "native-dolby-vision");
             }
 
-            // 64位手机/平板同样必须先具备真实 DV 解码器。
-            // 只有严格满足原生解码能力时，才保留系统原生 DV 链路。
-            if (App.isJava64Build()
-                    && nativeDolbyVisionDevice
-                    && !localProxyMatroskaDvNeedsCompat) {
-                LOG.i("echo-dolby-route route=native-dv-java64 player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
-                        + " caps=" + caps.summary
-                        + " streamDv=" + streamDetectedDv
-                        + " profile=" + streamProbe.dolbyVisionProfile
-                        + " matroska=" + matroskaLike
-                        + " localProxyMatroskaCompat=" + localProxyMatroskaDvNeedsCompat
-                        + " probe=" + streamProbe.summary
-                        + " url=" + safeSnippet(url));
-                return new Decision(true, false, false, false, false, "", true,
-                        PlayerHelper.PLAYER_TYPE_SYSTEM, "native-dolby-vision-java64");
-            }
-
-            // 双层/Profile 7/8/DV+HDR：只播放 HDR10 基础层，避免在低功耗电视上做 GPU/CPU 重映射。
-            boolean canUseHdr10BaseLayer = streamProbe.hasHdr10BaseLayer
-                    || (streamProbe.hasDolbyVision && streamProbe.hasHdr10)
-                    || (matroskaLike && streamProbe.dolbyVisionProfile < 0)
-                    || streamProbe.dolbyVisionProfile == 7
-                    || streamProbe.dolbyVisionProfile == 8;
-            boolean canPreferSystemHdr10BaseLayer = !App.isJava64Build()
-                    && !nativeDolbyVisionDevice
-                    && canUseHdr10BaseLayer
-                    && caps.displaySupportsHdr()
-                    && caps.hevcMain10Decoder;
-            if (canPreferSystemHdr10BaseLayer) {
+            // 不支持杜比视界的设备：双层杜比走系统解码器，只播 HDR10 基础层。
+            if (dvHasHdr10BaseLayer && systemCanOpenContainer && caps.hevcMain10Decoder) {
                 LOG.i("echo-dolby-route route=dv-base-hdr10-system player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
                         + " caps=" + caps.summary
                         + " streamDv=" + streamDetectedDv
                         + " profile=" + streamProbe.dolbyVisionProfile
-                        + " hdr10Base=" + streamProbe.hasHdr10BaseLayer
+                        + " hdr10Base=" + dvHasHdr10BaseLayer
                         + " matroska=" + matroskaLike + " probe=" + streamProbe.summary
                         + " url=" + safeSnippet(url));
                 return new Decision(true, false, false, false, false, "", true,
                         PlayerHelper.PLAYER_TYPE_SYSTEM,
                         "dv-hdr10-base-layer-system");
             }
-            if (canUseHdr10BaseLayer && caps.displaySupportsHdr() && caps.hevcMain10Decoder) {
-                LOG.i("echo-dolby-route route=dv-base-hdr10 player=" + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
-                        + " caps=" + caps.summary
-                        + " streamDv=" + streamDetectedDv
-                        + " profile=" + streamProbe.dolbyVisionProfile
-                        + " hdr10Base=" + streamProbe.hasHdr10BaseLayer
-                        + " matroska=" + matroskaLike + " probe=" + streamProbe.summary
-                        + " url=" + safeSnippet(url));
-                return new Decision(true, true, true, false, false, "dv-base-hdr", true,
-                        PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT,
-                        "dv-hdr10-base-layer");
-            }
 
-            // Profile 5 或无 HDR10 基础层 → 兼容播放器(MPV/libplacebo)做映射。
-            // 显示端不支持 HDR → 降级 SDR。
+            // 不支持杜比视界的设备：只有单层杜比才走 mpv。
             boolean preferHdr = caps.displaySupportsHdr();
-            String reason = (matroskaLike ? "dv-matroska-" : "dv-")
+            String reason = (matroskaLike ? "dv-single-layer-" : "dv-")
                     + (preferHdr ? "map-hdr" : "map-sdr")
-                    + (nativeDolbyVisionDevice ? "-mkv-no-system" : "-no-dv-decoder");
+                    + (localProxyMatroskaDv ? "-localproxy" : "-direct");
             LOG.i("echo-dolby-route route=dv-map player=" + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
                     + " caps=" + caps.summary + " preferHdr=" + preferHdr
                     + " streamDv=" + streamDetectedDv
                     + " profile=" + streamProbe.dolbyVisionProfile
-                    + " hdr10Base=" + streamProbe.hasHdr10BaseLayer
+                    + " hdr10Base=" + dvHasHdr10BaseLayer
+                    + " singleLayer=" + singleLayerDolbyVision
                     + " matroska=" + matroskaLike + " probe=" + streamProbe.summary
                     + " url=" + safeSnippet(url));
             return new Decision(true, true, preferHdr, !preferHdr, true, preferHdr ? "map-hdr" : "map-sdr", preferHdr,
                     PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT, reason);
         }
 
+        if (shouldRouteTv32LocalProxyHevcToSystemHdr(context, url, streamProbe, extraHints)
+                && caps.displaySupportsHdr()
+                && caps.hevcMain10Decoder) {
+            LOG.i("echo-dolby-route route=tv32-local-proxy-hevc-system-hdr player="
+                    + PlayerHelper.PLAYER_TYPE_SYSTEM
+                    + " caps=" + caps.summary
+                    + " videoMime=" + streamProbe.primaryVideoMime
+                    + " audioMime=" + streamProbe.primaryAudioMime
+                    + " hevc=" + streamProbe.hasHevcVideo
+                    + " hdr10=" + streamProbe.hasHdr10
+                    + " hdr10Plus=" + streamProbe.hasHdr10Plus
+                    + " probe=" + streamProbe.summary
+                    + " url=" + safeSnippet(url));
+            return new Decision(false, false, false, false, false, "", true,
+                    PlayerHelper.PLAYER_TYPE_SYSTEM,
+                    "tv32-local-proxy-hevc-system-hdr");
+        }
+
+        // Huawei tv32 firmware can route local-proxy VOD through NuPlayer audio offload even
+        // for AAC/MP4-like SDR files, causing silent audio plus severe video underruns. Keep
+        // HDR/DV on the existing native routes, but decode SDR local-proxy VOD in MPV so audio
+        // is rendered as PCM instead of broken firmware passthrough/offload.
+        if (shouldRouteTv32LocalProxySdrVodToCompat(context, url, streamProbe, extraHints)) {
+            LOG.i("echo-dolby-route route=tv32-local-proxy-sdr-compat player="
+                    + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
+                    + " caps=" + caps.summary
+                    + " audioMime=" + streamProbe.primaryAudioMime
+                    + " matroska=" + matroskaLike
+                    + " probe=" + streamProbe.summary
+                    + " url=" + safeSnippet(url));
+            return new Decision(false, true, false, true, false, "sdr", false,
+                    PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT,
+                    "tv32-local-proxy-sdr-audio-safe");
+        }
+
         // 路由3：普通 SDR/HDR10/HDR10+ 且容器系统播放器能打开（MP4/TS）→ 系统播放器原生硬解 + 原生 HDR。
         if (systemCanOpenContainer) {
             LOG.i("echo-dolby-route route=system-native player=" + nativeRequestedPlayerType
                     + " caps=" + caps.summary
-                    + " nativeHdrSystem=" + preferNativeHdrSystem
                     + " hdr10=" + streamProbe.hasHdr10 + " hdr10Plus=" + streamProbe.hasHdr10Plus
                     + " matroska=" + matroskaLike
                     + " requiresHdr=" + requiresHdrOutput + " probe=" + streamProbe.summary
@@ -231,6 +242,105 @@ public final class DolbyVisionPlaybackRouter {
                 mkvPreferHdr ? "base-hdr" : "sdr", mkvPreferHdr,
                 PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT,
                 mkvPreferHdr ? "matroska-compat-hdr" : "matroska-compat-sdr");
+    }
+
+    private static boolean shouldRouteTv32LocalProxyHevcToSystemHdr(Context context,
+                                                                    String url,
+                                                                    VideoStreamProbe.Result streamProbe,
+                                                                    String... extraHints) {
+        if (context == null || !ScreenUtils.isTv32Device(context) || streamProbe == null) {
+            return false;
+        }
+        if (isHlsLike(url) || containsHlsLike(extraHints)) {
+            return false;
+        }
+        if (!isLocalProxyVodLike(url) && !containsLocalProxyVodLike(extraHints)) {
+            return false;
+        }
+        if (streamProbe.hasHdr10 || streamProbe.hasHdr10Plus) {
+            return true;
+        }
+        return streamProbe.hasHevcVideo && streamProbe.hasImmersiveOrCompressedAudio();
+    }
+
+    private static boolean shouldRouteTv32LocalProxySdrVodToCompat(Context context,
+                                                                   String url,
+                                                                   VideoStreamProbe.Result streamProbe,
+                                                                   String... extraHints) {
+        if (context == null || !ScreenUtils.isTv32Device(context) || streamProbe == null) {
+            return false;
+        }
+        if (streamProbe.hasDolbyVision || streamProbe.hasHdr10 || streamProbe.hasHdr10Plus) {
+            return false;
+        }
+        if (isHlsLike(url) || containsHlsLike(extraHints)) {
+            return false;
+        }
+        return isLocalProxyVodLike(url) || containsLocalProxyVodLike(extraHints);
+    }
+
+    private static boolean containsLocalProxyVodLike(String... values) {
+        if (values == null) {
+            return false;
+        }
+        for (String value : values) {
+            if (isLocalProxyVodLike(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsHlsLike(String... values) {
+        if (values == null) {
+            return false;
+        }
+        for (String value : values) {
+            if (isHlsLike(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isLocalProxyVodLike(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        String lower = decodeForRoute(value).toLowerCase(Locale.US);
+        boolean local = lower.startsWith("http://127.0.0.1")
+                || lower.startsWith("https://127.0.0.1")
+                || lower.startsWith("http://localhost")
+                || lower.startsWith("https://localhost");
+        return local && lower.contains("/proxy/play/") && !isHlsLike(lower);
+    }
+
+    private static boolean isHlsLike(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        String lower = decodeForRoute(value).toLowerCase(Locale.US);
+        return lower.contains(".m3u8")
+                || lower.contains("type=hls")
+                || lower.contains("format=hls")
+                || lower.contains("/m3u8")
+                || lower.contains("index.m3u");
+    }
+
+    private static String decodeForRoute(String value) {
+        String decoded = value;
+        for (int i = 0; i < 2; i++) {
+            try {
+                String next = java.net.URLDecoder.decode(decoded, "UTF-8");
+                if (next == null || next.isEmpty() || next.equals(decoded)) {
+                    break;
+                }
+                decoded = next;
+            } catch (Throwable ignored) {
+                break;
+            }
+        }
+        return decoded;
     }
 
     private static boolean isMatroskaLike(String url, String... extraHints) {

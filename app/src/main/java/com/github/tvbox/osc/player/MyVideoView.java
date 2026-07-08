@@ -7,6 +7,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import xyz.doikki.videoplayer.player.AbstractPlayer;
+import xyz.doikki.videoplayer.player.AndroidMediaPlayer;
 import xyz.doikki.videoplayer.player.VideoView;
 
 public class MyVideoView extends VideoView {
@@ -31,13 +32,32 @@ public class MyVideoView extends VideoView {
     }
 
     public void persistProgressNow() {
-        if (mMediaPlayer != null) {
-            try {
-                mCurrentPosition = mMediaPlayer.getCurrentPosition();
-            } catch (Throwable ignored) {
-            }
+        long resolvedPosition = resolvePersistablePosition();
+        if (resolvedPosition >= 0L) {
+            saveProgress(resolvedPosition);
         }
-        saveProgress();
+    }
+
+    public long getCachedProgressPosition() {
+        return Math.max(0L, mCurrentPosition);
+    }
+
+    public long resolvePersistablePosition() {
+        if (mMediaPlayer == null) {
+            return resolvePersistableProgressPosition();
+        }
+        if (mMediaPlayer instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) mMediaPlayer).isPositionQueryUnstable()) {
+            return resolvePersistableProgressPosition();
+        }
+        try {
+            long livePosition = getCurrentPosition();
+            if (livePosition > 0L) {
+                mCurrentPosition = livePosition;
+            }
+        } catch (Throwable ignored) {
+        }
+        return resolvePersistableProgressPosition();
     }
 
     public boolean isPlaybackActive() {

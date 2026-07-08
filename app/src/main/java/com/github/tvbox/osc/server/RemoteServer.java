@@ -158,9 +158,12 @@ public class RemoteServer extends NanoHTTPD {
                         return process.doResponse(session, fileName, session.getParms(), null);
                     }
                 }
-                if (fileName.equals("/proxy")) {
+                if (fileName.equals("/proxy") || fileName.startsWith("/proxy/stream/")) {
                     Map<String, String> params = session.getParms();
                     params.putAll(session.getHeaders());
+                    if (fileName.startsWith("/proxy/stream/") && !params.containsKey("go")) {
+                        params.put("go", "stream");
+                    }
                     if (params.containsKey("do")) {
                         Object[] rs = ApiConfig.get().proxyLocal(params);
                         return getProxy(rs);

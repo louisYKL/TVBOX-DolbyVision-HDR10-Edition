@@ -10,6 +10,7 @@ import android.text.TextUtils;
 
 import com.github.tvbox.osc.player.MPVCompatManager;
 import com.github.tvbox.osc.player.MPVCompatPlayerFactory;
+import com.github.tvbox.osc.player.Java64CodecPlayerFactory;
 import com.github.tvbox.osc.player.render.SurfaceRenderViewFactory;
 import com.github.tvbox.osc.player.thirdparty.JustPlayer;
 import com.github.tvbox.osc.player.thirdparty.MXPlayer;
@@ -34,8 +35,13 @@ public class PlayerHelper {
     private static final int[] ORDERED_PLAYER_TYPES = new int[]{0, 6, 10, 11, 12, 13};
     public static final int PLAYER_TYPE_SYSTEM = 0;
     public static final int PLAYER_TYPE_DOLBY_VISION_COMPAT = 6;
+    public static final int[] JAVA64_TOUCH_PHONE_SCALE_CYCLE = new int[]{
+            VideoView.SCREEN_SCALE_DEFAULT,
+            VideoView.SCREEN_SCALE_MATCH_PARENT,
+            VideoView.SCREEN_SCALE_CENTER_CROP
+    };
 
-    private static boolean shouldUseTextureRenderForSystemPlayer(@androidx.annotation.Nullable Context context) {
+    private static boolean isJava64TouchPhone(@androidx.annotation.Nullable Context context) {
         if (!com.github.tvbox.osc.base.App.isJava64Build()) {
             return false;
         }
@@ -58,6 +64,49 @@ public class PlayerHelper {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP;
     }
 
+    private static boolean shouldUseTextureRenderForSystemPlayer(@androidx.annotation.Nullable Context context,
+                                                                 @androidx.annotation.Nullable JSONObject playerCfg) {
+        if (!isJava64TouchPhone(context)) {
+            return false;
+        }
+        if (playerCfg != null && playerCfg.optBoolean(HawkConfig.PLAYER_IS_LIVE, false)) {
+            // 直播页已经通过 LivePlayerManager 带下来了用户的渲染配置。
+            // 这里不要再强行改成 TextureView，否则会把用户选中的 SurfaceView 覆盖掉，
+            // 64 位直播就会退回到有声无画的错误路径。
+            return false;
+        }
+        String outputMode = playerCfg == null ? "" : playerCfg.optString("dvm", "");
+        boolean hdrOutputRequested = (playerCfg != null && playerCfg.optInt("hro", 0) == 1)
+                || (!TextUtils.isEmpty(outputMode) && !"sdr".equalsIgnoreCase(outputMode));
+        return !hdrOutputRequested;
+    }
+
+    private static boolean isMappingOutputMode(@androidx.annotation.Nullable String outputMode) {
+        if (TextUtils.isEmpty(outputMode)) {
+            return false;
+        }
+        String lower = outputMode.trim().toLowerCase(Locale.US);
+        return lower.startsWith("map-");
+    }
+
+    private static boolean shouldUseJava64CodecCompatPlayer(@androidx.annotation.Nullable Context context,
+                                                            @androidx.annotation.Nullable JSONObject playerCfg) {
+        if (!isJava64TouchPhone(context)) {
+            return false;
+        }
+        String outputMode = playerCfg == null ? "" : playerCfg.optString("dvm", "");
+        boolean hdrOutputRequested = (playerCfg != null && playerCfg.optInt("hro", 0) == 1)
+                || (!TextUtils.isEmpty(outputMode) && !"sdr".equalsIgnoreCase(outputMode));
+        if (!hdrOutputRequested || isMappingOutputMode(outputMode)) {
+            return false;
+        }
+        HdrDeviceSupport.Capabilities caps = HdrDeviceSupport.query(context);
+        if ("dv-base-hdr".equalsIgnoreCase(outputMode)) {
+            return caps.supportsNativeDolbyVisionRoute(true);
+        }
+        return caps.hevcMain10Decoder;
+    }
+
     public static void updateCfg(VideoView videoView, JSONObject playerCfg) {
         updateCfg(videoView,playerCfg,-1);
     }
@@ -67,7 +116,7 @@ public class PlayerHelper {
         int scale = Hawk.get(HawkConfig.PLAY_SCALE, 0);
         boolean preferHdrOutput = true;
         Context context = videoView == null ? null : videoView.getContext();
-        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(context);
+        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(context, playerCfg);
         try {
             playerType = playerCfg.getInt("pl");
             renderType = playerCfg.getInt("pr");
@@ -86,8 +135,6 @@ public class PlayerHelper {
         if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
             renderType = 1;
             scale = VideoView.SCREEN_SCALE_DEFAULT;
-        } else if (playerType == PLAYER_TYPE_SYSTEM) {
-            scale = VideoView.SCREEN_SCALE_DEFAULT;
         }
         RenderViewFactory renderViewFactory = null;
         switch (renderType) {
@@ -101,22 +148,54 @@ public class PlayerHelper {
         }
         if(videoView!=null){
             if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
-                MPVCompatManager.setOutputMode(playerCfg == null ? "base-hdr" : playerCfg.optString("dvm", preferHdrOutput ? "base-hdr" : "sdr"));
-                videoView.setPlayerFactory(MPVCompatPlayerFactory.create());
+                String outputMode = playerCfg == null ? "base-hdr" : playerCfg.optString("dvm", preferHdrOutput ? "base-hdr" : "sdr");
+                boolean useJava64CodecPlayer = shouldUseJava64CodecCompatPlayer(context, playerCfg);
+                if (useJava64CodecPlayer) {
+                    videoView.setPlayerFactory(Java64CodecPlayerFactory.create());
+                } else {
+                    MPVCompatManager.setOutputMode(outputMode);
+                    videoView.setPlayerFactory(MPVCompatPlayerFactory.create());
+                }
                 renderViewFactory = SurfaceRenderViewFactory.create();
+                LOG.i("echo-player-backend compat="
+                        + (useJava64CodecPlayer ? "java64-codec" : "mpv")
+                        + " output=" + outputMode
+                        + " java64TouchPhone=" + isJava64TouchPhone(context));
             } else {
-                videoView.setPlayerFactory(AndroidMediaPlayerFactory.create());
+                boolean useJava64LiveCodecPlayer = isJava64TouchPhone(context)
+                        && playerCfg != null
+                        && playerCfg.optBoolean(HawkConfig.PLAYER_IS_LIVE, false);
+                if (useJava64LiveCodecPlayer) {
+                    videoView.setPlayerFactory(Java64CodecPlayerFactory.create());
+                    LOG.i("echo-player-backend live=java64-codec java64TouchPhone=true");
+                } else {
+                    videoView.setPlayerFactory(AndroidMediaPlayerFactory.create());
+                }
                 renderViewFactory = preferTextureSystemRender
                         ? TextureRenderViewFactory.create()
                         : SurfaceRenderViewFactory.create();
             }
+            String routeMode = "";
+            int hdrOut = 0;
+            if (playerCfg != null) {
+                hdrOut = playerCfg.optInt("hro", 0);
+                if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
+                    routeMode = playerCfg.optString("dvm", "");
+                }
+            }
+            LOG.i("echo-player-cfg player=" + playerType
+                    + " render=" + getRenderName(renderType)
+                    + " java64TouchPhone=" + isJava64TouchPhone(context)
+                    + " hdrOut=" + hdrOut
+                    + " dvm=" + routeMode
+                    + " scale=" + scale);
             videoView.setRenderViewFactory(renderViewFactory);
-            videoView.setScreenScaleType(VideoView.SCREEN_SCALE_DEFAULT);
+            videoView.setScreenScaleType(sanitizeScaleForPlayer(playerType, scale));
         }
     }
 
     public static void updateCfg(VideoView videoView) {
-        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(videoView == null ? null : videoView.getContext());
+        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(videoView == null ? null : videoView.getContext(), null);
         int renderType = preferTextureSystemRender ? 0 : 1;
         RenderViewFactory renderViewFactory = null;
         switch (renderType) {
@@ -312,16 +391,40 @@ public class PlayerHelper {
                 scaleText = "4:3";
                 break;
             case VideoView.SCREEN_SCALE_MATCH_PARENT:
+                scaleText = "拉伸";
+                break;
+            case VideoView.SCREEN_SCALE_CENTER_CROP:
                 scaleText = "填充";
                 break;
             case VideoView.SCREEN_SCALE_ORIGINAL:
                 scaleText = "原始";
                 break;
-            case VideoView.SCREEN_SCALE_CENTER_CROP:
-                scaleText = "裁剪";
-                break;
         }
         return scaleText;
+    }
+
+    public static int sanitizeScaleForPlayer(int playerType, int scaleType) {
+        if (playerType != PLAYER_TYPE_SYSTEM && playerType != PLAYER_TYPE_DOLBY_VISION_COMPAT) {
+            return scaleType;
+        }
+        switch (scaleType) {
+            case VideoView.SCREEN_SCALE_DEFAULT:
+            case VideoView.SCREEN_SCALE_MATCH_PARENT:
+            case VideoView.SCREEN_SCALE_CENTER_CROP:
+                return scaleType;
+            default:
+                return VideoView.SCREEN_SCALE_DEFAULT;
+        }
+    }
+
+    public static int nextJava64TouchPhoneScale(int currentScaleType) {
+        int current = sanitizeScaleForPlayer(PLAYER_TYPE_SYSTEM, currentScaleType);
+        for (int i = 0; i < JAVA64_TOUCH_PHONE_SCALE_CYCLE.length; i++) {
+            if (JAVA64_TOUCH_PHONE_SCALE_CYCLE[i] == current) {
+                return JAVA64_TOUCH_PHONE_SCALE_CYCLE[(i + 1) % JAVA64_TOUCH_PHONE_SCALE_CYCLE.length];
+            }
+        }
+        return JAVA64_TOUCH_PHONE_SCALE_CYCLE[0];
     }
 
     public static String getDisplaySpeed(long speed,boolean show) {

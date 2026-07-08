@@ -11,6 +11,7 @@ import android.view.ViewParent;
 
 import androidx.annotation.NonNull;
 
+import com.github.tvbox.osc.player.CompatTrackSelectorPlayer;
 import com.github.tvbox.osc.player.MPVCompatPlayer;
 
 import xyz.doikki.videoplayer.player.AbstractPlayer;
@@ -119,7 +120,7 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         if (mMediaPlayer != null) {
-            if (mMediaPlayer instanceof MPVCompatPlayer) {
+            if (mMediaPlayer instanceof MPVCompatPlayer || mMediaPlayer instanceof CompatTrackSelectorPlayer) {
                 if (isParentVideoViewMovingFullScreen()) {
                     return;
                 }

@@ -115,6 +115,15 @@ public final class HdrDeviceSupport {
             return codecListDolbyVisionDecoder && displayDolbyVision;
         }
 
+        /**
+         * 和播放路由保持一致的“原生 DV 系统播放”判定。
+         * java64 手机/平板优先信任真实解码器能力，避免因为 display 能力上报不完整，
+         * 前面被路由到原生 DV，后面又因为 header 判定不一致退回坏链路。
+         */
+        public boolean supportsNativeDolbyVisionRoute(boolean java64TouchPhone) {
+            return java64TouchPhone ? dolbyVisionDecoder : supportsNativeDolbyVision();
+        }
+
         /** 仅表示系统声明/配置里存在杜比能力，不足以作为原生 DV 路由依据。 */
         public boolean hasDeclaredDolbyVisionDecoder() {
             return declaredDolbyVisionDecoder;

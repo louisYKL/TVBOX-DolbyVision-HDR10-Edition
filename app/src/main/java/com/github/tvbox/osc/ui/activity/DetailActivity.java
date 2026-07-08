@@ -523,7 +523,9 @@ public class DetailActivity extends BaseActivity {
             preFlag = vodInfo.playFlag;
             setTextShow(tvPlayUrl, "播放地址：", vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex).url);
             Bundle bundle = new Bundle();
-            insertVod(firstsourceKey, vodInfo);
+            String activeSourceKey = TextUtils.isEmpty(sourceKey) ? firstsourceKey : sourceKey;
+            vodInfo.sourceKey = activeSourceKey;
+            insertVod(activeSourceKey, vodInfo);
             bundle.putString("sourceKey", sourceKey);
             App.getInstance().setVodInfo(vodInfo);
             if (usePreviewPlayer && playFragment != null && !openPlayerActivity) {
@@ -945,12 +947,12 @@ public class DetailActivity extends BaseActivity {
                     if(!isFirstLoad)mGridView.setSelection(index);
                     vodInfo.playIndex = index;
                     //保存历史
-                    insertVod(firstsourceKey, vodInfo);
+                    insertVod(vodInfo.sourceKey, vodInfo);
                     isFirstLoad = false;
                 } else if (event.obj instanceof JSONObject) {
                     vodInfo.playerCfg = event.obj.toString();
                     //保存历史
-                    insertVod(firstsourceKey, vodInfo);
+                    insertVod(vodInfo.sourceKey, vodInfo);
                 } else if (event.obj instanceof String) {
                     String url = event.obj.toString();
                     //设置更新播放地址
@@ -1139,7 +1141,7 @@ public class DetailActivity extends BaseActivity {
             mGridView.setSelection(newIndex);
         }
 
-        insertVod(firstsourceKey, vodInfo);
+        insertVod(vodInfo.sourceKey, vodInfo);
         isFirstLoad = false;
     }
 
@@ -1215,12 +1217,20 @@ public class DetailActivity extends BaseActivity {
     }
 
     private void insertVod(String sourceKey, VodInfo vodInfo) {
+        if (vodInfo == null) {
+            return;
+        }
+        String recordSourceKey = TextUtils.isEmpty(sourceKey) ? vodInfo.sourceKey : sourceKey;
+        if (TextUtils.isEmpty(recordSourceKey)) {
+            recordSourceKey = firstsourceKey;
+        }
+        vodInfo.sourceKey = recordSourceKey;
         try {
             vodInfo.playNote = vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex).name;
         } catch (Throwable th) {
             vodInfo.playNote = "";
         }
-        RoomDataManger.insertVodRecord(sourceKey, vodInfo);
+        RoomDataManger.insertVodRecord(recordSourceKey, vodInfo);
         EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_HISTORY_REFRESH));
     }
 
@@ -1268,7 +1278,9 @@ public class DetailActivity extends BaseActivity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (showPreview) {
+            boolean routedToPreview = false;
             if (event != null && playFragment != null && shouldRouteKeyToPreviewPlayer()) {
+                routedToPreview = true;
                 Log.i(TAG, "routeKeyToPreview dispatch action=" + event.getAction()
                         + " code=" + event.getKeyCode()
                         + " embeddedFull=" + playFragment.isEmbeddedPlayerFullScreen()
@@ -1297,7 +1309,11 @@ public class DetailActivity extends BaseActivity {
                     return false;
                 }
             }
-            if (event != null && playFragment != null && playFragment.isEmbeddedPlayerFullScreen() && playFragment.dispatchKeyEvent(event)) {
+            if (event != null
+                    && playFragment != null
+                    && playFragment.isEmbeddedPlayerFullScreen()
+                    && !routedToPreview
+                    && playFragment.dispatchKeyEvent(event)) {
                 schedulePreviewBlockSync();
                 return true;
             }

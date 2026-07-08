@@ -166,6 +166,12 @@ public class LiquidGlassTextView extends AppCompatTextView {
             setTextColor(unfocusedTextColor);
             return;
         }
-        setTextColor(shouldUseFocusedGlass() ? focusedTextColor : unfocusedTextColor);
+        boolean focused = shouldUseFocusedGlass();
+        int targetColor = focused ? focusedTextColor : unfocusedTextColor;
+        if (Color.alpha(targetColor) == 0) {
+            targetColor = focused ? ContextCompat.getColor(getContext(), R.color.apple_tv_selected_text_dark)
+                    : ContextCompat.getColor(getContext(), R.color.apple_tv_text_primary);
+        }
+        setTextColor(targetColor);
     }
 }

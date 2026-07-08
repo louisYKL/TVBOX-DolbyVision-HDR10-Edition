@@ -20,7 +20,7 @@
         android:gravity="center"
         android:singleLine="true"
         android:text="11111111111"
-        android:textColor="@android:color/white"
+        android:textColor="@color/search_word_text"
         android:textSize="@dimen/ts_20" />
 
     <View

@@ -125,12 +125,7 @@ public class SourceViewModel extends ViewModel {
         for (String value : values) {
             if (!TextUtils.isEmpty(value)) {
                 String trimmed = value.trim();
-                if (trimmed.isEmpty()
-                        || "null".equalsIgnoreCase(trimmed)
-                        || "exception:null".equalsIgnoreCase(trimmed)
-                        || "异常-null".equalsIgnoreCase(trimmed)
-                        || "异常: null".equalsIgnoreCase(trimmed)
-                        || "异常：null".equalsIgnoreCase(trimmed)) {
+                if (trimmed.isEmpty()) {
                     continue;
                 }
                 return trimmed;
@@ -139,13 +134,54 @@ public class SourceViewModel extends ViewModel {
         return "";
     }
 
-    private JSONObject buildPlayErrorResult(String originalUrl, String progressKey, String subtitleKey, String playFlag, String message) {
+    private String firstMeaningfulPlayMessage(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (!TextUtils.isEmpty(value)) {
+                String trimmed = value.trim();
+                if (shouldIgnorePlayMessage(trimmed)) {
+                    continue;
+                }
+                return trimmed;
+            }
+        }
+        return "";
+    }
+
+    private boolean shouldIgnorePlayMessage(String value) {
+        if (TextUtils.isEmpty(value)) {
+            return true;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()
+                || "null".equalsIgnoreCase(trimmed)
+                || "exception:null".equalsIgnoreCase(trimmed)
+                || "异常-null".equalsIgnoreCase(trimmed)
+                || "异常: null".equalsIgnoreCase(trimmed)
+                || "异常：null".equalsIgnoreCase(trimmed)) {
+            return true;
+        }
+        String normalized = trimmed.toLowerCase();
+        return "异常-time".equalsIgnoreCase(trimmed)
+                || "异常: time".equalsIgnoreCase(trimmed)
+                || "异常：time".equalsIgnoreCase(trimmed)
+                || normalized.contains("exception:time")
+                || normalized.contains("timeout")
+                || normalized.contains("timed out")
+                || normalized.contains("read timed out")
+                || normalized.contains("connect timed out");
+    }
+
+    private JSONObject buildPlayErrorResult(String originalUrl, String progressKey, String subtitleKey, String playFlag, String requestKey, String message) {
         JSONObject result = new JSONObject();
         try {
             result.put("key", originalUrl == null ? "" : originalUrl);
             result.put("proKey", progressKey);
             result.put("subtKey", subtitleKey);
             result.put("flag", playFlag);
+            result.put("reqKey", requestKey);
             result.put("url", "");
             result.put("playable", false);
             result.put("parse", 0);
@@ -160,20 +196,21 @@ public class SourceViewModel extends ViewModel {
         return result;
     }
 
-    private void postPlayError(long requestToken, String originalUrl, String progressKey, String subtitleKey, String playFlag, String message) {
-        String safeMessage = firstNonEmpty(message, "获取播放信息错误");
-        postPlayResult(requestToken, buildPlayErrorResult(originalUrl, progressKey, subtitleKey, playFlag, safeMessage));
+    private void postPlayError(long requestToken, String originalUrl, String progressKey, String subtitleKey, String playFlag, String requestKey, String message) {
+        String safeMessage = firstMeaningfulPlayMessage(message, "获取播放信息错误");
+        postPlayResult(requestToken, buildPlayErrorResult(originalUrl, progressKey, subtitleKey, playFlag, requestKey, safeMessage));
     }
 
-    private JSONObject normalizePlayResult(JSONObject result, String originalUrl, String progressKey, String subtitleKey, String playFlag) throws Exception {
+    private JSONObject normalizePlayResult(JSONObject result, String originalUrl, String progressKey, String subtitleKey, String playFlag, String requestKey) throws Exception {
         result.put("key", originalUrl == null ? "" : originalUrl);
         result.put("proKey", progressKey);
         result.put("subtKey", subtitleKey);
+        result.put("reqKey", requestKey);
         if (!result.has("flag")) {
             result.put("flag", playFlag);
         }
         String resultUrl = result.optString("url", "").trim();
-        String sourceMessage = firstNonEmpty(
+        String sourceMessage = firstMeaningfulPlayMessage(
                 result.optString("errMsg", ""),
                 result.optString("msg", ""),
                 result.optString("message", ""),
@@ -199,7 +236,37 @@ public class SourceViewModel extends ViewModel {
             }
         } else {
             result.put("playable", true);
+            result.remove("msg");
+            result.remove("errMsg");
+            result.remove("message");
+            result.remove("error");
         }
+        return result;
+    }
+
+    private boolean shouldFastPathDirectPlayUrl(String url) {
+        if (TextUtils.isEmpty(url)) {
+            return false;
+        }
+        String normalized = url.trim().toLowerCase();
+        return normalized.startsWith("http://127.0.0.1:6677/proxy/play/")
+                || normalized.startsWith("http://localhost:6677/proxy/play/")
+                || normalized.startsWith("http://127.0.0.1:9978/proxy?go=stream")
+                || normalized.startsWith("http://localhost:9978/proxy?go=stream");
+    }
+
+    private JSONObject buildDirectPlayResult(String url, String progressKey, String subtitleKey, String playFlag, String requestKey) throws Exception {
+        JSONObject result = new JSONObject();
+        result.put("key", url);
+        result.put("parse", 0);
+        result.put("jx", 0);
+        result.put("url", url);
+        result.put("playUrl", "");
+        result.put("proKey", progressKey);
+        result.put("subtKey", subtitleKey);
+        result.put("flag", playFlag);
+        result.put("reqKey", requestKey);
+        result.put("playable", true);
         return result;
     }
 
@@ -663,6 +730,11 @@ public class SourceViewModel extends ViewModel {
         String id = urlid;
     
         SourceBean sourceBean = ApiConfig.get().getSource(sourceKey);
+        if (sourceBean == null) {
+            LOG.i("echo--getDetail--missing-source sourceKey=" + sourceKey + " id=" + id);
+            detailResult.postValue(null);
+            return;
+        }
         int type = sourceBean.getType();
         if (type == 3) {
             spThreadPool.execute(new Runnable() {
@@ -928,12 +1000,26 @@ public class SourceViewModel extends ViewModel {
         }
     }
     // playerContent
-    public void getPlay(String sourceKey, String playFlag, String progressKey, String url, String subtitleKey) {
+    public void getPlay(String sourceKey, String playFlag, String progressKey, String url, String subtitleKey, String requestKey) {
         final long requestToken = playRequestSerial.incrementAndGet();
         OkGo.getInstance().cancelTag("play");
         SourceBean sourceBean = ApiConfig.get().getSource(sourceKey);
         int type = sourceBean.getType();
         if (type == 3) {
+            if (shouldFastPathDirectPlayUrl(url)) {
+                try {
+                    LOG.i("echo--getPlay--fast-direct:" + url);
+                    JSONObject result = normalizePlayResult(
+                            buildDirectPlayResult(url, progressKey, subtitleKey, playFlag, requestKey),
+                            url, progressKey, subtitleKey, playFlag, requestKey);
+                    postPlayResult(requestToken, result);
+                } catch (Throwable th) {
+                    LOG.e("echo--getPlay--fast-direct-error: " + th.getClass().getSimpleName() + ": " + th.getMessage());
+                    postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey,
+                            firstMeaningfulPlayMessage(th.getMessage(), "获取播放信息错误"));
+                }
+                return;
+            }
             playThreadPool.execute(new Runnable() {
                 @Override
                 public void run() {
@@ -956,19 +1042,19 @@ public class SourceViewModel extends ViewModel {
                         String json = future.get(10, TimeUnit.SECONDS);
                         LOG.i("echo--getPlay--result:" + json);
                         if (!TextUtils.isEmpty(json)) {
-                            JSONObject result = normalizePlayResult(new JSONObject(json), url, progressKey, subtitleKey, playFlag);
+                            JSONObject result = normalizePlayResult(new JSONObject(json), url, progressKey, subtitleKey, playFlag, requestKey);
                             postPlayResult(requestToken, result);
                         } else {
-                            postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, "播放信息为空");
+                            postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey, "播放信息为空");
                         }
                     } catch (TimeoutException e) {
                         LOG.i("echo--getPlay--timeout");
                         future.cancel(true);
-                        postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, "获取播放信息超时");
+                        postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey, "获取播放信息超时");
                     } catch (Exception e) {
                         LOG.e("echo--getPlay--error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-                        postPlayError(requestToken, url, progressKey, subtitleKey, playFlag,
-                                firstNonEmpty(e.getMessage(), "获取播放信息错误"));
+                        postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey,
+                                firstMeaningfulPlayMessage(e.getMessage(), "获取播放信息错误"));
                     } finally {
                         executor.shutdown();
                     }
@@ -990,11 +1076,11 @@ public class SourceViewModel extends ViewModel {
                 result.put("subtKey", subtitleKey);
                 result.put("playUrl", playUrl);
                 result.put("flag", playFlag);
-                postPlayResult(requestToken, normalizePlayResult(result, url, progressKey, subtitleKey, playFlag));
+                postPlayResult(requestToken, normalizePlayResult(result, url, progressKey, subtitleKey, playFlag, requestKey));
             } catch (Throwable th) {
                 LOG.e("echo--getPlay--direct-error: " + th.getClass().getSimpleName() + ": " + th.getMessage());
-                postPlayError(requestToken, url, progressKey, subtitleKey, playFlag,
-                        firstNonEmpty(th.getMessage(), "获取播放信息错误"));
+                postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey,
+                        firstMeaningfulPlayMessage(th.getMessage(), "获取播放信息错误"));
             }
         } else if (type == 4) {
             String extend=sourceBean.getExt();
@@ -1023,19 +1109,19 @@ public class SourceViewModel extends ViewModel {
                         String json = response.body();
                         LOG.i(json);
                         try {
-                            JSONObject result = normalizePlayResult(new JSONObject(json), url, progressKey, subtitleKey, playFlag);
+                            JSONObject result = normalizePlayResult(new JSONObject(json), url, progressKey, subtitleKey, playFlag, requestKey);
                             postPlayResult(requestToken, result);
                         } catch (Throwable th) {
                             LOG.e("echo--getPlay--api4-error: " + th.getClass().getSimpleName() + ": " + th.getMessage());
-                            postPlayError(requestToken, url, progressKey, subtitleKey, playFlag,
-                                    firstNonEmpty(th.getMessage(), "获取播放信息错误"));
+                            postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey,
+                                    firstMeaningfulPlayMessage(th.getMessage(), "获取播放信息错误"));
                         }
                     }
 
                     @Override
                     public void onError(Response<String> response) {
                         super.onError(response);
-                        postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, "网络请求错误");
+                        postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey, "网络请求错误");
                     }
                 });
         }else {

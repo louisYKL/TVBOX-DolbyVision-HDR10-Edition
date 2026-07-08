@@ -46,6 +46,7 @@ import com.github.tvbox.osc.bean.LiveEpgDate;
 import com.github.tvbox.osc.bean.LivePlayerManager;
 import com.github.tvbox.osc.bean.LiveSettingGroup;
 import com.github.tvbox.osc.bean.LiveSettingItem;
+import com.github.tvbox.osc.player.MyVideoView;
 import com.github.tvbox.osc.player.controller.LiveController;
 import com.github.tvbox.osc.ui.adapter.LiveChannelGroupAdapter;
 import com.github.tvbox.osc.ui.adapter.LiveChannelItemAdapter;
@@ -78,6 +79,7 @@ import com.orhanobut.hawk.Hawk;
 import com.owen.tvrecyclerview.widget.TvRecyclerView;
 import com.owen.tvrecyclerview.widget.V7LinearLayoutManager;
 import com.squareup.picasso.Picasso;
+import xyz.doikki.videoplayer.player.VideoView;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -116,7 +118,6 @@ import java.util.regex.Pattern;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
-import xyz.doikki.videoplayer.player.VideoView;
 
 /**
  * @author pj567
@@ -125,7 +126,7 @@ import xyz.doikki.videoplayer.player.VideoView;
  */
 public class LivePlayActivity extends BaseActivity {
     public static Context context;
-    private VideoView<xyz.doikki.videoplayer.player.AbstractPlayer> mVideoView;
+    private MyVideoView mVideoView;
     private View switchChannelSnapshotOverlay;
     private ImageView switchChannelSnapshotImage;
     private TextView tvChannelInfo;
@@ -248,10 +249,12 @@ public class LivePlayActivity extends BaseActivity {
     protected void init() {
         context = this;
         epgStringAddress = getConfiguredEpgAddress();
+        Hawk.put(HawkConfig.PLAYER_IS_LIVE, true);
 
         setLoadSir(findViewById(R.id.live_root));
         mVideoView = findViewById(R.id.mVideoView);
         mVideoView.setEnableAudioFocus(false);
+        mVideoView.setKeepSurfaceOnFullScreen(true);
         switchChannelSnapshotOverlay = findViewById(R.id.switchChannelSnapshotOverlay);
         switchChannelSnapshotImage = findViewById(R.id.switchChannelSnapshotImage);
 
@@ -412,7 +415,6 @@ public class LivePlayActivity extends BaseActivity {
         initSettingItemView();
         initLiveChannelList();
         initLiveSettingGroupList();
-        Hawk.put(HawkConfig.PLAYER_IS_LIVE,true);
     }
     //获取EPG并存储 // 百川epg  DIYP epg   51zmt epg ------- 自建EPG格式输出格式请参考 51zmt
     private List<Epginfo> epgdata = new ArrayList<>();
@@ -1203,6 +1205,7 @@ public class LivePlayActivity extends BaseActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        Hawk.put(HawkConfig.PLAYER_IS_LIVE, false);
         if (mVideoView != null) {
             mVideoView.release();
         }
@@ -1212,6 +1215,7 @@ public class LivePlayActivity extends BaseActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        Hawk.put(HawkConfig.PLAYER_IS_LIVE, false);
         hideSwitchChannelSnapshot();
         if (mVideoView != null) {
             mVideoView.release();
@@ -1446,9 +1450,17 @@ public class LivePlayActivity extends BaseActivity {
             }
             HashMap<String, String> finalHeaders = mergedHeaders.isEmpty() ? null : mergedHeaders;
             int currentPlayerType = livePlayerManager.getCurrentPlayerType();
-            String playbackUrl = PlayerHelper.isSystemPlayerType(currentPlayerType)
+            boolean useCompatPlaybackUrl = App.isJava64Build();
+            String playbackUrl = useCompatPlaybackUrl
+                    ? PlaybackUrlNormalizer.resolveCompatPlaybackUrl(sourceUrl, finalHeaders, true)
+                    : (PlayerHelper.isSystemPlayerType(currentPlayerType)
                     ? PlaybackUrlNormalizer.resolveSystemPlaybackUrl(sourceUrl, finalHeaders, true)
-                    : PlaybackUrlNormalizer.resolvePlaybackUrl(sourceUrl, finalHeaders, true);
+                    : PlaybackUrlNormalizer.resolvePlaybackUrl(sourceUrl, finalHeaders, true));
+            LOG.i("echo-live-url-resolve mode=" + (useCompatPlaybackUrl ? "compat" : "system")
+                    + " player=" + currentPlayerType
+                    + " src=" + sourceUrl
+                    + " dst=" + playbackUrl);
+            // 连续切台/重进时直接复用当前播放器实例，避免 surface 回调落到已释放对象上。
             mVideoView.release();
             if (finalHeaders != null) {
                 mVideoView.setUrl(playbackUrl, finalHeaders);
@@ -2093,7 +2105,6 @@ public class LivePlayActivity extends BaseActivity {
             return false;
         }
         mHandler.removeCallbacks(mConnectTimeoutChangeSourceRun);
-        mVideoView.release();
         if (!livePlayerManager.switchLivePlayer(mVideoView, currentLiveChannelItem.getChannelName())) {
             allowLiveSwitchPlayer = false;
             return false;

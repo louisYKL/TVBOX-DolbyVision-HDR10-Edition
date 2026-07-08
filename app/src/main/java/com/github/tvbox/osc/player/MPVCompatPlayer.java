@@ -16,20 +16,33 @@ import androidx.annotation.Nullable;
 import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
+import com.github.tvbox.osc.util.ScreenUtils;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import is.xyz.mpv.MPVLib;
 import xyz.doikki.videoplayer.player.AbstractPlayer;
 
-public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObserver, MPVLib.LogObserver {
+public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObserver, MPVLib.LogObserver, CompatTrackSelectorPlayer, RuntimeVideoModeAwarePlayer {
     private static final String TAG = "MPVCompatPlayer";
+    private static final int SUBTITLE_TRACK_STABLE_TICKS_REQUIRED = 5;
+    private static final Pattern MPV_SUB_TRACK_LOG_PATTERN = Pattern.compile(
+            "^[\\u25cf\\u25cb]\\s+Subs\\s+--sid=(\\d+)\\s+--slang=([^\\s]+)(?:\\s+'([^']*)')?\\s+\\(([^)]*)\\)(.*)$");
+    private static final Pattern MPV_SID_SET_LOG_PATTERN = Pattern.compile("Set property: sid=\\\"([^\\\"]+)\\\"");
 
     private final Context playerContext;
     private final Context appContext;
+    private final boolean subtitleHelperMode;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Object parsedSubtitleTrackLock = new Object();
+    private final LinkedHashMap<Integer, TrackInfoBean> parsedSubtitleTracks = new LinkedHashMap<>();
     private String dataSource;
     private Map<String, String> requestHeaders;
     private Surface pendingSurface;
@@ -57,16 +70,33 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
     private boolean runtimeStreamHdrDetected;
     private boolean runtimeStreamDolbyVisionDetected;
     private boolean runtimeHdrPromotionApplied;
+    private boolean currentPlaybackDolbyVision;
     private long lastSeekRequestMs;
     private boolean deferredLoadScheduled;
     private String lastSubtitleText;
-    private OnSubtitleTextListener subtitleTextListener;
+    private boolean currentDataSourceIsLocalMatroskaProxy;
+    private int lastKnownSubtitleTrackCount;
+    private int lastObservedTrackListCount;
+    private int lastObservedSubtitleTrackCount;
+    private int subtitleTrackStableTicks;
+    private boolean subtitleTrackListSettled;
+    private CompatTrackSelectorPlayer.SubtitleTextListener subtitleTextListener;
     private OnRuntimeVideoModeListener runtimeVideoModeListener;
     private boolean runtimeVideoModeNotified;
+    private OnBridgeTrackInfoListener bridgeTrackInfoListener;
+
+    public interface OnBridgeTrackInfoListener {
+        void onTrackInfo(TrackInfo trackInfo);
+    }
 
     public MPVCompatPlayer(Context context) {
+        this(context, false);
+    }
+
+    public MPVCompatPlayer(Context context, boolean subtitleHelperMode) {
         this.playerContext = context;
         this.appContext = context.getApplicationContext();
+        this.subtitleHelperMode = subtitleHelperMode;
     }
 
     @Override
@@ -115,13 +145,31 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         runtimeStreamHdrDetected = false;
         runtimeStreamDolbyVisionDetected = false;
         runtimeHdrPromotionApplied = false;
+        currentPlaybackDolbyVision = MPVCompatManager.isCurrentPlayDolbyVision();
         lastSeekRequestMs = -1L;
         deferredLoadScheduled = false;
         lastSubtitleText = null;
+        currentDataSourceIsLocalMatroskaProxy = false;
+        lastKnownSubtitleTrackCount = 0;
+        lastObservedTrackListCount = -1;
+        lastObservedSubtitleTrackCount = -1;
+        subtitleTrackStableTicks = 0;
+        subtitleTrackListSettled = false;
         subtitleTextListener = null;
         runtimeVideoModeListener = null;
         runtimeVideoModeNotified = false;
+        clearParsedSubtitleTracks();
         forceMaxVolume();
+        if (subtitleHelperMode) {
+            try {
+                MPVLib.setPropertyString("vid", "no");
+                MPVLib.setPropertyString("vo", "null");
+                MPVLib.setPropertyString("aid", "no");
+                MPVLib.setPropertyString("ao", "null");
+                MPVLib.setPropertyString("sub-visibility", "no");
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     @Override
@@ -129,6 +177,11 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         PlaybackUrlNormalizer.UrlWithHeaders parsed = PlaybackUrlNormalizer.splitUrlAndHeaders(path, headers);
         dataSource = PlaybackUrlNormalizer.normalizeHttpUrl(parsed.url);
         requestHeaders = parsed.headers == null ? new HashMap<String, String>() : new HashMap<>(parsed.headers);
+        MPVCompatManager.setCurrentFileForcesTv32LocalProxyPcm(isTv32LocalProxyPlayback(dataSource));
+        MPVCompatManager.setCurrentFileAllowsPassthrough(isAudioPassthroughAllowedForCurrentFile(requestHeaders));
+        currentDataSourceIsLocalMatroskaProxy = isJava64LocalMatroskaProxyPlayback(dataSource, requestHeaders);
+        logInfo("echo-mpv-data-source localMatroskaProxy=" + currentDataSourceIsLocalMatroskaProxy
+                + " url=" + dataSource);
         fileLoadRequested = false;
         prepared = false;
         completed = false;
@@ -141,10 +194,82 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         runtimeStreamHdrDetected = false;
         runtimeStreamDolbyVisionDetected = false;
         runtimeHdrPromotionApplied = false;
+        currentPlaybackDolbyVision = MPVCompatManager.isCurrentPlayDolbyVision();
         lastSeekRequestMs = -1L;
         deferredLoadScheduled = false;
         lastSubtitleText = null;
+        lastKnownSubtitleTrackCount = 0;
+        lastObservedTrackListCount = -1;
+        lastObservedSubtitleTrackCount = -1;
+        subtitleTrackStableTicks = 0;
+        subtitleTrackListSettled = false;
         runtimeVideoModeNotified = false;
+        clearParsedSubtitleTracks();
+    }
+
+    private boolean isAudioPassthroughAllowedForCurrentFile(@Nullable Map<String, String> headers) {
+        if (isTv32LocalProxyPlayback(dataSource)) {
+            logInfo("echo-mpv-audio force-pcm tv32-local-proxy url=" + safeUrlForLog(dataSource));
+            return false;
+        }
+        if (headers == null || headers.isEmpty()) {
+            return false;
+        }
+        String passthrough = getHeaderValue(headers, "X-TVBox-Probe-AudioPassthrough");
+        String allowed = getHeaderValue(headers, "X-TVBox-Probe-AudioPassthroughAllowed");
+        if ("1".equals(passthrough)) {
+            return "1".equals(allowed);
+        }
+        return false;
+    }
+
+    private boolean isTv32LocalProxyPlayback(@Nullable String url) {
+        if (TextUtils.isEmpty(url) || !ScreenUtils.isTv32Device(appContext)) {
+            return false;
+        }
+        String lower = decodeUrlForAudioRoute(url).toLowerCase(Locale.US);
+        boolean localHost = lower.startsWith("http://127.0.0.1")
+                || lower.startsWith("https://127.0.0.1")
+                || lower.startsWith("http://localhost")
+                || lower.startsWith("https://localhost");
+        return localHost
+                && lower.contains("/proxy/play/")
+                && !PlaybackUrlNormalizer.isHlsLike(lower);
+    }
+
+    private String decodeUrlForAudioRoute(String value) {
+        String decoded = value;
+        for (int i = 0; i < 2; i++) {
+            try {
+                String next = java.net.URLDecoder.decode(decoded, "UTF-8");
+                if (TextUtils.isEmpty(next) || TextUtils.equals(next, decoded)) {
+                    break;
+                }
+                decoded = next;
+            } catch (Throwable ignored) {
+                break;
+            }
+        }
+        return decoded;
+    }
+
+    private String safeUrlForLog(@Nullable String url) {
+        if (TextUtils.isEmpty(url)) {
+            return "";
+        }
+        return url.length() > 220 ? url.substring(0, 220) + "..." : url;
+    }
+
+    private String getHeaderValue(@Nullable Map<String, String> headers, String key) {
+        if (headers == null || TextUtils.isEmpty(key)) {
+            return null;
+        }
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(key)) {
+                return entry.getValue() == null ? null : entry.getValue().trim();
+            }
+        }
+        return null;
     }
 
     @Override
@@ -192,6 +317,10 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         if (released) {
             return;
         }
+        if (subtitleHelperMode) {
+            loadCurrentFileNow("subtitle-helper");
+            return;
+        }
         loadCurrentFile();
     }
 
@@ -231,9 +360,17 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         runtimeStreamHdrDetected = false;
         runtimeStreamDolbyVisionDetected = false;
         runtimeHdrPromotionApplied = false;
+        currentPlaybackDolbyVision = MPVCompatManager.isCurrentPlayDolbyVision();
         lastSeekRequestMs = -1L;
         deferredLoadScheduled = false;
         lastSubtitleText = null;
+        currentDataSourceIsLocalMatroskaProxy = false;
+        lastKnownSubtitleTrackCount = 0;
+        lastObservedTrackListCount = -1;
+        lastObservedSubtitleTrackCount = -1;
+        subtitleTrackStableTicks = 0;
+        subtitleTrackListSettled = false;
+        clearParsedSubtitleTracks();
     }
 
     @Override
@@ -249,11 +386,46 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         long safeTimeMs = Math.max(0L, time);
         lastKnownPositionMs = safeTimeMs;
         if (!prepared) {
-            logInfo("echo-mpv-skip-initial-seek pos=" + safeTimeMs + " reason=not-prepared");
+            seekOnPreparedMs = safeTimeMs;
+            pendingInitialSeekAfterRestart = true;
+            logInfo("echo-mpv-queue-seek pos=" + safeTimeMs
+                    + " reason=not-prepared"
+                    + " loaded=" + fileLoadRequested
+                    + " restarted=" + firstPlaybackRestartSeen);
+            if (!fileLoadRequested && hasValidDataSource()) {
+                loadCurrentFile();
+            }
             return;
         }
         if (!firstPlaybackRestartSeen && fileLoadRequested) {
-            logInfo("echo-mpv-skip-initial-seek pos=" + safeTimeMs + " reason=before-first-restart");
+            seekOnPreparedMs = safeTimeMs;
+            pendingInitialSeekAfterRestart = true;
+            logInfo("echo-mpv-queue-seek pos=" + safeTimeMs
+                    + " reason=before-first-restart"
+                    + " loaded=" + fileLoadRequested);
+            return;
+        }
+        if (!hasUsableAttachedSurface()) {
+            seekOnPreparedMs = safeTimeMs;
+            pendingInitialSeekAfterRestart = true;
+            logInfo("echo-mpv-delay-seek pos=" + safeTimeMs + " reason=no-surface");
+            return;
+        }
+        if (shouldReloadFileForSeek()) {
+            seekOnPreparedMs = safeTimeMs;
+            pendingInitialSeekAfterRestart = true;
+            logInfo("echo-mpv-reload-seek pos=" + safeTimeMs
+                    + " reason=java64-local-matroska-proxy"
+                    + " started=" + started
+                    + " prepared=" + prepared
+                    + " loaded=" + fileLoadRequested);
+            fileLoadRequested = false;
+            prepared = false;
+            started = false;
+            firstPlaybackRestartSeen = false;
+            completed = false;
+            notifyInfo(MEDIA_INFO_BUFFERING_START, 0);
+            loadCurrentFileNow("seek-reload");
             return;
         }
         lastSeekRequestMs = safeTimeMs;
@@ -312,10 +484,17 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         runtimeStreamHdrDetected = false;
         runtimeStreamDolbyVisionDetected = false;
         runtimeHdrPromotionApplied = false;
+        currentPlaybackDolbyVision = MPVCompatManager.isCurrentPlayDolbyVision();
         lastSeekRequestMs = -1L;
         deferredLoadScheduled = false;
         lastSubtitleText = null;
+        lastKnownSubtitleTrackCount = 0;
+        lastObservedTrackListCount = -1;
+        lastObservedSubtitleTrackCount = -1;
+        subtitleTrackStableTicks = 0;
+        subtitleTrackListSettled = false;
         subtitleTextListener = null;
+        clearParsedSubtitleTracks();
     }
 
     @Override
@@ -398,7 +577,12 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         TrackInfo data = new TrackInfo();
         Integer count = safeGetMpvPropertyInt("track-list/count");
         if (count == null || count <= 0) {
-            logInfo("echo-mpv-track list empty count=" + count);
+            mergeParsedSubtitleTracks(data);
+            if (data.getSubtitle().isEmpty()) {
+                logInfo("echo-mpv-track list empty count=" + count);
+                return data;
+            }
+            updateSubtitleTrackListState(Math.max(0, data.getSubtitle().size()), data.getSubtitle().size());
             return data;
         }
         int safeCount = Math.min(count, 64);
@@ -417,28 +601,100 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             bean.trackId = id == null ? i : id;
             bean.index = i;
             bean.groupIndex = audio ? data.getAudio().size() : data.getSubtitle().size();
+            bean.trackGroupId = subtitle ? 1 : 0;
+            bean.renderId = subtitle ? 3 : 2;
+            String ffIndex = safeGetMpvPropertyString("track-list/" + i + "/ff-index");
+            String demux = safeGetMpvPropertyString("track-list/" + i + "/demux");
+            String defaultFlag = safeGetMpvPropertyString("track-list/" + i + "/default");
+            String forcedFlag = safeGetMpvPropertyString("track-list/" + i + "/forced");
+            String imageFlag = safeGetMpvPropertyString("track-list/" + i + "/image");
+            String externalFlag = safeGetMpvPropertyString("track-list/" + i + "/external");
+            String dependentFlag = safeGetMpvPropertyString("track-list/" + i + "/dependent");
+            String mainSelectionFlag = safeGetMpvPropertyString("track-list/" + i + "/main-selection");
             bean.language = firstNonEmpty(
                     safeGetMpvPropertyString("track-list/" + i + "/lang"),
                     safeGetMpvPropertyString("track-list/" + i + "/language"),
                     "");
+            bean.rawLanguage = bean.language;
             String title = firstNonEmpty(
                     safeGetMpvPropertyString("track-list/" + i + "/title"),
                     safeGetMpvPropertyString("track-list/" + i + "/external-filename"),
+                    safeGetMpvPropertyString("track-list/" + i + "/codec-desc"),
+                    safeGetMpvPropertyString("track-list/" + i + "/demux-w"),
+                    safeGetMpvPropertyString("track-list/" + i + "/demux-h"),
                     safeGetMpvPropertyString("track-list/" + i + "/codec"),
                     "");
+            bean.rawTitle = title;
+            bean.rawCodec = firstNonEmpty(
+                    safeGetMpvPropertyString("track-list/" + i + "/codec"),
+                    safeGetMpvPropertyString("track-list/" + i + "/codec-desc"),
+                    ffIndex,
+                    "");
+            bean.rawMimeType = firstNonEmpty(
+                    safeGetMpvPropertyString("track-list/" + i + "/codec"),
+                    demux,
+                    "");
+            bean.unreliableMetadata = subtitle
+                    && TextUtils.isEmpty(bean.rawTitle)
+                    && ("zh".equalsIgnoreCase(bean.rawLanguage)
+                    || "chi".equalsIgnoreCase(bean.rawLanguage)
+                    || "zho".equalsIgnoreCase(bean.rawLanguage)
+                    || "cmn".equalsIgnoreCase(bean.rawLanguage));
+            bean.autoSelectBlocked = subtitle && bean.unreliableMetadata;
+            String displayLanguage = firstNonEmpty(
+                    sanitizeTrackLanguageLabel(bean.rawLanguage, title),
+                    SystemPlayerTrackManager.getFriendlyLanguage(bean.rawLanguage,
+                            firstNonEmpty(title, bean.rawCodec, bean.rawMimeType)),
+                    bean.rawLanguage,
+                    "");
+            bean.language = displayLanguage;
+            if (!TextUtils.isEmpty(defaultFlag)
+                    || !TextUtils.isEmpty(forcedFlag)
+                    || !TextUtils.isEmpty(imageFlag)
+                    || !TextUtils.isEmpty(externalFlag)
+                    || !TextUtils.isEmpty(dependentFlag)
+                    || !TextUtils.isEmpty(mainSelectionFlag)) {
+                bean.rawTitle = (firstNonEmpty(bean.rawTitle, "") + " "
+                        + firstNonEmpty(defaultFlag, "") + " "
+                        + firstNonEmpty(forcedFlag, "") + " "
+                        + firstNonEmpty(imageFlag, "") + " "
+                        + firstNonEmpty(externalFlag, "") + " "
+                        + firstNonEmpty(dependentFlag, "") + " "
+                        + firstNonEmpty(mainSelectionFlag, "")).trim();
+            }
             bean.name = buildMpvTrackName(audio ? "音轨" : "字幕",
                     audio ? data.getAudio().size() + 1 : data.getSubtitle().size() + 1,
                     bean.language,
                     title);
             bean.selected = safeGetMpvPropertyBoolean("track-list/" + i + "/selected");
+            if (subtitle) {
+                logInfo("echo-mpv-track-sub id=" + bean.trackId
+                        + " idx=" + i
+                        + " selected=" + bean.selected
+                        + " lang=" + bean.rawLanguage
+                        + " title=" + bean.rawTitle
+                        + " codec=" + bean.rawCodec
+                        + " unreliable=" + bean.unreliableMetadata
+                        + " blocked=" + bean.autoSelectBlocked
+                        + " default=" + defaultFlag
+                        + " forced=" + forcedFlag
+                        + " image=" + imageFlag
+                        + " external=" + externalFlag
+                        + " dependent=" + dependentFlag
+                        + " mainSelection=" + mainSelectionFlag
+                        + " ff-index=" + ffIndex);
+            }
             if (audio) {
                 data.addAudio(bean);
             } else {
                 data.addSubtitle(bean);
             }
         }
+        mergeParsedSubtitleTracks(data);
         logInfo("echo-mpv-track audio=" + data.getAudio().size()
                 + " subtitle=" + data.getSubtitle().size());
+        lastKnownSubtitleTrackCount = data.getSubtitle().size();
+        updateSubtitleTrackListState(Math.max(count, lastKnownSubtitleTrackCount), lastKnownSubtitleTrackCount);
         return data;
     }
 
@@ -447,16 +703,67 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             return;
         }
         try {
+            track.autoSelectBlocked = false;
             MPVLib.setPropertyString("sid", String.valueOf(track.trackId));
             MPVLib.setPropertyString("secondary-sid", "no");
-            MPVLib.setPropertyString("sub-visibility", "yes");
-            logInfo("echo-mpv-subtitle select id=" + track.trackId + " name=" + track.name);
+            boolean bitmapSubtitle = SystemPlayerTrackManager.isBitmapSubtitleTrack(track);
+            // Text subtitles keep using our overlay via sub-text. Bitmap subtitles
+            // must use MPV's native renderer or nothing is displayed.
+            MPVLib.setPropertyString("sub-visibility", bitmapSubtitle ? "yes" : "no");
+            logInfo("echo-mpv-subtitle select id=" + track.trackId + " name=" + track.name
+                    + " overlayOnly=" + (!bitmapSubtitle)
+                    + " bitmap=" + bitmapSubtitle);
         } catch (Throwable th) {
             logInfo("echo-mpv-subtitle select failed id=" + track.trackId + " err=" + th.getMessage());
         }
     }
 
-    public void setOnSubtitleTextListener(@Nullable OnSubtitleTextListener listener) {
+    public void clearSubtitleTrackSelection() {
+        try {
+            MPVLib.setPropertyString("sid", "no");
+            MPVLib.setPropertyString("secondary-sid", "no");
+            MPVLib.setPropertyString("sub-visibility", "no");
+            dispatchSubtitleText("");
+            logInfo("echo-mpv-subtitle clear");
+        } catch (Throwable th) {
+            logInfo("echo-mpv-subtitle clear failed err=" + th.getMessage());
+        }
+    }
+
+    public int getLastKnownSubtitleTrackCount() {
+        return Math.max(0, lastKnownSubtitleTrackCount);
+    }
+
+    public boolean shouldDelaySubtitleSelection(int attempt) {
+        return shouldDelaySubtitleSelection(0, attempt);
+    }
+
+    public boolean shouldDelaySubtitleSelection(int currentSubtitleCount, int attempt) {
+        if (attempt >= 10) {
+            return false;
+        }
+        refreshSubtitleTrackListState();
+        if (!prepared || !firstPlaybackRestartSeen) {
+            logInfo("echo-mpv-subtitle wait attempt=" + attempt
+                    + " prepared=" + prepared
+                    + " restarted=" + firstPlaybackRestartSeen
+                    + " count=" + currentSubtitleCount);
+            return true;
+        }
+        if (currentSubtitleCount <= 0) {
+            return !subtitleTrackListSettled || subtitleTrackStableTicks < SUBTITLE_TRACK_STABLE_TICKS_REQUIRED;
+        }
+        if (lastKnownSubtitleTrackCount > currentSubtitleCount) {
+            logInfo("echo-mpv-subtitle wait reason=track-count-growing attempt=" + attempt
+                    + " current=" + currentSubtitleCount
+                    + " max=" + lastKnownSubtitleTrackCount);
+            return true;
+        }
+        return !subtitleTrackListSettled || subtitleTrackStableTicks < SUBTITLE_TRACK_STABLE_TICKS_REQUIRED;
+    }
+
+    @Override
+    public void setOnSubtitleTextListener(@Nullable CompatTrackSelectorPlayer.SubtitleTextListener listener) {
         subtitleTextListener = listener;
     }
 
@@ -469,6 +776,21 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
                     MPVCompatManager.getOutputMode(),
                     "listener-bind");
         }
+    }
+
+    public void setOnBridgeTrackInfoListener(@Nullable OnBridgeTrackInfoListener listener) {
+        bridgeTrackInfoListener = listener;
+    }
+
+    public void postToMainThreadDelayed(@Nullable Runnable runnable, long delayMs) {
+        if (runnable == null || released) {
+            return;
+        }
+        mainHandler.postDelayed(() -> {
+            if (!released) {
+                runnable.run();
+            }
+        }, Math.max(0L, delayMs));
     }
 
     public void selectAudioTrack(TrackInfoBean track) {
@@ -547,10 +869,16 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         switch (eventId) {
             case MPVLib.MpvEvent.MPV_EVENT_FILE_LOADED:
                 logInfo("echo-mpv-event FILE_LOADED");
-                attachSurfaceIfNeeded();
-                inspectRuntimeStreamMetadata("file-loaded");
-                requestHdrWindowMode("file-loaded");
-                applyPlaybackModeOptionsIfSurfaceReady("file-loaded");
+                subtitleTrackListSettled = false;
+                subtitleTrackStableTicks = 0;
+                lastObservedTrackListCount = -1;
+                lastObservedSubtitleTrackCount = -1;
+                if (!subtitleHelperMode) {
+                    attachSurfaceIfNeeded();
+                    inspectRuntimeStreamMetadata("file-loaded");
+                    requestHdrWindowMode("file-loaded");
+                    applyPlaybackModeOptionsIfSurfaceReady("file-loaded");
+                }
                 prepared = true;
                 completed = false;
                 forceMaxVolume();
@@ -562,6 +890,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
                     MPVLib.setPropertyBoolean("pause", false);
                     started = true;
                 }
+                dispatchBridgeTrackInfoIfNeeded("file-loaded");
                 logInfo("echo-mpv-notify prepared");
                 notifyPrepared();
                 notifyInfo(MEDIA_INFO_BUFFERING_END, 0);
@@ -569,19 +898,30 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             case MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART:
                 logInfo("echo-mpv-event PLAYBACK_RESTART");
                 firstPlaybackRestartSeen = true;
+                refreshSubtitleTrackListState();
                 started = true;
-                inspectRuntimeStreamMetadata("playback-restart");
-                requestHdrWindowMode("playback-restart");
+                if (!subtitleHelperMode) {
+                    inspectRuntimeStreamMetadata("playback-restart");
+                    requestHdrWindowMode("playback-restart");
+                }
                 forceMaxVolume();
                 applyPendingInitialSeekIfNeeded("playback-restart");
+                dispatchBridgeTrackInfoIfNeeded("playback-restart");
                 logInfo("echo-mpv-notify rendering-start");
                 notifyInfo(MEDIA_INFO_RENDERING_START, 0);
                 break;
             case MPVLib.MpvEvent.MPV_EVENT_VIDEO_RECONFIG:
                 logInfo("echo-mpv-event VIDEO_RECONFIG");
-                inspectRuntimeStreamMetadata("video-reconfig");
-                requestHdrWindowMode("video-reconfig");
-                notifyVideoSizeChanged();
+                if (!subtitleHelperMode) {
+                    attachSurfaceIfNeeded();
+                }
+                refreshSubtitleTrackListState();
+                if (!subtitleHelperMode) {
+                    inspectRuntimeStreamMetadata("video-reconfig");
+                    requestHdrWindowMode("video-reconfig");
+                    notifyVideoSizeChanged();
+                }
+                dispatchBridgeTrackInfoIfNeeded("video-reconfig");
                 if (firstPlaybackRestartSeen) {
                     applyPendingInitialSeekIfNeeded("video-reconfig");
                 }
@@ -609,6 +949,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         if (text == null) {
             return;
         }
+        parseSubtitleTrackLog(prefix, text);
         String lower = text.toLowerCase(Locale.US);
         if (lower.contains("error") || lower.contains("failed")) {
             Log.w(TAG, prefix + ": " + text);
@@ -619,6 +960,10 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
     private void loadCurrentFile() {
         if (TextUtils.isEmpty(dataSource)) {
             notifyError();
+            return;
+        }
+        if (subtitleHelperMode) {
+            loadCurrentFileNow("subtitle-helper");
             return;
         }
         if (!hasUsableAttachedSurface()) {
@@ -656,16 +1001,33 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             notifyError();
             return;
         }
-        if (!hasUsableAttachedSurface()) {
+        if (!subtitleHelperMode && !hasUsableAttachedSurface()) {
             playWhenPrepared = true;
             logInfo("echo-mpv-wait-surface-before-load reason=" + reason);
             return;
         }
-        requestHdrWindowMode("loadfile");
-        applyPlaybackModeOptionsIfSurfaceReady("loadfile");
+        if (!subtitleHelperMode) {
+            attachSurfaceIfNeeded();
+        }
+        if (!subtitleHelperMode && !hasUsableAttachedSurface()) {
+            playWhenPrepared = true;
+            logInfo("echo-mpv-wait-surface-before-load reason=" + reason + "-attach");
+            return;
+        }
+        if (!subtitleHelperMode) {
+            requestHdrWindowMode("loadfile");
+            applyPlaybackModeOptionsIfSurfaceReady("loadfile");
+        }
+        if (currentPlaybackDolbyVision && !MPVCompatManager.isCurrentPlayDolbyVision()) {
+            MPVCompatManager.setCurrentPlayIsDolbyVision(true);
+            logInfo("echo-mpvcompat restore-dv-flag reason=loadfile-pre");
+        }
         setHeaders(requestHeaders);
         MPVLib.setPropertyBoolean("pause", true);
         String perFileOptions = MPVCompatManager.buildPlaybackPerFileOptions();
+        if (subtitleHelperMode) {
+            perFileOptions = appendSubtitleHelperOptions(perFileOptions);
+        }
         logInfo("echo-mpv-loadfile reason=" + reason + " url=" + dataSource + " options=" + perFileOptions);
         if (TextUtils.isEmpty(perFileOptions)) {
             MPVLib.command(new String[]{"loadfile", dataSource, "replace"});
@@ -680,6 +1042,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         runtimeStreamHdrDetected = false;
         runtimeStreamDolbyVisionDetected = false;
         runtimeHdrPromotionApplied = false;
+        currentPlaybackDolbyVision = MPVCompatManager.isCurrentPlayDolbyVision();
         lastSeekRequestMs = -1L;
         lastSubtitleText = null;
         pendingInitialSeekAfterRestart = seekOnPreparedMs >= 0L;
@@ -688,6 +1051,31 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         if (!playWhenPrepared) {
             playWhenPrepared = true;
         }
+    }
+
+    private String appendSubtitleHelperOptions(String options) {
+        StringBuilder builder = new StringBuilder();
+        appendPerFileOption(builder, "vid", "no");
+        appendPerFileOption(builder, "vo", "null");
+        appendPerFileOption(builder, "aid", "no");
+        appendPerFileOption(builder, "ao", "null");
+        appendPerFileOption(builder, "hwdec", "no");
+        appendPerFileOption(builder, "vd", "auto");
+        appendPerFileOption(builder, "video-sync", "display-desync");
+        appendPerFileOption(builder, "cache", "yes");
+        appendPerFileOption(builder, "cache-pause", "no");
+        appendPerFileOption(builder, "sub-visibility", "no");
+        appendPerFileOption(builder, "sid", "auto");
+        appendPerFileOption(builder, "sub-auto", "fuzzy");
+        appendPerFileOption(builder, "pause", "yes");
+        return builder.toString();
+    }
+
+    private void appendPerFileOption(StringBuilder builder, String key, String value) {
+        if (builder.length() > 0) {
+            builder.append(',');
+        }
+        builder.append(key).append('=').append(value);
     }
 
     private void attachSurfaceIfNeeded() {
@@ -699,16 +1087,15 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             requestHdrWindowMode("surface-refresh");
             return;
         }
-        // libmpv can replace the Android surface directly. Detaching first creates a
-        // transient null surface; on Huawei TV this makes vo/gpu drop the video track.
-        updateAndroidSurfaceSize();
+        // Attach first, then apply any VO-affecting properties. Setting force-window
+        // or android-surface-size before the attach races vo/gpu into a null surface.
         MPVLib.attachSurface(pendingSurface);
         surfaceAttached = true;
         attachedSurface = pendingSurface;
+        updateAndroidSurfaceSize();
         logInfo("echo-mpv-surface-attached width=" + pendingSurfaceWidth + " height=" + pendingSurfaceHeight);
         requestHdrWindowMode("surface-attach");
         applyPlaybackModeOptionsIfSurfaceReady("surface-attach");
-        MPVLib.setOptionString("force-window", "yes");
         boolean hadPendingSurfaceLoss = pendingSurfaceLoss;
         pendingSurfaceLoss = false;
         pendingResumeAfterSurfaceAttach = false;
@@ -804,6 +1191,10 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
                     + " attached=" + surfaceAttached);
             return;
         }
+        if (currentPlaybackDolbyVision && !MPVCompatManager.isCurrentPlayDolbyVision()) {
+            MPVCompatManager.setCurrentPlayIsDolbyVision(true);
+            logInfo("echo-mpvcompat restore-dv-flag reason=" + reason);
+        }
         MPVCompatManager.applyPlaybackModeOptions();
     }
 
@@ -822,7 +1213,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
                 logInfo("echo-mpv-apply-delayed-seek pos=" + targetMs + " reason=" + reason);
                 lastSeekRequestMs = targetMs;
                 try {
-                    MPVLib.command(new String[]{"seek", String.valueOf(targetMs / 1000d), "absolute+exact"});
+                    MPVLib.command(new String[]{"seek", String.valueOf(targetMs / 1000d), "absolute+keyframes"});
                 } catch (Throwable th) {
                     logInfo("echo-mpv-initial-seek-command-failed " + th.getMessage());
                     MPVLib.setPropertyDouble("time-pos", targetMs / 1000d);
@@ -831,6 +1222,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
                     resumeAfterSeek("initial-" + reason);
                 }
                 dumpPlaybackStateDelayed("initial-" + reason, 300L);
+                dumpPlaybackStateDelayed("initial-" + reason, 1300L);
             } catch (Throwable th) {
                 logInfo("echo-mpv-apply-delayed-seek failed " + th.getMessage());
             }
@@ -955,6 +1347,28 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         }
     }
 
+    private boolean shouldReloadFileForSeek() {
+        return !subtitleHelperMode
+                && com.github.tvbox.osc.base.App.isJava64Build()
+                && currentDataSourceIsLocalMatroskaProxy;
+    }
+
+    private boolean isJava64LocalMatroskaProxyPlayback(@Nullable String url,
+                                                       @Nullable Map<String, String> headers) {
+        if (!com.github.tvbox.osc.base.App.isJava64Build()) {
+            return false;
+        }
+        if (!isLocalPlaybackUrl(url)) {
+            return false;
+        }
+        String container = getHeaderValue(headers, "X-TVBox-Probe-Container");
+        if ("matroska".equalsIgnoreCase(firstNonEmpty(container, ""))) {
+            return true;
+        }
+        String safeUrl = firstNonEmpty(url, "").toLowerCase(Locale.US);
+        return safeUrl.contains(".mkv") || safeUrl.contains(".webm");
+    }
+
     private void notifyVideoSizeChanged() {
         Double width = MPVLib.getPropertyDouble("width");
         Double height = MPVLib.getPropertyDouble("height");
@@ -983,7 +1397,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
     }
 
     private void dispatchSubtitleText(@Nullable String text) {
-        final OnSubtitleTextListener listener = subtitleTextListener;
+        final CompatTrackSelectorPlayer.SubtitleTextListener listener = subtitleTextListener;
         if (listener == null || released) {
             return;
         }
@@ -997,6 +1411,34 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
                 logInfo("echo-mpv-subtitle text len=" + safeText.length());
                 subtitleTextListener.onSubtitleText(safeText);
             }
+        });
+    }
+
+    private void dispatchBridgeTrackInfoIfNeeded(String reason) {
+        final OnBridgeTrackInfoListener listener = bridgeTrackInfoListener;
+        if (!subtitleHelperMode || listener == null || released) {
+            return;
+        }
+        refreshSubtitleTrackListState();
+        final TrackInfo trackInfo = getTrackInfo();
+        if (trackInfo == null || trackInfo.getSubtitle() == null || trackInfo.getSubtitle().isEmpty()) {
+            logInfo("echo-subtitle-bridge helper-trackinfo-skip reason=" + reason + " subtitle=0");
+            return;
+        }
+        if (!subtitleTrackListSettled && subtitleTrackStableTicks < SUBTITLE_TRACK_STABLE_TICKS_REQUIRED) {
+            logInfo("echo-subtitle-bridge helper-trackinfo-wait reason=" + reason
+                    + " subtitle=" + trackInfo.getSubtitle().size()
+                    + " stableTicks=" + subtitleTrackStableTicks
+                    + " settled=" + subtitleTrackListSettled);
+            return;
+        }
+        mainHandler.post(() -> {
+            if (released || bridgeTrackInfoListener == null) {
+                return;
+            }
+            logInfo("echo-subtitle-bridge helper-trackinfo reason=" + reason
+                    + " subtitle=" + (trackInfo == null ? 0 : trackInfo.getSubtitle().size()));
+            bridgeTrackInfoListener.onTrackInfo(trackInfo);
         });
     }
 
@@ -1088,10 +1530,13 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             if (hdr || dv) {
                 runtimeStreamHdrDetected = true;
                 runtimeStreamDolbyVisionDetected = runtimeStreamDolbyVisionDetected || dv;
-                if (!runtimeHdrPromotionApplied && !MPVCompatManager.shouldRequestHdrOutput()) {
-                    runtimeHdrPromotionApplied = true;
-                    MPVCompatManager.promoteRuntimeHdrOutput(reason + " " + shrink(summary));
-                    applyPlaybackModeOptionsIfSurfaceReady("runtime-" + reason);
+                String desiredMode = resolveRuntimeHdrOutputMode(summary, hdr, dv);
+                if (!runtimeHdrPromotionApplied
+                        || !TextUtils.equals(MPVCompatManager.getOutputMode(), desiredMode)
+                        || !MPVCompatManager.shouldRequestHdrOutput()) {
+                    runtimeHdrPromotionApplied = MPVCompatManager.promoteRuntimeHdrOutput(
+                            desiredMode,
+                            reason + " " + shrink(summary)) || runtimeHdrPromotionApplied;
                 }
                 requestHdrWindowMode("runtime-" + reason);
                 dispatchRuntimeVideoMode(runtimeVideoModeListener,
@@ -1109,6 +1554,62 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             }
         } catch (Throwable th) {
             logInfo("echo-mpv-runtime-probe failed reason=" + reason + " err=" + th.getMessage());
+        }
+    }
+
+    private String resolveRuntimeHdrOutputMode(String summary, boolean hdr, boolean dv) {
+        if (!hdr && !dv) {
+            return "sdr";
+        }
+        if (dv) {
+            if (com.github.tvbox.osc.base.App.isJava64Build()
+                    && TextUtils.equals(MPVCompatManager.getOutputMode(), "dv-base-hdr")) {
+                // java64 手机这条 DV 线路要把视频继续锁在 mediacodec_embed，
+                // 不能因为运行时 metadata 被硬解层暴露成 bt.709 就回退到 map-hdr + gpu。
+                return "dv-base-hdr";
+            }
+            int profile = extractRuntimeDolbyVisionProfile(summary);
+            if ((profile == 7 || profile == 8) && !hasRuntimeSdrColorMetadata(summary)) {
+                return "dv-base-hdr";
+            }
+            return "map-hdr";
+        }
+        return "base-hdr";
+    }
+
+    private boolean hasRuntimeSdrColorMetadata(String summary) {
+        if (TextUtils.isEmpty(summary)) {
+            return false;
+        }
+        String lower = summary.toLowerCase(Locale.US);
+        return lower.contains("video-params/primaries=bt.709")
+                && lower.contains("video-params/gamma=bt.1886")
+                && lower.contains("video-dec-params/primaries=bt.709")
+                && lower.contains("video-dec-params/gamma=bt.1886");
+    }
+
+    private int extractRuntimeDolbyVisionProfile(String summary) {
+        if (TextUtils.isEmpty(summary)) {
+            return -1;
+        }
+        String lower = summary.toLowerCase(Locale.US);
+        String marker = "dolby-vision-profile=";
+        int start = lower.indexOf(marker);
+        if (start < 0) {
+            return -1;
+        }
+        start += marker.length();
+        int end = start;
+        while (end < lower.length() && Character.isDigit(lower.charAt(end))) {
+            end++;
+        }
+        if (end <= start) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(lower.substring(start, end));
+        } catch (Throwable ignored) {
+            return -1;
         }
     }
 
@@ -1190,6 +1691,76 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         }
     }
 
+    private void refreshSubtitleTrackListState() {
+        Integer count = safeGetMpvPropertyInt("track-list/count");
+        if (count == null || count <= 0) {
+            int parsedCount = getParsedSubtitleTrackCount();
+            updateSubtitleTrackListState(parsedCount, parsedCount);
+            return;
+        }
+        int subtitleCount = 0;
+        int safeCount = Math.min(count, 64);
+        for (int i = 0; i < safeCount; i++) {
+            String type = safeGetMpvPropertyString("track-list/" + i + "/type");
+            if ("sub".equalsIgnoreCase(type) || "subtitle".equalsIgnoreCase(type)) {
+                subtitleCount++;
+            }
+        }
+        int parsedCount = getParsedSubtitleTrackCount();
+        if (parsedCount > subtitleCount) {
+            subtitleCount = parsedCount;
+        }
+        updateSubtitleTrackListState(Math.max(count, subtitleCount), subtitleCount);
+    }
+
+    private void updateSubtitleTrackListState(int trackListCount, int subtitleCount) {
+        lastKnownSubtitleTrackCount = Math.max(lastKnownSubtitleTrackCount, subtitleCount);
+        if (trackListCount <= 0) {
+            subtitleTrackListSettled = false;
+            subtitleTrackStableTicks = 0;
+            lastObservedTrackListCount = 0;
+            lastObservedSubtitleTrackCount = 0;
+            return;
+        }
+        if (trackListCount != lastObservedTrackListCount
+                || subtitleCount != lastObservedSubtitleTrackCount) {
+            lastObservedTrackListCount = trackListCount;
+            lastObservedSubtitleTrackCount = subtitleCount;
+            subtitleTrackStableTicks = 0;
+            subtitleTrackListSettled = false;
+            logInfo("echo-mpv-track settling total=" + trackListCount
+                    + " subtitle=" + subtitleCount
+                    + " maxSeen=" + lastKnownSubtitleTrackCount);
+            return;
+        }
+        subtitleTrackStableTicks++;
+        if (subtitleTrackStableTicks >= SUBTITLE_TRACK_STABLE_TICKS_REQUIRED) {
+            subtitleTrackListSettled = true;
+        }
+        logInfo("echo-mpv-track stable tick=" + subtitleTrackStableTicks
+                + " total=" + trackListCount
+                + " subtitle=" + subtitleCount
+                + " settled=" + subtitleTrackListSettled);
+    }
+
+    private String sanitizeTrackLanguageLabel(String rawLanguage, String title) {
+        String safeRaw = firstNonEmpty(rawLanguage, "");
+        String safeTitle = firstNonEmpty(title, "");
+        if (!TextUtils.isEmpty(safeTitle)) {
+            return "";
+        }
+        String lower = safeRaw.toLowerCase(Locale.US);
+        if ("chi".equals(lower) || "zho".equals(lower) || "zh".equals(lower)
+                || "zh-cn".equals(lower) || "zh_hans".equals(lower)
+                || "zh-hans".equals(lower) || "zh-tw".equals(lower)
+                || "zh_hant".equals(lower) || "zh-hant".equals(lower)) {
+            // 仅凭通用语言码无法区分“简中/繁中/汉语/韩语误标”。
+            // 这里不直接把它渲染成“中文字幕”，避免 UI 误导用户。
+            return safeRaw;
+        }
+        return safeRaw;
+    }
+
     private String firstNonEmpty(String... values) {
         if (values == null) {
             return "";
@@ -1200,6 +1771,214 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             }
         }
         return "";
+    }
+
+    private void clearParsedSubtitleTracks() {
+        synchronized (parsedSubtitleTrackLock) {
+            parsedSubtitleTracks.clear();
+        }
+    }
+
+    private int getParsedSubtitleTrackCount() {
+        synchronized (parsedSubtitleTrackLock) {
+            return parsedSubtitleTracks.size();
+        }
+    }
+
+    private void parseSubtitleTrackLog(@Nullable String prefix, @Nullable String text) {
+        if (TextUtils.isEmpty(text)) {
+            return;
+        }
+        String safeText = text.trim();
+        Matcher trackMatcher = MPV_SUB_TRACK_LOG_PATTERN.matcher(safeText);
+        if (trackMatcher.matches()) {
+            int sid = parseSafeInt(trackMatcher.group(1), -1);
+            if (sid > 0) {
+                boolean selected = safeText.startsWith("●");
+                String rawLanguage = firstNonEmpty(trackMatcher.group(2), "");
+                String rawTitle = firstNonEmpty(trackMatcher.group(3), "");
+                String rawCodec = firstNonEmpty(trackMatcher.group(4), "");
+                String suffix = firstNonEmpty(trackMatcher.group(5), "").trim();
+                if (!TextUtils.isEmpty(suffix)) {
+                    rawTitle = (rawTitle + " " + suffix).trim();
+                }
+                TrackInfoBean bean = buildLoggedSubtitleTrackBean(sid, rawLanguage, rawTitle, rawCodec, selected);
+                synchronized (parsedSubtitleTrackLock) {
+                    TrackInfoBean existing = parsedSubtitleTracks.get(sid);
+                    if (existing == null) {
+                        parsedSubtitleTracks.put(sid, bean);
+                    } else {
+                        mergeTrackBean(existing, bean);
+                        existing.selected = bean.selected;
+                    }
+                }
+                lastKnownSubtitleTrackCount = Math.max(lastKnownSubtitleTrackCount, getParsedSubtitleTrackCount());
+            }
+            return;
+        }
+        Matcher sidMatcher = MPV_SID_SET_LOG_PATTERN.matcher(safeText);
+        if (!sidMatcher.find()) {
+            return;
+        }
+        int sid = parseSafeInt(sidMatcher.group(1), -1);
+        if (sid <= 0) {
+            return;
+        }
+        synchronized (parsedSubtitleTrackLock) {
+            for (TrackInfoBean bean : parsedSubtitleTracks.values()) {
+                bean.selected = bean.trackId == sid;
+            }
+        }
+    }
+
+    private TrackInfoBean buildLoggedSubtitleTrackBean(int sid,
+                                                       @Nullable String rawLanguage,
+                                                       @Nullable String rawTitle,
+                                                       @Nullable String rawCodec,
+                                                       boolean selected) {
+        TrackInfoBean bean = new TrackInfoBean();
+        bean.trackId = sid;
+        bean.renderId = 3;
+        bean.trackGroupId = 1;
+        bean.rawLanguage = firstNonEmpty(rawLanguage, "");
+        bean.rawTitle = firstNonEmpty(rawTitle, "");
+        bean.rawCodec = firstNonEmpty(rawCodec, "");
+        bean.rawMimeType = bean.rawCodec;
+        bean.selected = selected;
+        bean.unreliableMetadata = TextUtils.isEmpty(bean.rawTitle)
+                && ("zh".equalsIgnoreCase(bean.rawLanguage)
+                || "chi".equalsIgnoreCase(bean.rawLanguage)
+                || "zho".equalsIgnoreCase(bean.rawLanguage)
+                || "cmn".equalsIgnoreCase(bean.rawLanguage));
+        bean.autoSelectBlocked = bean.unreliableMetadata;
+        bean.language = firstNonEmpty(
+                sanitizeTrackLanguageLabel(bean.rawLanguage, bean.rawTitle),
+                SystemPlayerTrackManager.getFriendlyLanguage(bean.rawLanguage,
+                        firstNonEmpty(bean.rawTitle, bean.rawCodec, bean.rawMimeType)),
+                "");
+        return bean;
+    }
+
+    private void mergeParsedSubtitleTracks(@Nullable TrackInfo data) {
+        if (data == null) {
+            return;
+        }
+        List<TrackInfoBean> current = data.getSubtitle();
+        LinkedHashMap<Integer, TrackInfoBean> parsedSnapshot = new LinkedHashMap<>();
+        synchronized (parsedSubtitleTrackLock) {
+            for (Map.Entry<Integer, TrackInfoBean> entry : parsedSubtitleTracks.entrySet()) {
+                parsedSnapshot.put(entry.getKey(), copyTrackBean(entry.getValue()));
+            }
+        }
+        if (parsedSnapshot.isEmpty()) {
+            return;
+        }
+        LinkedHashMap<Integer, TrackInfoBean> mergedById = new LinkedHashMap<>();
+        for (TrackInfoBean bean : current) {
+            if (bean != null) {
+                mergedById.put(bean.trackId, bean);
+            }
+        }
+        for (Map.Entry<Integer, TrackInfoBean> entry : parsedSnapshot.entrySet()) {
+            TrackInfoBean existing = mergedById.get(entry.getKey());
+            if (existing == null) {
+                mergedById.put(entry.getKey(), copyTrackBean(entry.getValue()));
+            } else {
+                mergeTrackBean(existing, entry.getValue());
+            }
+        }
+        ArrayList<TrackInfoBean> rebuilt = new ArrayList<>();
+        for (Map.Entry<Integer, TrackInfoBean> entry : parsedSnapshot.entrySet()) {
+            TrackInfoBean bean = mergedById.remove(entry.getKey());
+            if (bean != null) {
+                rebuilt.add(bean);
+            }
+        }
+        rebuilt.addAll(mergedById.values());
+        if (rebuilt.isEmpty()) {
+            return;
+        }
+        current.clear();
+        for (int i = 0; i < rebuilt.size(); i++) {
+            TrackInfoBean bean = rebuilt.get(i);
+            bean.groupIndex = i;
+            bean.index = i;
+            bean.trackGroupId = 1;
+            bean.renderId = 3;
+            bean.language = firstNonEmpty(
+                    sanitizeTrackLanguageLabel(bean.rawLanguage, bean.rawTitle),
+                    SystemPlayerTrackManager.getFriendlyLanguage(bean.rawLanguage,
+                            firstNonEmpty(bean.rawTitle, bean.rawCodec, bean.rawMimeType)),
+                    "");
+            bean.name = buildMpvTrackName("字幕",
+                    i + 1,
+                    bean.language,
+                    firstNonEmpty(bean.rawTitle, bean.rawCodec, bean.rawMimeType));
+            current.add(bean);
+        }
+    }
+
+    private TrackInfoBean copyTrackBean(@Nullable TrackInfoBean source) {
+        TrackInfoBean copy = new TrackInfoBean();
+        if (source == null) {
+            return copy;
+        }
+        copy.trackId = source.trackId;
+        copy.renderId = source.renderId;
+        copy.trackGroupId = source.trackGroupId;
+        copy.name = source.name;
+        copy.language = source.language;
+        copy.rawLanguage = source.rawLanguage;
+        copy.rawTitle = source.rawTitle;
+        copy.rawCodec = source.rawCodec;
+        copy.rawMimeType = source.rawMimeType;
+        copy.groupIndex = source.groupIndex;
+        copy.index = source.index;
+        copy.selected = source.selected;
+        copy.unreliableMetadata = source.unreliableMetadata;
+        copy.autoSelectBlocked = source.autoSelectBlocked;
+        return copy;
+    }
+
+    private void mergeTrackBean(@Nullable TrackInfoBean target, @Nullable TrackInfoBean source) {
+        if (target == null || source == null) {
+            return;
+        }
+        if (TextUtils.isEmpty(target.rawLanguage)) {
+            target.rawLanguage = source.rawLanguage;
+        }
+        if (TextUtils.isEmpty(target.rawTitle)
+                || TextUtils.equals(target.rawTitle, target.rawCodec)
+                || "subrip".equalsIgnoreCase(target.rawTitle)) {
+            target.rawTitle = firstNonEmpty(source.rawTitle, target.rawTitle);
+        }
+        if (TextUtils.isEmpty(target.rawCodec)) {
+            target.rawCodec = source.rawCodec;
+        }
+        if (TextUtils.isEmpty(target.rawMimeType)) {
+            target.rawMimeType = source.rawMimeType;
+        }
+        if (TextUtils.isEmpty(target.language)) {
+            target.language = source.language;
+        }
+        target.unreliableMetadata = TextUtils.isEmpty(target.rawTitle)
+                && ("zh".equalsIgnoreCase(target.rawLanguage)
+                || "chi".equalsIgnoreCase(target.rawLanguage)
+                || "zho".equalsIgnoreCase(target.rawLanguage)
+                || "cmn".equalsIgnoreCase(target.rawLanguage));
+        target.autoSelectBlocked = target.unreliableMetadata;
+        target.selected = target.selected || source.selected;
+    }
+
+    private int parseSafeInt(@Nullable String value, int fallback) {
+        if (TextUtils.isEmpty(value)) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (Throwable ignored) {
+            return fallback;
+        }
     }
 
     private String buildMpvTrackName(String prefix, int number, String language, String detail) {
@@ -1274,10 +2053,6 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         } catch (Throwable th) {
             logInfo("echo-mpv-runtime-mode-callback failed reason=" + reason + " err=" + th.getMessage());
         }
-    }
-
-    public interface OnSubtitleTextListener {
-        void onSubtitleText(String text);
     }
 
     public interface OnRuntimeVideoModeListener {

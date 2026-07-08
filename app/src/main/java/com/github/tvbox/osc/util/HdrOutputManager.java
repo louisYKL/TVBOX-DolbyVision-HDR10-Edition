@@ -26,6 +26,34 @@ public final class HdrOutputManager {
         return requestHdr(context, reason, true);
     }
 
+    public static boolean requestBrightnessBoostOnly(Context context, String reason, boolean boostBrightness) {
+        Activity activity = findActivity(context);
+        if (activity != null && Looper.myLooper() != Looper.getMainLooper()) {
+            activity.runOnUiThread(() -> requestBrightnessBoostOnly(activity, reason + "-main", boostBrightness));
+            LOG.i("echo-hdr-window brightness-only-posted-main reason=" + reason);
+            return true;
+        }
+        Window window = activity == null ? null : activity.getWindow();
+        if (window == null) {
+            LOG.i("echo-hdr-window brightness-only-skip no-window reason=" + reason);
+            return false;
+        }
+        try {
+            WindowManager.LayoutParams attrs = window.getAttributes();
+            applyJava64HdrBrightness(activity, attrs, boostBrightness, reason);
+            window.setAttributes(attrs);
+            WindowManager.LayoutParams applied = window.getAttributes();
+            LOG.i("echo-hdr-window brightness-only reason=" + reason
+                    + " brightness=" + applied.screenBrightness
+                    + " boost=" + boostBrightness
+                    + " caps=" + HdrDeviceSupport.query(activity).summary);
+            return true;
+        } catch (Throwable th) {
+            LOG.e("echo-hdr-window brightness-only-failed reason=" + reason + " err=" + th.getMessage());
+            return false;
+        }
+    }
+
     public static boolean requestHdr(Context context, String reason, boolean boostBrightness) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             LOG.i("echo-hdr-window skip sdk=" + Build.VERSION.SDK_INT + " reason=" + reason);

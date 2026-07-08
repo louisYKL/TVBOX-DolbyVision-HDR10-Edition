@@ -54,7 +54,9 @@ import com.github.tvbox.osc.cache.CacheManager;
 import com.github.tvbox.osc.event.RefreshEvent;
 import com.github.tvbox.osc.player.MPVCompatManager;
 import com.github.tvbox.osc.player.MPVCompatPlayer;
+import com.github.tvbox.osc.player.CompatTrackSelectorPlayer;
 import com.github.tvbox.osc.player.MyVideoView;
+import com.github.tvbox.osc.player.RuntimeVideoModeAwarePlayer;
 import com.github.tvbox.osc.player.SystemPlayerTrackManager;
 import com.github.tvbox.osc.player.TrackInfo;
 import com.github.tvbox.osc.player.TrackInfoBean;
@@ -74,7 +76,9 @@ import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
+import com.github.tvbox.osc.util.PlayerCapability;
 import com.github.tvbox.osc.util.PlayerHelper;
+import com.github.tvbox.osc.util.ScreenUtils;
 import com.github.tvbox.osc.util.SubtitleHelper;
 import com.github.tvbox.osc.util.VideoStreamProbe;
 import com.github.tvbox.osc.util.VideoParseRuler;
@@ -114,6 +118,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
@@ -134,7 +139,7 @@ public class PlayFragment extends BaseLazyFragment {
     private static final long PLAY_TIMEOUT_SYSTEM_PROXY_MS = 120 * 1000L;
     private static final long BUFFER_STALL_TIMEOUT_MS = 45 * 1000L;
     private static final long PLAYER_RELEASE_SETTLE_MS = 260L;
-    private static final int SUBTITLE_INIT_MAX_ATTEMPTS = 8;
+    private static final int SUBTITLE_INIT_MAX_ATTEMPTS = 12;
     private static final long SUBTITLE_INIT_RETRY_DELAY_MS = 650L;
     private MyVideoView mVideoView;
     private TextView mPlayLoadTip;
@@ -143,24 +148,38 @@ public class PlayFragment extends BaseLazyFragment {
     private VodController mController;
     private SourceViewModel sourceViewModel;
     private Handler mHandler;
-    private final ExecutorService playbackProbeExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService playbackProbeExecutor = Executors.newFixedThreadPool(2);
+    private final ExecutorService subtitleWorkExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService playbackPersistExecutor = Executors.newSingleThreadExecutor();
     private final AtomicInteger playbackRequestSeq = new AtomicInteger(0);
     private final AtomicInteger playGeneration = new AtomicInteger(0);
     private final AtomicInteger subtitleInitSeq = new AtomicInteger(0);
     private volatile int activePlayGeneration = 0;
     private volatile int activeParseGeneration = 0;
     private volatile int activeM3u8Generation = 0;
+    private volatile int activeParseSessionId = 0;
     private volatile String activeProgressKey = "";
     private volatile String activeSubtitleCacheKey = "";
+    private volatile String activePlayRequestKey = "";
     private volatile long lastPlayerReleaseAtMs = 0L;
 
     private boolean suppressPauseForFullScreenTransition;
     private boolean playbackRenderedFirstFrame;
     private boolean fullscreenExitSwitchPending;
-    private boolean pendingHdrWindowEnableAfterRender;
     private boolean lastReleasedPlaybackRequiresHdrOutput;
+    private boolean keepHdrWindowDuringPlayerSwitch;
+    private boolean currentPlaybackUsesNativeJava64DolbyVision;
+    private boolean subtitleInitSettledForGeneration;
     private long nextPlayerReleaseSettleMs = PLAYER_RELEASE_SETTLE_MS;
     private List<Subtitle> sourceSubtitles = new java.util.ArrayList<>();
+    private String playbackSourceKeySnapshot = "";
+    private String playbackFlagSnapshot = "";
+    private int playbackIndexSnapshot = -1;
+    private String playbackProgressKeySnapshot = "";
+    @Nullable
+    private TrackInfo lastResolvedSubtitleTrackInfo;
+    private String lastResolvedSubtitleTrackPlayer = "";
+    private int lastResolvedSubtitleTrackGeneration = -1;
     private String pendingSystemFallbackSourceUrl;
     private HashMap<String, String> pendingSystemFallbackHeaders;
     private boolean systemFallbackTried;
@@ -172,7 +191,6 @@ public class PlayFragment extends BaseLazyFragment {
         final HashMap<String, String> headers;
         final VideoStreamProbe.Result probe;
         final DolbyVisionPlaybackRouter.Decision decision;
-
         PlaybackPreflight(String rawUrl,
                           String url,
                           HashMap<String, String> headers,
@@ -187,54 +205,194 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private void persistPlaybackProgress() {
+        persistPlaybackPositionCache();
         if (mVideoView != null) {
             try {
                 mVideoView.persistProgressNow();
             } catch (Throwable ignored) {
             }
         }
-        persistPlaybackHistoryRecord();
+        persistPlaybackHistoryRecordAsync();
     }
 
-    private void persistPlaybackHistoryRecord() {
+    private void persistPlaybackPositionCache() {
+        String persistKey = getPlaybackProgressKeyForPersistence();
+        if (mVideoView == null || TextUtils.isEmpty(persistKey)) {
+            return;
+        }
+        long position = resolvePersistablePlaybackPosition();
+        if (position > 0L) {
+            CacheManager.save(MD5.string2MD5(persistKey), position);
+            if (!TextUtils.isEmpty(progressKey) && !TextUtils.equals(progressKey, persistKey)) {
+                CacheManager.save(MD5.string2MD5(progressKey), position);
+            }
+            LOG.i("echo-progress-cache fragment saved pos=" + position + " key=" + persistKey);
+        }
+    }
+
+    private long resolvePersistablePlaybackPosition() {
+        if (mVideoView == null) {
+            return 0L;
+        }
         try {
-            rebuildProgressKeyFromState();
-            String resolvedSourceKey = resolveActiveSourceKey();
+            long position = mVideoView.resolvePersistablePosition();
+            if (position > 0L) {
+                return position;
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0L;
+    }
+
+    private void persistPlaybackHistoryRecordAsync() {
+        final VodRecordSnapshot snapshot = buildVodRecordSnapshot();
+        if (snapshot == null) {
+            return;
+        }
+        try {
+            if (playbackPersistExecutor == null
+                    || playbackPersistExecutor.isShutdown()
+                    || playbackPersistExecutor.isTerminated()) {
+                persistPlaybackHistoryRecord(snapshot);
+                return;
+            }
+            playbackPersistExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    persistPlaybackHistoryRecord(snapshot);
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            persistPlaybackHistoryRecord(snapshot);
+        }
+    }
+
+    @Nullable
+    private VodRecordSnapshot buildVodRecordSnapshot() {
+        try {
+            String resolvedSourceKey = getPlaybackSourceKeyForPersistence();
+            String playbackFlag = getPlaybackFlagForPersistence();
+            int playbackIndex = getPlaybackIndexForPersistence();
             if (mVodInfo == null
                     || TextUtils.isEmpty(resolvedSourceKey)
                     || mVodInfo.seriesMap == null
-                    || TextUtils.isEmpty(mVodInfo.playFlag)
-                    || mVodInfo.seriesMap.get(mVodInfo.playFlag) == null
-                    || mVodInfo.playIndex < 0
-                    || mVodInfo.playIndex >= mVodInfo.seriesMap.get(mVodInfo.playFlag).size()) {
-                return;
+                    || TextUtils.isEmpty(playbackFlag)
+                    || mVodInfo.seriesMap.get(playbackFlag) == null
+                    || playbackIndex < 0
+                    || playbackIndex >= mVodInfo.seriesMap.get(playbackFlag).size()) {
+                return null;
             }
-            VodInfo.VodSeries currentSeries = mVodInfo.seriesMap.get(mVodInfo.playFlag).get(mVodInfo.playIndex);
-            mVodInfo.playNote = currentSeries == null ? "" : currentSeries.name;
-            com.github.tvbox.osc.cache.RoomDataManger.insertVodRecord(resolvedSourceKey, mVodInfo);
+            VodInfo.VodSeries currentSeries = mVodInfo.seriesMap.get(playbackFlag).get(playbackIndex);
+            VodInfo recordVodInfo = copyVodInfoForPersistence(resolvedSourceKey, playbackFlag, playbackIndex, currentSeries);
+            return new VodRecordSnapshot(resolvedSourceKey, playbackFlag, playbackIndex,
+                    getPlaybackProgressKeyForPersistence(), recordVodInfo);
+        } catch (Throwable th) {
+            LOG.e("echo-progress-history fragment failed: " + th.getMessage());
+            return null;
+        }
+    }
+
+    private void persistPlaybackHistoryRecord(@NonNull VodRecordSnapshot snapshot) {
+        try {
+            com.github.tvbox.osc.cache.RoomDataManger.insertVodRecord(snapshot.sourceKey, snapshot.recordVodInfo);
             EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_HISTORY_REFRESH));
-            LOG.i("echo-progress-history fragment saved index=" + mVodInfo.playIndex
-                    + " flag=" + mVodInfo.playFlag + " key=" + progressKey);
+            LOG.i("echo-progress-history fragment saved index=" + snapshot.playbackIndex
+                    + " flag=" + snapshot.playbackFlag + " key=" + snapshot.progressKey);
         } catch (Throwable th) {
             LOG.e("echo-progress-history fragment failed: " + th.getMessage());
         }
     }
 
-    private void rebuildProgressKeyFromState() {
-        try {
-            if (mVodInfo == null
-                    || TextUtils.isEmpty(mVodInfo.id)
-                    || TextUtils.isEmpty(mVodInfo.playFlag)) {
-                return;
-            }
-            String resolvedSourceKey = resolveActiveSourceKey();
-            if (TextUtils.isEmpty(resolvedSourceKey)) {
-                return;
-            }
-            mVodInfo.sourceKey = resolvedSourceKey;
-            progressKey = resolvedSourceKey + "|" + mVodInfo.id + "|" + mVodInfo.playFlag + "|" + mVodInfo.playIndex;
-        } catch (Throwable ignored) {
+    private static final class VodRecordSnapshot {
+        final String sourceKey;
+        final String playbackFlag;
+        final int playbackIndex;
+        final String progressKey;
+        final VodInfo recordVodInfo;
+
+        VodRecordSnapshot(String sourceKey,
+                          String playbackFlag,
+                          int playbackIndex,
+                          String progressKey,
+                          VodInfo recordVodInfo) {
+            this.sourceKey = sourceKey;
+            this.playbackFlag = playbackFlag;
+            this.playbackIndex = playbackIndex;
+            this.progressKey = progressKey;
+            this.recordVodInfo = recordVodInfo;
         }
+    }
+
+    private VodInfo copyVodInfoForPersistence(String resolvedSourceKey,
+                                              String playbackFlag,
+                                              int playbackIndex,
+                                              @Nullable VodInfo.VodSeries currentSeries) {
+        VodInfo record = new VodInfo();
+        record.last = mVodInfo.last;
+        record.id = mVodInfo.id;
+        record.tid = mVodInfo.tid;
+        record.name = mVodInfo.name;
+        record.type = mVodInfo.type;
+        record.dt = mVodInfo.dt;
+        record.pic = mVodInfo.pic;
+        record.lang = mVodInfo.lang;
+        record.area = mVodInfo.area;
+        record.year = mVodInfo.year;
+        record.state = mVodInfo.state;
+        record.note = mVodInfo.note;
+        record.actor = mVodInfo.actor;
+        record.director = mVodInfo.director;
+        record.seriesFlags = mVodInfo.seriesFlags;
+        record.seriesMap = mVodInfo.seriesMap;
+        record.des = mVodInfo.des;
+        record.playFlag = playbackFlag;
+        record.playIndex = playbackIndex;
+        record.playNote = currentSeries == null ? "" : currentSeries.name;
+        record.sourceKey = resolvedSourceKey;
+        record.playerCfg = mVodInfo.playerCfg;
+        record.reverseSort = mVodInfo.reverseSort;
+        return record;
+    }
+
+    private void bindPlaybackIdentity(String resolvedSourceKey, String playbackFlag, int playbackIndex) {
+        playbackSourceKeySnapshot = firstNonEmpty(resolvedSourceKey);
+        playbackFlagSnapshot = firstNonEmpty(playbackFlag);
+        playbackIndexSnapshot = Math.max(playbackIndex, 0);
+        if (mVodInfo != null && !TextUtils.isEmpty(mVodInfo.id) && !TextUtils.isEmpty(playbackFlagSnapshot)) {
+            playbackProgressKeySnapshot = playbackSourceKeySnapshot + "|" + mVodInfo.id + "|" + playbackFlagSnapshot + "|" + playbackIndexSnapshot;
+        } else {
+            playbackProgressKeySnapshot = "";
+        }
+    }
+
+    private String getPlaybackSourceKeyForPersistence() {
+        return firstNonEmpty(playbackSourceKeySnapshot, sourceKey, mVodInfo == null ? null : mVodInfo.sourceKey);
+    }
+
+    private String getPlaybackFlagForPersistence() {
+        return firstNonEmpty(playbackFlagSnapshot, mVodInfo == null ? null : mVodInfo.playFlag);
+    }
+
+    private int getPlaybackIndexForPersistence() {
+        if (playbackIndexSnapshot >= 0) {
+            return playbackIndexSnapshot;
+        }
+        return mVodInfo == null ? 0 : Math.max(mVodInfo.playIndex, 0);
+    }
+
+    private String getPlaybackProgressKeyForPersistence() {
+        if (!TextUtils.isEmpty(playbackProgressKeySnapshot)) {
+            return playbackProgressKeySnapshot;
+        }
+        if (mVodInfo == null || TextUtils.isEmpty(mVodInfo.id)) {
+            return "";
+        }
+        String source = getPlaybackSourceKeyForPersistence();
+        String flag = getPlaybackFlagForPersistence();
+        if (TextUtils.isEmpty(source) || TextUtils.isEmpty(flag)) {
+            return "";
+        }
+        return source + "|" + mVodInfo.id + "|" + flag + "|" + getPlaybackIndexForPersistence();
     }
 
     private String resolveActiveSourceKey() {
@@ -252,8 +410,14 @@ public class PlayFragment extends BaseLazyFragment {
         activeM3u8Generation = 0;
         activeProgressKey = progressKey == null ? "" : progressKey;
         activeSubtitleCacheKey = subtitleKey == null ? "" : subtitleKey;
+        activePlayRequestKey = "pending|gen=" + generation;
         playbackRequestSeq.incrementAndGet();
         subtitleInitSeq.incrementAndGet();
+        subtitleInitSettledForGeneration = false;
+        pendingSystemFallbackSourceUrl = null;
+        pendingSystemFallbackHeaders = null;
+        systemFallbackTried = false;
+        clearCurrentPlaybackProbe();
         LOG.i("echo-play-generation begin gen=" + generation + " progress=" + activeProgressKey);
         return generation;
     }
@@ -270,8 +434,42 @@ public class PlayFragment extends BaseLazyFragment {
         return generation > 0 && generation == activeParseGeneration && isCurrentPlayGeneration(generation);
     }
 
+    private boolean isCurrentParseSession(int generation, int sessionId) {
+        return sessionId > 0
+                && generation > 0
+                && sessionId == activeParseSessionId
+                && isCurrentParseGeneration(generation);
+    }
+
+    private long buildWebViewParseTag(int generation, int sessionId) {
+        return (((long) generation) << 32) | (sessionId & 0xffffffffL);
+    }
+
+    private int getWebViewGeneration(View view) {
+        Object tag = view == null ? null : view.getTag();
+        if (tag instanceof Long) {
+            return (int) ((((Long) tag) >> 32) & 0xffffffffL);
+        }
+        if (tag instanceof Integer) {
+            return (Integer) tag;
+        }
+        return currentPlayGeneration();
+    }
+
+    private int getWebViewParseSessionId(View view) {
+        Object tag = view == null ? null : view.getTag();
+        if (tag instanceof Long) {
+            return (int) (((Long) tag) & 0xffffffffL);
+        }
+        return activeParseSessionId;
+    }
+
     private boolean isCurrentProgressKey(String key) {
         return !TextUtils.isEmpty(key) && TextUtils.equals(key, activeProgressKey);
+    }
+
+    private boolean isCurrentPlayRequestKey(String key) {
+        return !TextUtils.isEmpty(key) && TextUtils.equals(key, activePlayRequestKey);
     }
 
     private void logStalePlayback(String stage, int generation) {
@@ -338,8 +536,8 @@ public class PlayFragment extends BaseLazyFragment {
             return skip;
         }
         long rec = 0;
-        if (theCache instanceof Long) {
-            rec = (Long) theCache;
+        if (theCache instanceof Number) {
+            rec = ((Number) theCache).longValue();
         } else if (theCache instanceof String) {
             try {
                 rec = Long.parseLong((String) theCache);
@@ -373,8 +571,17 @@ public class PlayFragment extends BaseLazyFragment {
                         }
                         LOG.i("echo-playTimeout exceeded, no auto source/player fallback");
                         stopParse();
+                        playbackRequestSeq.incrementAndGet();
+                        subtitleInitSeq.incrementAndGet();
+                        activePlayRequestKey = "";
+                        activeProgressKey = "";
                         forceReleaseCurrentPlayer("fragment-play-timeout");
                         currentPlaybackUrl = null;
+                        currentPlaybackHeaders = null;
+                        clearCurrentPlaybackProbe();
+                        pendingSystemFallbackSourceUrl = null;
+                        pendingSystemFallbackHeaders = null;
+                        systemFallbackTried = false;
                         playbackRenderedFirstFrame = false;
                         errorWithRetry("播放超时", false);
                         break;
@@ -384,7 +591,7 @@ public class PlayFragment extends BaseLazyFragment {
         });
         mVideoView = findViewById(R.id.mVideoView);
         mVideoView.setKeepSurfaceOnFullScreen(true);
-        mVideoView.setEnableAudioFocus(false);
+        mVideoView.setEnableAudioFocus(true);
         mPlayLoadTip = findViewById(R.id.play_load_tip);
         mPlayLoading = findViewById(R.id.play_loading);
         mPlayLoadErr = findViewById(R.id.play_load_error);
@@ -422,19 +629,28 @@ public class PlayFragment extends BaseLazyFragment {
                 if (playState == VideoView.STATE_PLAYING) {
                     playbackRenderedFirstFrame = true;
                     cancelPlayTimeout();
+                    hideTipSafe();
                     syncHdrWindowForCurrentPlayback("fragment-state-" + playState);
-                    scheduleSubtitleInitRetry(currentPlayGeneration(), 0);
+                    scheduleSubtitleInitRetry(currentPlayGeneration(), 1);
                 } else if (playState == VideoView.STATE_BUFFERED) {
                     cancelPlayTimeout();
                     if (playbackRenderedFirstFrame) {
+                        hideTipSafe();
                         syncHdrWindowForCurrentPlayback("fragment-state-" + playState);
+                        scheduleSubtitleInitRetry(currentPlayGeneration(), 1);
                     }
+                }
+                if (playState == VideoView.STATE_PREPARING && !playbackRenderedFirstFrame) {
+                    setTip("正在准备播放", true, false);
                 }
                 if (playState == VideoView.STATE_BUFFERING) {
                     if (playbackRenderedFirstFrame) {
                         cancelPlayTimeout();
-                        startPlayTimeout(currentPlaybackUrl, BUFFER_STALL_TIMEOUT_MS, "buffer-stall");
+                        hideTipSafe();
+                        return;
                     }
+                    setTip("正在缓冲视频", true, false);
+                    startPlayTimeout(currentPlaybackUrl, BUFFER_STALL_TIMEOUT_MS, "buffer-stall");
                 }
             }
         });
@@ -511,8 +727,9 @@ public class PlayFragment extends BaseLazyFragment {
             @Override
             public void prepared() {
                 AbstractPlayer mediaPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
-                if (mediaPlayer instanceof MPVCompatPlayer) {
-                    bindMpvSubtitleText((MPVCompatPlayer) mediaPlayer);
+                CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+                if (compatPlayer != null) {
+                    bindCompatSubtitleText(compatPlayer);
                 }
                 scheduleSubtitleInitRetry(currentPlayGeneration(), 0);
             }
@@ -544,14 +761,207 @@ public class PlayFragment extends BaseLazyFragment {
         AbstractPlayer mediaPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
         if (mediaPlayer instanceof AndroidMediaPlayer) {
             SystemPlayerTrackManager.clearSubtitleSelections((AndroidMediaPlayer) mediaPlayer, null);
+        } else {
+            CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+            if (compatPlayer != null) {
+                compatPlayer.clearSubtitleTrackSelection();
+            }
         }
         mController.mSubtitleView.bindToMediaPlayer(mVideoView.getMediaPlayer());
         applySubtitleToneForCurrentPlayback();
         mController.mSubtitleView.stop();
+        mController.mSubtitleView.reset();
         mController.mSubtitleView.isInternal = false;
+        mController.mSubtitleView.clearSubtitleCache();
+        mController.mSubtitleView.setText("");
         mController.mSubtitleView.setSubtitlePath(path);
         mController.mSubtitleView.setVisibility(View.VISIBLE);
         mController.mSubtitleView.bringToFront();
+    }
+
+    private boolean shouldPreferInternalSubtitleByDefault() {
+        return mController != null
+                && mController.mSubtitleView != null
+                && mController.mSubtitleView.hasInternal;
+    }
+
+    private boolean hasUserSelectedExternalSubtitle(String subtitlePathCache) {
+        if (TextUtils.isEmpty(subtitlePathCache)) {
+            return false;
+        }
+        if (!subtitlePathCache.startsWith("http://") && !subtitlePathCache.startsWith("https://")) {
+            File localSubtitle = new File(subtitlePathCache);
+            if (localSubtitle.exists() && localSubtitle.isFile()) {
+                return true;
+            }
+        }
+        if (sourceSubtitles == null || sourceSubtitles.isEmpty()) {
+            return false;
+        }
+        for (Subtitle subtitle : sourceSubtitles) {
+            if (subtitle != null && TextUtils.equals(subtitle.getUrl(), subtitlePathCache)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void applyMappedSubtitleTrackAsync(@Nullable TrackInfoBean track, boolean showFailureToast) {
+        if (track == null || TextUtils.isEmpty(currentPlaybackUrl)) {
+            if (showFailureToast) {
+                Toast.makeText(mContext, "当前内置字幕轨暂无法映射", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        final int generation = currentPlayGeneration();
+        final String playbackUrl = currentPlaybackUrl;
+        final HashMap<String, String> playbackHeaders = currentPlaybackHeaders == null
+                ? null : new HashMap<>(currentPlaybackHeaders);
+        subtitleWorkExecutor.execute(() -> {
+            String mappedPath = VideoStreamProbe.resolveMappedSubtitlePath(
+                    mContext,
+                    playbackUrl,
+                    playbackHeaders,
+                    track);
+            if (mHandler == null) {
+                return;
+            }
+            mHandler.post(() -> {
+                if (!isCurrentPlayGeneration(generation)) {
+                    logStalePlayback("mapped-subtitle", generation);
+                    return;
+                }
+                if (!TextUtils.isEmpty(mappedPath)) {
+                    track.mappedSubtitlePath = mappedPath;
+                    LOG.i("echo-subtitle apply mapped fragment track=" + track.trackId
+                            + " extractor=" + track.extractorTrackIndex
+                            + " path=" + mappedPath);
+                    applyExternalSubtitle(mappedPath);
+                } else if (showFailureToast) {
+                    Toast.makeText(mContext,
+                            SystemPlayerTrackManager.isBitmapSubtitleTrack(track)
+                                    ? "当前图形内置字幕轨暂不支持系统映射"
+                                    : "当前内置字幕轨暂无法映射",
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+        });
+    }
+
+    @Nullable
+    private TrackInfo resolveSubtitleTrackInfo(AbstractPlayer mediaPlayer) {
+        String currentPlayerTag = mediaPlayer == null ? "" : mediaPlayer.getClass().getSimpleName();
+        int currentGeneration = currentPlayGeneration();
+        TrackInfo trackInfo = mediaPlayer instanceof AndroidMediaPlayer
+                ? SystemPlayerTrackManager.getTrackInfo((AndroidMediaPlayer) mediaPlayer)
+                : asCompatTrackSelectorPlayer(mediaPlayer) != null
+                ? asCompatTrackSelectorPlayer(mediaPlayer).getTrackInfo()
+                : null;
+        if (mediaPlayer instanceof AndroidMediaPlayer && !TextUtils.isEmpty(currentPlaybackUrl)) {
+            VideoStreamProbe.Result probe = getCurrentPlaybackProbe();
+            if (probe == null) {
+                LOG.i("echo-subtitle probe-cache-miss fragment skip-active-probe url="
+                        + safeLogSnippet(currentPlaybackUrl));
+            }
+            trackInfo = SystemPlayerTrackManager.mergeSubtitleMetadata(
+                    trackInfo,
+                    VideoStreamProbe.toSubtitleTrackBeans(probe));
+        }
+        if (trackInfo != null && !trackInfo.getSubtitle().isEmpty()) {
+            lastResolvedSubtitleTrackInfo = trackInfo;
+            lastResolvedSubtitleTrackPlayer = currentPlayerTag;
+            lastResolvedSubtitleTrackGeneration = currentGeneration;
+            return trackInfo;
+        }
+        if (lastResolvedSubtitleTrackInfo != null
+                && currentGeneration == lastResolvedSubtitleTrackGeneration
+                && TextUtils.equals(lastResolvedSubtitleTrackPlayer, currentPlayerTag)) {
+            return lastResolvedSubtitleTrackInfo;
+        }
+        return null;
+    }
+
+    private void clearResolvedSubtitleTrackCache() {
+        lastResolvedSubtitleTrackInfo = null;
+        lastResolvedSubtitleTrackPlayer = "";
+        lastResolvedSubtitleTrackGeneration = -1;
+    }
+
+    @Nullable
+    private VideoStreamProbe.Result getCurrentPlaybackProbe() {
+        if (TextUtils.isEmpty(currentPlaybackUrl)
+                || TextUtils.isEmpty(currentPlaybackProbeUrl)
+                || !TextUtils.equals(currentPlaybackUrl, currentPlaybackProbeUrl)) {
+            return null;
+        }
+        return currentPlaybackProbe;
+    }
+
+    private void rememberCurrentPlaybackProbe(@Nullable String playbackUrl,
+                                              @Nullable VideoStreamProbe.Result probe) {
+        currentPlaybackProbeUrl = TextUtils.isEmpty(playbackUrl) ? null : playbackUrl;
+        currentPlaybackProbe = probe;
+    }
+
+    private void clearCurrentPlaybackProbe() {
+        currentPlaybackProbeUrl = null;
+        currentPlaybackProbe = null;
+    }
+
+    private void enableSystemSubtitleOverlayPassThrough(AbstractPlayer mediaPlayer) {
+        if (!(mediaPlayer instanceof AndroidMediaPlayer)) {
+            return;
+        }
+        ((AndroidMediaPlayer) mediaPlayer).setOnTimedTextListener(text -> {
+            if (mController == null || mController.mSubtitleView == null || !mController.mSubtitleView.isInternal) {
+                return;
+            }
+            mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
+        });
+    }
+
+    private void disableSystemSubtitleOverlayPassThrough(AbstractPlayer mediaPlayer) {
+        if (mediaPlayer instanceof AndroidMediaPlayer) {
+            ((AndroidMediaPlayer) mediaPlayer).setOnTimedTextListener(null);
+        }
+    }
+
+    private void hideOverlaySubtitleView() {
+        if (mController == null || mController.mSubtitleView == null) {
+            return;
+        }
+        mController.mSubtitleView.stop();
+        mController.mSubtitleView.reset();
+        mController.mSubtitleView.isInternal = false;
+        mController.mSubtitleView.setText("");
+        mController.mSubtitleView.setVisibility(View.GONE);
+    }
+
+    private void handleBridgeSubtitleText(String text) {
+        if (mHandler == null) {
+            return;
+        }
+        mHandler.post(() -> {
+            if (mController == null || mController.mSubtitleView == null || !mController.mSubtitleView.isInternal) {
+                return;
+            }
+            mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
+        });
+    }
+
+    private String buildPlayRequestKey(String resolvedSourceKey,
+                                       String playFlagValue,
+                                       int playIndexValue,
+                                       VodInfo.VodSeries series,
+                                       int generationValue) {
+        String seriesUrl = series == null ? "" : firstNonEmpty(series.url);
+        String seriesName = series == null ? "" : firstNonEmpty(series.name);
+        return firstNonEmpty(resolvedSourceKey) + "|"
+                + (mVodInfo == null ? "" : firstNonEmpty(mVodInfo.id)) + "|"
+                + firstNonEmpty(playFlagValue) + "|"
+                + playIndexValue + "|"
+                + seriesName + "|"
+                + seriesUrl + "|gen=" + generationValue;
     }
 
     void selectSourceSubtitle() {
@@ -690,15 +1100,22 @@ public class PlayFragment extends BaseLazyFragment {
     private boolean isSameTrack(TrackInfoBean left, TrackInfoBean right) {
         return left.renderId == right.renderId
                 && left.trackGroupId == right.trackGroupId
-                && left.trackId == right.trackId;
+                && left.trackId == right.trackId
+                && left.extractorTrackIndex == right.extractorTrackIndex
+                && left.metadataOnly == right.metadataOnly;
+    }
+
+    @Nullable
+    private CompatTrackSelectorPlayer asCompatTrackSelectorPlayer(@Nullable AbstractPlayer mediaPlayer) {
+        return mediaPlayer instanceof CompatTrackSelectorPlayer ? (CompatTrackSelectorPlayer) mediaPlayer : null;
     }
 
     void selectMyAudioTrack() {
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
         TrackInfo trackInfo = mediaPlayer instanceof AndroidMediaPlayer
                 ? SystemPlayerTrackManager.getTrackInfo((AndroidMediaPlayer) mediaPlayer)
-                : mediaPlayer instanceof MPVCompatPlayer
-                ? ((MPVCompatPlayer) mediaPlayer).getTrackInfo()
+                : asCompatTrackSelectorPlayer(mediaPlayer) != null
+                ? asCompatTrackSelectorPlayer(mediaPlayer).getTrackInfo()
                 : null;
         if (trackInfo == null) {
             Toast.makeText(mContext, "没有音轨", Toast.LENGTH_SHORT).show();
@@ -720,8 +1137,11 @@ public class PlayFragment extends BaseLazyFragment {
                     }
                     if (mediaPlayer instanceof AndroidMediaPlayer) {
                         SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
-                    } else if (mediaPlayer instanceof MPVCompatPlayer) {
-                        ((MPVCompatPlayer) mediaPlayer).selectAudioTrack(value);
+                    } else {
+                        CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+                        if (compatPlayer != null) {
+                            compatPlayer.selectAudioTrack(value);
+                        }
                     }
                     dialog.dismiss();
                 } catch (Exception e) {
@@ -749,11 +1169,7 @@ public class PlayFragment extends BaseLazyFragment {
 
     void selectMyInternalSubtitle() {
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
-        TrackInfo trackInfo = mediaPlayer instanceof AndroidMediaPlayer
-                ? SystemPlayerTrackManager.getTrackInfo((AndroidMediaPlayer) mediaPlayer)
-                : mediaPlayer instanceof MPVCompatPlayer
-                ? ((MPVCompatPlayer) mediaPlayer).getTrackInfo()
-                : null;
+        TrackInfo trackInfo = resolveSubtitleTrackInfo(mediaPlayer);
         if (trackInfo == null) {
             Toast.makeText(mContext, "没有内置字幕", Toast.LENGTH_SHORT).show();
             return;
@@ -772,11 +1188,32 @@ public class PlayFragment extends BaseLazyFragment {
                     for (TrackInfoBean subtitle : bean) {
                         subtitle.selected = isSameTrack(subtitle, value);
                     }
-                    prepareInternalSubtitleOverlay(mediaPlayer);
                     if (mediaPlayer instanceof AndroidMediaPlayer) {
-                        SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
-                    } else if (mediaPlayer instanceof MPVCompatPlayer) {
-                        ((MPVCompatPlayer) mediaPlayer).selectSubtitleTrack(value);
+                        if (SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(value)) {
+                            applyMappedSubtitleTrackAsync(value, true);
+                        } else if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)) {
+                            disableSystemSubtitleOverlayPassThrough(mediaPlayer);
+                            hideOverlaySubtitleView();
+                        } else {
+                            prepareInternalSubtitleOverlay(mediaPlayer);
+                            enableSystemSubtitleOverlayPassThrough(mediaPlayer);
+                            SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
+                        }
+                        if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)) {
+                            SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
+                        }
+                    } else {
+                        CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+                        if (compatPlayer == null) {
+                            dialog.dismiss();
+                            return;
+                        }
+                        if (SystemPlayerTrackManager.isBitmapSubtitleTrack(value)) {
+                            hideOverlaySubtitleView();
+                        } else {
+                            prepareInternalSubtitleOverlay(mediaPlayer);
+                        }
+                        compatPlayer.selectSubtitleTrack(value);
                     }
                     dialog.dismiss();
                 } catch (Exception e) {
@@ -807,11 +1244,7 @@ public class PlayFragment extends BaseLazyFragment {
             return;
         }
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
-        TrackInfo trackInfo = mediaPlayer instanceof AndroidMediaPlayer
-                ? SystemPlayerTrackManager.getTrackInfo((AndroidMediaPlayer) mediaPlayer)
-                : mediaPlayer instanceof MPVCompatPlayer
-                ? ((MPVCompatPlayer) mediaPlayer).getTrackInfo()
-                : null;
+        TrackInfo trackInfo = resolveSubtitleTrackInfo(mediaPlayer);
         boolean hasInternal = trackInfo != null && !trackInfo.getSubtitle().isEmpty();
         mController.mSubtitleView.hasInternal = hasInternal;
         LOG.i("echo-subtitle refresh internal=" + hasInternal
@@ -838,11 +1271,15 @@ public class PlayFragment extends BaseLazyFragment {
         mPlayLoadErr.setVisibility(View.GONE);
     }
 
-    void errorWithRetry(String err, boolean finish) {
-        if (!isAdded()) return;
-        if (!finish && tryDolbyVisionFallback()) {
+    void hideTipSafe() {
+        if (!isAdded()) {
             return;
         }
+        requireActivity().runOnUiThread(this::hideTip);
+    }
+
+    void errorWithRetry(String err, boolean finish) {
+        if (!isAdded()) return;
         requireActivity().runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -895,6 +1332,7 @@ public class PlayFragment extends BaseLazyFragment {
             logStalePlayback("goPlayUrl", generation);
             return;
         }
+        stopParse();
         LOG.i("echo-goPlayUrl:" + url);
         final String normalizedUrl = url == null ? "" : url.trim();
         if (TextUtils.isEmpty(normalizedUrl)) {
@@ -951,7 +1389,7 @@ public class PlayFragment extends BaseLazyFragment {
                 VodInfo.VodSeries vs = mVodInfo.seriesMap.get(mVodInfo.playFlag).get(mVodInfo.playIndex);
                 String playTitle = mVodInfo.name + " " + vs.name;
                 setTip("调用" + PlayerHelper.getPlayerName(playerType) + "进行播放", true, false);
-                long progress = getSavedProgress(progressKey);
+                long progress = getSavedProgress(getPlaybackProgressKeyForPersistence());
                 boolean callResult = PlayerHelper.runExternalPlayer(playerType, requireActivity(), preflight.url,
                         playTitle, playSubtitle, originalHeaders, progress);
                 if (callResult) {
@@ -964,7 +1402,7 @@ public class PlayFragment extends BaseLazyFragment {
         } catch (JSONException e) {
             e.printStackTrace();
         }
-        hideTip();
+        setTip("正在准备播放", true, false);
         cancelPlayTimeout();
         currentPlaybackUrl = null;
         playbackRenderedFirstFrame = false;
@@ -974,10 +1412,10 @@ public class PlayFragment extends BaseLazyFragment {
             int requestedPlayerType = PlayerHelper.PLAYER_TYPE_SYSTEM;
             final DolbyVisionPlaybackRouter.Decision dvDecision = preflight.decision;
             VideoStreamProbe.Result streamProbe = preflight.probe;
-            if (activeHeaders == null && (streamProbe.isMatroska || streamProbe.hasDolbyVision)) {
+            if (activeHeaders == null && shouldCreateInternalPlaybackHeaders(preflight.url, streamProbe)) {
                 activeHeaders = new HashMap<>();
             }
-            applyProbePlaybackHeaders(activeHeaders, streamProbe);
+            applyProbePlaybackHeaders(activeHeaders, preflight.url, streamProbe);
             final HashMap<String, String> finalActiveHeaders = activeHeaders;
             LOG.i("echo-hdr-classify fragment probed=" + streamProbe.probed
                     + " dv=" + streamProbe.hasDolbyVision
@@ -986,16 +1424,27 @@ public class PlayFragment extends BaseLazyFragment {
                     + " dvProfile=" + streamProbe.dolbyVisionProfile
                     + " hdr10Base=" + streamProbe.hasHdr10BaseLayer
                     + " matroska=" + streamProbe.isMatroska
+                    + " videoMime=" + streamProbe.primaryVideoMime
+                    + " audioMime=" + streamProbe.primaryAudioMime
+                    + " avc=" + streamProbe.hasAvcVideo
+                    + " hevc=" + streamProbe.hasHevcVideo
+                    + " eac3=" + streamProbe.hasEac3Audio
+                    + " ac3=" + streamProbe.hasAc3Audio
+                    + " dts=" + streamProbe.hasDtsAudio
+                    + " truehd=" + streamProbe.hasTrueHdAudio
+                    + " atmos=" + streamProbe.hasAtmosLikeAudio
                     + " requiresHdr=" + dvDecision.requiresHdrOutput
                     + " routeRequiresHdr=" + dvDecision.requiresHdrOutput
                     + " compatMode=" + dvDecision.compatMode
                     + " summary=" + streamProbe.summary);
-            if (!TextUtils.isEmpty(dvDecision.compatMode)) {
-                try {
-                    playbackPlayerCfg.put("dvm", dvDecision.compatMode);
-                } catch (JSONException e) {
-                    LOG.e("echo-dolby-route put compat mode failed: " + e.getMessage());
+            try {
+                String outputMode = dvDecision.compatMode;
+                if (TextUtils.isEmpty(outputMode)) {
+                    outputMode = dvDecision.requiresHdrOutput ? "base-hdr" : "sdr";
                 }
+                playbackPlayerCfg.put("dvm", outputMode);
+            } catch (JSONException e) {
+                LOG.e("echo-dolby-route put compat mode failed: " + e.getMessage());
             }
             final int resolvedPlayerType = dvDecision.useCompatPlayer ? dvDecision.playerType : requestedPlayerType;
             if (resolvedPlayerType != playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM)) {
@@ -1005,6 +1454,24 @@ public class PlayFragment extends BaseLazyFragment {
                 } catch (JSONException e) {
                     LOG.e("echo-dolby-route put failed: " + e.getMessage());
                 }
+            }
+            try {
+                int activeScale = PlayerHelper.sanitizeScaleForPlayer(
+                        resolvedPlayerType,
+                        mVodPlayerCfg == null
+                                ? playbackPlayerCfg.optInt("sc", VideoView.SCREEN_SCALE_DEFAULT)
+                                : mVodPlayerCfg.optInt("sc", playbackPlayerCfg.optInt("sc", VideoView.SCREEN_SCALE_DEFAULT))
+                );
+                playbackPlayerCfg.put("sc", activeScale);
+                if (mVodPlayerCfg != null) {
+                    mVodPlayerCfg.put("pl", resolvedPlayerType);
+                    mVodPlayerCfg.put("sc", activeScale);
+                }
+                if (mController != null && mVodPlayerCfg != null) {
+                    mController.setPlayerConfig(mVodPlayerCfg);
+                }
+            } catch (JSONException e) {
+                LOG.e("echo-dolby-route put active scale failed: " + e.getMessage());
             }
             configureReleaseSettleForPlayback(dvDecision.requiresHdrOutput, resolvedPlayerType);
             boolean released = forceReleaseCurrentPlayer("fragment-new-url");
@@ -1016,7 +1483,7 @@ public class PlayFragment extends BaseLazyFragment {
                 @Override
                 public void run() {
                     startResolvedPlaybackOnMain(preflight.url, playbackPlayerCfg, finalActiveHeaders,
-                            dvDecision, resolvedPlayerType, requestGeneration);
+                            dvDecision, streamProbe, resolvedPlayerType, requestGeneration);
                 }
             };
             if (released && delayPlaybackUntilPlayerReleaseSettled(startResolvedPlayback, requestGeneration, "fragment-new-url")) {
@@ -1032,6 +1499,7 @@ public class PlayFragment extends BaseLazyFragment {
                                              JSONObject playbackPlayerCfg,
                                              HashMap<String, String> activeHeaders,
                                              DolbyVisionPlaybackRouter.Decision dvDecision,
+                                             VideoStreamProbe.Result streamProbe,
                                              int resolvedPlayerType,
                                              int requestGeneration) {
         if (!isCurrentPlayGeneration(requestGeneration) || mVideoView == null) {
@@ -1040,12 +1508,23 @@ public class PlayFragment extends BaseLazyFragment {
         }
         try {
             String url = sourceUrl;
+            clearResolvedSubtitleTrackCache();
             lastPlayLooksLikeDolbyVision = dvDecision.looksLikeDolbyVision;
             useHdrFallbackPlayer = dvDecision.preferHdrFallback;
             useSdrFallbackPlayer = dvDecision.preferSdrFallback;
             currentPlaybackRequiresHdrOutput = dvDecision.requiresHdrOutput;
+            currentPlaybackUsesNativeJava64DolbyVision = App.isJava64Build()
+                    && !(requireActivity() instanceof BaseActivity
+                    && ((BaseActivity) requireActivity()).isTvDevice())
+                    && ("native-dolby-vision".equals(dvDecision.reason)
+                    || "native-dolby-vision-java64".equals(dvDecision.reason)
+                    || "java64-native-dv-codec".equals(dvDecision.reason));
             applySubtitleToneForCurrentPlayback();
             int activePlayerType = playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
+            if (PlayerHelper.isBuiltInCompatPlayerType(activePlayerType)) {
+                com.github.tvbox.osc.player.MPVCompatManager.setCurrentPlayIsDolbyVision(dvDecision.looksLikeDolbyVision);
+            }
+            markHdrOutputRequested(playbackPlayerCfg, dvDecision.requiresHdrOutput);
             prepareHdrWindowForPlaybackStart(activePlayerType, dvDecision.requiresHdrOutput,
                     "fragment-player-" + resolvedPlayerType);
             if (url.startsWith("data:application/dash+xml;base64,")) {
@@ -1055,7 +1534,7 @@ public class PlayFragment extends BaseLazyFragment {
             } else {
                 PlayerHelper.updateCfg(mVideoView, playbackPlayerCfg);
             }
-            mVideoView.setProgressKey(progressKey);
+            mVideoView.setProgressKey(getPlaybackProgressKeyForPersistence());
             boolean systemPlayer = PlayerHelper.isSystemPlayerType(activePlayerType);
             String playbackUrl = PlayerHelper.isBuiltInCompatPlayerType(activePlayerType)
                     ? PlaybackUrlNormalizer.resolveCompatPlaybackUrl(url, activeHeaders, false)
@@ -1080,6 +1559,8 @@ public class PlayFragment extends BaseLazyFragment {
                 mVideoView.setUrl(playbackUrl);
             }
             currentPlaybackUrl = playbackUrl;
+            currentPlaybackHeaders = activeHeaders == null ? null : new HashMap<>(activeHeaders);
+            rememberCurrentPlaybackProbe(playbackUrl, streamProbe);
             startPlayTimeout(playbackUrl);
             mVideoView.start();
         } catch (Throwable th) {
@@ -1091,7 +1572,7 @@ public class PlayFragment extends BaseLazyFragment {
         try {
             HashMap<String, String> activeHeaders = rawHeaders == null ? null : new HashMap<>(rawHeaders);
             PlaybackUrlNormalizer.UrlWithHeaders split = PlaybackUrlNormalizer.splitUrlAndHeaders(rawUrl, activeHeaders);
-            String probeUrl = split.url == null ? "" : split.url.trim();
+            String probeUrl = PlaybackUrlNormalizer.normalizeHttpUrl(split.url == null ? "" : split.url.trim());
             HashMap<String, String> mergedHeaders = new HashMap<>();
             if (split.headers != null) {
                 mergedHeaders.putAll(split.headers);
@@ -1105,10 +1586,23 @@ public class PlayFragment extends BaseLazyFragment {
                 LOG.i("echo-probe-prefetch fragment skip-hls url=" + safeLogSnippet(probeUrl));
                 return new PlaybackPreflight(rawUrl, probeUrl, activeHeaders, probe, decision);
             }
-            VideoStreamProbe.Result probe = VideoStreamProbe.probeWithTimeout(mContext, probeUrl, activeHeaders, resolveProbeTimeoutMs(probeUrl));
+            String probeTargetUrl = PlaybackUrlNormalizer.resolveSystemPlaybackUrl(probeUrl, activeHeaders, false);
+            if (TextUtils.isEmpty(probeTargetUrl)) {
+                probeTargetUrl = probeUrl;
+            }
+            if (!TextUtils.equals(probeTargetUrl, probeUrl)) {
+                LOG.i("echo-probe-prefetch fragment align-system-url src="
+                        + safeLogSnippet(probeUrl)
+                        + " target=" + safeLogSnippet(probeTargetUrl));
+            }
+            VideoStreamProbe.Result probe = VideoStreamProbe.probeForPlaybackPreflight(
+                    mContext,
+                    probeTargetUrl,
+                    activeHeaders,
+                    resolveProbeTimeoutMs(probeTargetUrl));
             DolbyVisionPlaybackRouter.Decision decision = DolbyVisionPlaybackRouter.resolve(mContext,
                     PlayerHelper.PLAYER_TYPE_SYSTEM, probeUrl, activeHeaders, probe,
-                    buildContainerHintText(rawUrl, probeUrl));
+                    buildContainerHintText(rawUrl, probeUrl, probeTargetUrl));
             LOG.i("echo-probe-prefetch fragment probed=" + probe.probed
                     + " dv=" + probe.hasDolbyVision
                     + " hdr10=" + probe.hasHdr10
@@ -1116,6 +1610,16 @@ public class PlayFragment extends BaseLazyFragment {
                     + " dvProfile=" + probe.dolbyVisionProfile
                     + " hdr10Base=" + probe.hasHdr10BaseLayer
                     + " matroska=" + probe.isMatroska
+                    + " videoMime=" + probe.primaryVideoMime
+                    + " audioMime=" + probe.primaryAudioMime
+                    + " avc=" + probe.hasAvcVideo
+                    + " hevc=" + probe.hasHevcVideo
+                    + " eac3=" + probe.hasEac3Audio
+                    + " ac3=" + probe.hasAc3Audio
+                    + " dts=" + probe.hasDtsAudio
+                    + " truehd=" + probe.hasTrueHdAudio
+                    + " atmos=" + probe.hasAtmosLikeAudio
+                    + " target=" + safeLogSnippet(probeTargetUrl)
                     + " summary=" + probe.summary);
             return new PlaybackPreflight(rawUrl, probeUrl, activeHeaders, probe, decision);
         } catch (Throwable th) {
@@ -1124,7 +1628,9 @@ public class PlayFragment extends BaseLazyFragment {
             DolbyVisionPlaybackRouter.Decision decision = DolbyVisionPlaybackRouter.resolve(mContext,
                     PlayerHelper.PLAYER_TYPE_SYSTEM, rawUrl, rawHeaders, probe,
                     buildContainerHintText(rawUrl));
-            return new PlaybackPreflight(rawUrl, rawUrl == null ? "" : rawUrl.trim(), rawHeaders, probe, decision);
+            return new PlaybackPreflight(rawUrl,
+                    PlaybackUrlNormalizer.normalizeHttpUrl(rawUrl == null ? "" : rawUrl.trim()),
+                    rawHeaders, probe, decision);
         }
     }
 
@@ -1132,18 +1638,38 @@ public class PlayFragment extends BaseLazyFragment {
         if (mController == null || mController.mSubtitleView == null) {
             return;
         }
+        mController.mSubtitleView.stop();
+        mController.mSubtitleView.reset();
         mController.mSubtitleView.prepareForInternalSubtitle();
         mController.mSubtitleView.bindToMediaPlayer(mediaPlayer);
         applySubtitleToneForCurrentPlayback();
-        if (mediaPlayer instanceof AndroidMediaPlayer) {
+        if (mediaPlayer instanceof AndroidMediaPlayer && !mController.mSubtitleView.hasInternal) {
             SystemPlayerTrackManager.clearSubtitleSelections((AndroidMediaPlayer) mediaPlayer, null);
         }
-        if (mediaPlayer instanceof MPVCompatPlayer) {
-            bindMpvSubtitleText((MPVCompatPlayer) mediaPlayer);
+        CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+        if (compatPlayer != null) {
+            bindCompatSubtitleText(compatPlayer);
         }
     }
 
-    private void bindMpvSubtitleText(MPVCompatPlayer player) {
+    private boolean shouldIgnoreLateParsePlaybackResult(int generation, @Nullable String candidateUrl) {
+        if (!isCurrentPlayGeneration(generation)) {
+            return true;
+        }
+        if (!playbackRenderedFirstFrame || TextUtils.isEmpty(currentPlaybackUrl) || TextUtils.isEmpty(candidateUrl)) {
+            return false;
+        }
+        String active = PlaybackUrlNormalizer.normalizeHttpUrl(currentPlaybackUrl.trim());
+        String candidate = PlaybackUrlNormalizer.normalizeHttpUrl(candidateUrl.trim());
+        boolean sameUrl = TextUtils.equals(active, candidate);
+        if (!sameUrl) {
+            LOG.i("echo-parse-ignore late-result active=" + safeLogSnippet(active)
+                    + " candidate=" + safeLogSnippet(candidate));
+        }
+        return !sameUrl;
+    }
+
+    private void bindCompatSubtitleText(@Nullable CompatTrackSelectorPlayer player) {
         if (player == null || mController == null || mController.mSubtitleView == null) {
             return;
         }
@@ -1158,12 +1684,14 @@ public class PlayFragment extends BaseLazyFragment {
                 mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
             });
         });
-        player.setOnRuntimeVideoModeListener((hdr, dolbyVision, outputMode, reason) -> {
-            if (mHandler == null) {
-                return;
-            }
-            mHandler.post(() -> promoteRuntimeHdrState(hdr, dolbyVision, outputMode, "fragment-" + reason));
-        });
+        if (player instanceof RuntimeVideoModeAwarePlayer) {
+            ((RuntimeVideoModeAwarePlayer) player).setOnRuntimeVideoModeListener((hdr, dolbyVision, outputMode, reason) -> {
+                if (mHandler == null) {
+                    return;
+                }
+                mHandler.post(() -> promoteRuntimeHdrState(hdr, dolbyVision, outputMode, "fragment-" + reason));
+            });
+        }
     }
 
     private void promoteRuntimeHdrState(boolean hdr, boolean dolbyVision, String outputMode, String reason) {
@@ -1185,7 +1713,6 @@ public class PlayFragment extends BaseLazyFragment {
             }
         }
         applySubtitleToneForCurrentPlayback();
-        pendingHdrWindowEnableAfterRender = false;
         syncHdrWindowForCurrentPlayback(reason + (changed ? "-promote" : "-refresh"));
     }
 
@@ -1206,14 +1733,16 @@ public class PlayFragment extends BaseLazyFragment {
     private void handlePlayerStartFailure(Throwable th) {
         LOG.e("echo-player-start-failed " + th.getClass().getSimpleName() + ": " + th.getMessage());
         cancelPlayTimeout();
+        keepHdrWindowDuringPlayerSwitch = false;
         forceReleaseCurrentPlayer("fragment-start-failure");
         currentPlaybackUrl = null;
+        currentPlaybackHeaders = null;
+        clearCurrentPlaybackProbe();
         currentPlaybackRequiresHdrOutput = false;
+        currentPlaybackUsesNativeJava64DolbyVision = false;
         applySubtitleToneForCurrentPlayback();
         HdrOutputManager.releaseHdr(mContext, "fragment-start-failure");
-        if (!tryDolbyVisionFallback()) {
-            errorWithRetry("播放器初始化失败", false);
-        }
+        errorWithRetry("播放器初始化失败", false);
     }
 
     private boolean forceReleaseCurrentPlayer(String reason) {
@@ -1222,8 +1751,12 @@ public class PlayFragment extends BaseLazyFragment {
         if (currentPlaybackUrl != null || playbackRenderedFirstFrame || currentPlaybackRequiresHdrOutput) {
             lastReleasedPlaybackRequiresHdrOutput = currentPlaybackRequiresHdrOutput;
         }
-        pendingHdrWindowEnableAfterRender = false;
-        HdrOutputManager.releaseHdr(mContext, reason + "-pre-release");
+        if (keepHdrWindowDuringPlayerSwitch) {
+            LOG.i("echo-hdr-window preserve reason=" + reason
+                    + " currentHdr=" + currentPlaybackRequiresHdrOutput);
+        } else {
+            HdrOutputManager.releaseHdr(mContext, reason + "-pre-release");
+        }
         if (mVideoView != null) {
             releasedPlayer = mVideoView.getMediaPlayer() != null
                     || mVideoView.isPlaybackActive()
@@ -1241,6 +1774,8 @@ public class PlayFragment extends BaseLazyFragment {
             LOG.e("echo-player-force-release mpv failed " + reason + ": " + th.getMessage());
         }
         currentPlaybackUrl = null;
+        currentPlaybackHeaders = null;
+        clearCurrentPlaybackProbe();
         applySubtitleToneForCurrentPlayback();
         playbackRenderedFirstFrame = false;
         if (releasedPlayer) {
@@ -1252,15 +1787,22 @@ public class PlayFragment extends BaseLazyFragment {
 
     private void syncHdrWindowForCurrentPlayback(String reason) {
         if (currentPlaybackRequiresHdrOutput) {
-            if (pendingHdrWindowEnableAfterRender && !playbackRenderedFirstFrame) {
-                LOG.i("echo-hdr-window defer reason=" + reason + " firstFrame=false");
+            if (currentPlaybackUsesNativeJava64DolbyVision) {
+                boolean fullscreenBrightnessBoost = shouldBoostHdrBrightness();
+                HdrOutputManager.requestHdr(mContext,
+                        reason + "-native-java64-dv",
+                        fullscreenBrightnessBoost);
+                LOG.i("echo-hdr-window native-java64-dv hdr reason=" + reason
+                        + " boost=" + fullscreenBrightnessBoost);
                 return;
             }
-            pendingHdrWindowEnableAfterRender = false;
             boolean fullscreenBrightnessBoost = shouldBoostHdrBrightness();
             HdrOutputManager.requestHdr(mContext, reason, fullscreenBrightnessBoost);
         } else {
-            pendingHdrWindowEnableAfterRender = false;
+            if (keepHdrWindowDuringPlayerSwitch) {
+                LOG.i("echo-hdr-window keep-during-switch reason=" + reason);
+                return;
+            }
             HdrOutputManager.releaseHdr(mContext, reason + "-sdr");
         }
     }
@@ -1287,15 +1829,20 @@ public class PlayFragment extends BaseLazyFragment {
         if (currentPlaybackUrl != null || playbackRenderedFirstFrame || currentPlaybackRequiresHdrOutput) {
             lastReleasedPlaybackRequiresHdrOutput = currentPlaybackRequiresHdrOutput;
         }
-        pendingHdrWindowEnableAfterRender = false;
     }
 
     private void configureReleaseSettleForPlayback(boolean nextRequiresHdrOutput, int resolvedPlayerType) {
+        keepHdrWindowDuringPlayerSwitch = nextRequiresHdrOutput;
         boolean systemPlayer = PlayerHelper.isSystemPlayerType(resolvedPlayerType);
+        boolean compatPlayer = PlayerHelper.isBuiltInCompatPlayerType(resolvedPlayerType);
         boolean crossDynamicRangeSwitch = lastReleasedPlaybackRequiresHdrOutput != nextRequiresHdrOutput;
         boolean tvLike = requireActivity() instanceof BaseActivity
                 && ((BaseActivity) requireActivity()).isTvDevice();
-        if (systemPlayer && crossDynamicRangeSwitch && tvLike) {
+        if (compatPlayer && tvLike && (crossDynamicRangeSwitch || nextRequiresHdrOutput || lastReleasedPlaybackRequiresHdrOutput)) {
+            nextPlayerReleaseSettleMs = 900L;
+        } else if (compatPlayer && tvLike) {
+            nextPlayerReleaseSettleMs = 650L;
+        } else if (systemPlayer && crossDynamicRangeSwitch && tvLike) {
             nextPlayerReleaseSettleMs = 560L;
         } else if (systemPlayer && crossDynamicRangeSwitch) {
             nextPlayerReleaseSettleMs = 420L;
@@ -1309,40 +1856,71 @@ public class PlayFragment extends BaseLazyFragment {
                 + " cross=" + crossDynamicRangeSwitch
                 + " tvLike=" + tvLike
                 + " player=" + resolvedPlayerType
+                + " compat=" + compatPlayer
                 + " settleMs=" + nextPlayerReleaseSettleMs);
     }
 
+    private void markHdrOutputRequested(JSONObject playbackPlayerCfg, boolean requiresHdrOutput) {
+        int hdrOut = requiresHdrOutput ? 1 : 0;
+        try {
+            if (playbackPlayerCfg != null) {
+                playbackPlayerCfg.put("hro", hdrOut);
+            }
+            if (mVodPlayerCfg != null) {
+                mVodPlayerCfg.put("hro", hdrOut);
+            }
+        } catch (JSONException e) {
+            LOG.e("echo-hdr-window mark hro failed: " + e.getMessage());
+        }
+    }
+
     private void prepareHdrWindowForPlaybackStart(int activePlayerType, boolean requiresHdrOutput, String reason) {
-        boolean deferHdrWindow = requiresHdrOutput && shouldDeferHdrWindowEnable(activePlayerType);
-        pendingHdrWindowEnableAfterRender = deferHdrWindow;
         if (!requiresHdrOutput) {
             HdrOutputManager.releaseHdr(mContext, reason + "-prepare-sdr");
             return;
         }
-        if (deferHdrWindow) {
-            LOG.i("echo-hdr-window defer-until-render reason=" + reason + " player=" + activePlayerType);
+        if (currentPlaybackUsesNativeJava64DolbyVision) {
+            boolean fullscreenBrightnessBoost = shouldBoostHdrBrightness();
+            HdrOutputManager.requestHdr(mContext,
+                    reason + "-native-java64-dv-prepare",
+                    fullscreenBrightnessBoost);
+            LOG.i("echo-hdr-window native-java64-dv hdr-prepare reason=" + reason
+                    + " boost=" + fullscreenBrightnessBoost);
             return;
         }
         syncHdrWindowForCurrentPlayback(reason + "-prepare");
     }
 
-    private boolean shouldDeferHdrWindowEnable(int activePlayerType) {
-        return PlayerHelper.isSystemPlayerType(activePlayerType)
-                && requireActivity() instanceof BaseActivity
-                && ((BaseActivity) requireActivity()).isTvDevice();
-    }
-
-    private void applyProbePlaybackHeaders(HashMap<String, String> headers, VideoStreamProbe.Result probe) {
+    private void applyProbePlaybackHeaders(HashMap<String, String> headers, String playbackUrl, VideoStreamProbe.Result probe) {
         if (headers == null || probe == null) {
             return;
         }
-        if (probe.isMatroska) {
+        Activity activity = getActivity();
+        boolean tvLike = activity instanceof BaseActivity && ((BaseActivity) activity).isTvDevice();
+        HdrDeviceSupport.Capabilities caps = HdrDeviceSupport.query(mContext);
+        boolean java64TouchPhone = App.isJava64Build() && !tvLike;
+        if (probe.isMatroska || isMatroskaPlaybackUrl(playbackUrl)) {
             headers.put("X-TVBox-Probe-Container", "matroska");
+        }
+        if (java64TouchPhone) {
+            headers.put("X-TVBox-Probe-AudioPassthrough", "0");
+            headers.put("X-TVBox-Probe-AudioPassthroughAllowed", "0");
+        } else {
+            headers.put("X-TVBox-Probe-AudioPassthrough",
+                    Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false) ? "1" : "0");
+            headers.put("X-TVBox-Probe-AudioPassthroughAllowed",
+                    isAudioPassthroughAllowed(probe) ? "1" : "0");
         }
         if (probe.hasDolbyVision) {
             headers.put("X-TVBox-Probe-DolbyVision", "1");
         }
-        if (HdrDeviceSupport.query(mContext).supportsNativeDolbyVision()) {
+        if (App.isJava64Build()
+                && !tvLike
+                && !TextUtils.isEmpty(probe.summary)
+                && probe.summary.toLowerCase(Locale.US).contains("java64")) {
+            headers.put("X-TVBox-Probe-Java64LocalProxyFast", "1");
+        }
+        if (caps.supportsNativeDolbyVisionRoute(java64TouchPhone)) {
             headers.put("X-TVBox-Probe-NativeDvDevice", "1");
         }
         if (probe.hasHdr10) {
@@ -1351,6 +1929,91 @@ public class PlayFragment extends BaseLazyFragment {
         if (probe.hasHdr10Plus) {
             headers.put("X-TVBox-Probe-Hdr10Plus", "1");
         }
+        if (shouldForceTv32SystemSafePcm(playbackUrl, probe)) {
+            headers.put("X-TVBox-Probe-Tv32SafePcm", "1");
+        }
+        if (java64TouchPhone
+                && probe.hasDolbyVision
+                && (probe.isMatroska || isMatroskaPlaybackUrl(playbackUrl))
+                && !caps.supportsNativeDolbyVisionRoute(true)
+                && !probe.hasHdr10BaseLayer) {
+            headers.put("X-TVBox-Probe-CompatWrapStream", "1");
+        }
+    }
+
+    private boolean shouldCreateInternalPlaybackHeaders(String playbackUrl, VideoStreamProbe.Result probe) {
+        return probe != null && (probe.isMatroska
+                || probe.hasDolbyVision
+                || probe.hasHdr10
+                || probe.hasHdr10Plus
+                || shouldForceTv32SystemSafePcm(playbackUrl, probe))
+                || isMatroskaPlaybackUrl(playbackUrl);
+    }
+
+    private boolean shouldForceTv32SystemSafePcm(String playbackUrl, VideoStreamProbe.Result probe) {
+        if (mContext == null || probe == null || !ScreenUtils.isTv32Device(mContext)) {
+            return false;
+        }
+        if (!isLocalProxyPlayUrl(playbackUrl) || PlaybackUrlNormalizer.isHlsLike(playbackUrl)) {
+            return false;
+        }
+        if (probe.hasDolbyVision || probe.hasHdr10 || probe.hasHdr10Plus) {
+            return true;
+        }
+        return probe.hasHevcVideo && probe.hasImmersiveOrCompressedAudio();
+    }
+
+    private boolean isLocalProxyPlayUrl(String playbackUrl) {
+        if (TextUtils.isEmpty(playbackUrl)) {
+            return false;
+        }
+        String lower = playbackUrl.toLowerCase(Locale.US);
+        boolean localHost = lower.startsWith("http://127.0.0.1")
+                || lower.startsWith("https://127.0.0.1")
+                || lower.startsWith("http://localhost")
+                || lower.startsWith("https://localhost");
+        return localHost && lower.contains("/proxy/play/");
+    }
+
+    private boolean isMatroskaPlaybackUrl(String playbackUrl) {
+        if (TextUtils.isEmpty(playbackUrl)) {
+            return false;
+        }
+        String lower = playbackUrl.toLowerCase();
+        return lower.contains(".mkv") || lower.contains(".webm");
+    }
+
+    private boolean isAudioPassthroughAllowed(VideoStreamProbe.Result probe) {
+        if (probe == null) {
+            return false;
+        }
+        if (!Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false)) {
+            return false;
+        }
+        if (!hasPassthroughAudio(probe)) {
+            return false;
+        }
+        if (probe.hasTrueHdAudio || probe.hasAtmosLikeAudio) {
+            LOG.i("echo-audio-passthrough blocked lossless-or-atmos audioMime=" + probe.primaryAudioMime);
+            return false;
+        }
+        boolean supported = PlayerCapability.supportsAudioPassthrough(probe);
+        if (!supported) {
+            LOG.i("echo-audio-passthrough blocked unsupported-output audioMime=" + probe.primaryAudioMime
+                    + " ac3=" + probe.hasAc3Audio
+                    + " eac3=" + probe.hasEac3Audio
+                    + " dts=" + probe.hasDtsAudio);
+        }
+        return supported;
+    }
+
+    private boolean hasPassthroughAudio(VideoStreamProbe.Result probe) {
+        return probe != null
+                && (probe.hasAc3Audio
+                || probe.hasEac3Audio
+                || probe.hasDtsAudio
+                || probe.hasTrueHdAudio
+                || probe.hasAtmosLikeAudio);
     }
 
     private void handleMissingPlayableUrl(String reason) {
@@ -1360,9 +2023,12 @@ public class PlayFragment extends BaseLazyFragment {
     private void handleMissingPlayableUrl(String reason, String userMessage) {
         LOG.i("echo-missing-play-url:" + reason + " msg=" + userMessage);
         cancelPlayTimeout();
+        keepHdrWindowDuringPlayerSwitch = false;
         webPlayUrl = null;
         currentPlaybackUrl = null;
+        currentPlaybackHeaders = null;
         currentPlaybackRequiresHdrOutput = false;
+        currentPlaybackUsesNativeJava64DolbyVision = false;
         applySubtitleToneForCurrentPlayback();
         HdrOutputManager.releaseHdr(mContext, "fragment-missing-url");
         errorWithRetry(TextUtils.isEmpty(userMessage) ? "播放地址为空" : userMessage, false);
@@ -1384,7 +2050,7 @@ public class PlayFragment extends BaseLazyFragment {
         if (info == null) {
             return "";
         }
-        return firstNonEmpty(
+        return firstMeaningfulPlayMessage(
                 info.optString("errMsg", ""),
                 info.optString("msg", ""),
                 info.optString("message", ""),
@@ -1399,18 +2065,68 @@ public class PlayFragment extends BaseLazyFragment {
         for (String value : values) {
             if (!TextUtils.isEmpty(value)) {
                 String trimmed = value.trim();
-                if (trimmed.isEmpty()
-                        || "null".equalsIgnoreCase(trimmed)
-                        || "exception:null".equalsIgnoreCase(trimmed)
-                        || "异常-null".equalsIgnoreCase(trimmed)
-                        || "异常: null".equalsIgnoreCase(trimmed)
-                        || "异常：null".equalsIgnoreCase(trimmed)) {
+                if (trimmed.isEmpty()) {
                     continue;
                 }
                 return trimmed;
             }
         }
         return "";
+    }
+
+    private String firstMeaningfulPlayMessage(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (!TextUtils.isEmpty(value)) {
+                String trimmed = value.trim();
+                if (shouldIgnorePlayMessage(trimmed)) {
+                    continue;
+                }
+                return trimmed;
+            }
+        }
+        return "";
+    }
+
+    private boolean shouldIgnorePlayMessage(String value) {
+        if (TextUtils.isEmpty(value)) {
+            return true;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()
+                || "null".equalsIgnoreCase(trimmed)
+                || "exception:null".equalsIgnoreCase(trimmed)
+                || "异常-null".equalsIgnoreCase(trimmed)
+                || "异常: null".equalsIgnoreCase(trimmed)
+                || "异常：null".equalsIgnoreCase(trimmed)) {
+            return true;
+        }
+        String normalized = trimmed.toLowerCase(Locale.US);
+        return "异常-time".equalsIgnoreCase(trimmed)
+                || "异常: time".equalsIgnoreCase(trimmed)
+                || "异常：time".equalsIgnoreCase(trimmed)
+                || normalized.contains("exception:time")
+                || normalized.contains("timeout")
+                || normalized.contains("timed out")
+                || normalized.contains("read timed out")
+                || normalized.contains("connect timed out");
+    }
+
+    private boolean isSubtitleInitSettled(int generation) {
+        return subtitleInitSettledForGeneration && isCurrentPlayGeneration(generation);
+    }
+
+    private void markSubtitleInitSettled(int generation, String reason) {
+        if (!isCurrentPlayGeneration(generation)) {
+            return;
+        }
+        if (!subtitleInitSettledForGeneration) {
+            LOG.i("echo-subtitle init-settled gen=" + generation + " reason=" + reason);
+        }
+        subtitleInitSettledForGeneration = true;
+        subtitleInitSeq.incrementAndGet();
     }
 
     private String buildContainerHintText(String... extraValues) {
@@ -1461,20 +2177,97 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private void scheduleSubtitleInitRetry(final int generation, final int attempt) {
-        if (!isCurrentPlayGeneration(generation) || mHandler == null) {
+        if (!isCurrentPlayGeneration(generation) || mHandler == null || isSubtitleInitSettled(generation)) {
             return;
         }
         final int seq = subtitleInitSeq.incrementAndGet();
         mHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                if (seq != subtitleInitSeq.get() || !isCurrentPlayGeneration(generation)) {
+                if (seq != subtitleInitSeq.get()
+                        || !isCurrentPlayGeneration(generation)
+                        || isSubtitleInitSettled(generation)) {
                     logStalePlayback("subtitle-init", generation);
                     return;
                 }
                 initSubtitleView(generation, attempt);
             }
         }, attempt == 0 ? 0L : SUBTITLE_INIT_RETRY_DELAY_MS);
+    }
+
+    private boolean shouldDelayExternalSubtitleFallback(AbstractPlayer mediaPlayer,
+                                                        TrackInfo trackInfo,
+                                                        boolean userSelectedExternalSubtitle,
+                                                        int attempt) {
+        if (userSelectedExternalSubtitle || attempt >= SUBTITLE_INIT_MAX_ATTEMPTS) {
+            return false;
+        }
+        CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+        if (compatPlayer != null) {
+            if (trackInfo == null || trackInfo.getSubtitle().isEmpty()) {
+                return compatPlayer.shouldDelaySubtitleSelection(attempt);
+            }
+            return compatPlayer.shouldDelaySubtitleSelection(trackInfo.getSubtitle().size(), attempt);
+        }
+        if (mediaPlayer instanceof AndroidMediaPlayer) {
+            AndroidMediaPlayer systemPlayer = (AndroidMediaPlayer) mediaPlayer;
+            int subtitleCount = trackInfo == null ? 0 : trackInfo.getSubtitle().size();
+            return systemPlayer.shouldDelaySubtitleSelection(subtitleCount, attempt);
+        }
+        return false;
+    }
+
+    private boolean shouldKeepRetryingSubtitleInit(AbstractPlayer mediaPlayer,
+                                                   TrackInfo trackInfo,
+                                                   int attempt) {
+        if (attempt >= SUBTITLE_INIT_MAX_ATTEMPTS) {
+            return false;
+        }
+        if (mediaPlayer instanceof AndroidMediaPlayer) {
+            AndroidMediaPlayer systemPlayer = (AndroidMediaPlayer) mediaPlayer;
+            int subtitleCount = trackInfo == null ? 0 : trackInfo.getSubtitle().size();
+            return systemPlayer.shouldDelaySubtitleSelection(subtitleCount, attempt);
+        }
+        CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+        if (compatPlayer != null) {
+            if (trackInfo == null || trackInfo.getSubtitle().isEmpty()) {
+                return compatPlayer.shouldDelaySubtitleSelection(attempt);
+            }
+            return compatPlayer.shouldDelaySubtitleSelection(trackInfo.getSubtitle().size(), attempt);
+        }
+        return false;
+    }
+
+    private void applyPreferredInternalSubtitleTrack(AbstractPlayer mediaPlayer, TrackInfo trackInfo) {
+        if (mediaPlayer == null || trackInfo == null || trackInfo.getSubtitle().isEmpty()) {
+            return;
+        }
+        TrackInfoBean preferredTrack = SystemPlayerTrackManager.findPreferredSubtitleTrackBean(trackInfo);
+        if (preferredTrack == null || preferredTrack.trackId < 0) {
+            return;
+        }
+        if (mediaPlayer instanceof AndroidMediaPlayer) {
+            LOG.i("echo-subtitle select internal fragment track=" + preferredTrack.trackId
+                    + " name=" + preferredTrack.name + " lang=" + preferredTrack.language);
+            if (SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(preferredTrack)) {
+                applyMappedSubtitleTrackAsync(preferredTrack, false);
+            } else {
+                ((AndroidMediaPlayer) mediaPlayer).selectTrack(preferredTrack.trackId);
+            }
+        } else {
+            CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+            if (compatPlayer == null) {
+                return;
+            }
+            if (SystemPlayerTrackManager.isBitmapSubtitleTrack(preferredTrack)) {
+                hideOverlaySubtitleView();
+            } else {
+                prepareInternalSubtitleOverlay(mediaPlayer);
+            }
+            LOG.i("echo-subtitle select mpv internal fragment track=" + preferredTrack.trackId
+                    + " name=" + preferredTrack.name + " lang=" + preferredTrack.language);
+            compatPlayer.selectSubtitleTrack(preferredTrack);
+        }
     }
 
     private void initSubtitleView(int generation, int attempt) {
@@ -1485,26 +2278,24 @@ public class PlayFragment extends BaseLazyFragment {
         if (mVideoView == null || mController == null || mController.mSubtitleView == null) {
             return;
         }
-        TrackInfo trackInfo = null;
+        TrackInfo trackInfo;
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
         mController.mSubtitleView.hasInternal = false;
+        trackInfo = resolveSubtitleTrackInfo(mediaPlayer);
+        LOG.i("echo-subtitle track-scan fragment player="
+                + (mediaPlayer == null ? "null" : mediaPlayer.getClass().getSimpleName())
+                + " count=" + (trackInfo == null ? 0 : trackInfo.getSubtitle().size())
+                + " attempt=" + attempt);
+        if (trackInfo != null && !trackInfo.getSubtitle().isEmpty()) {
+            mController.mSubtitleView.hasInternal = true;
+        }
         if (mediaPlayer instanceof AndroidMediaPlayer) {
-            trackInfo = SystemPlayerTrackManager.getTrackInfo((AndroidMediaPlayer) mediaPlayer);
-            if (trackInfo != null && !trackInfo.getSubtitle().isEmpty()) {
-                mController.mSubtitleView.hasInternal = true;
+            disableSystemSubtitleOverlayPassThrough(mediaPlayer);
+        } else {
+            CompatTrackSelectorPlayer compatPlayer = asCompatTrackSelectorPlayer(mediaPlayer);
+            if (compatPlayer != null) {
+                bindCompatSubtitleText(compatPlayer);
             }
-            ((AndroidMediaPlayer) mediaPlayer).setOnTimedTextListener(text -> {
-                if (mController == null || mController.mSubtitleView == null || !mController.mSubtitleView.isInternal) {
-                    return;
-                }
-                mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
-            });
-        } else if (mediaPlayer instanceof MPVCompatPlayer) {
-            trackInfo = ((MPVCompatPlayer) mediaPlayer).getTrackInfo();
-            if (trackInfo != null && !trackInfo.getSubtitle().isEmpty()) {
-                mController.mSubtitleView.hasInternal = true;
-            }
-            bindMpvSubtitleText((MPVCompatPlayer) mediaPlayer);
         }
         mController.mSubtitleView.bindToMediaPlayer(mVideoView.getMediaPlayer());
         mController.mSubtitleView.setPlaySubtitleCacheKey(subtitleCacheKey);
@@ -1514,37 +2305,57 @@ public class PlayFragment extends BaseLazyFragment {
                 + " externalCount=" + (sourceSubtitles == null ? 0 : sourceSubtitles.size())
                 + " cache=" + subtitlePathCache
                 + " playSubtitle=" + playSubtitle);
-        if (subtitlePathCache != null && !subtitlePathCache.isEmpty()) {
+        boolean userSelectedExternalSubtitle = hasUserSelectedExternalSubtitle(subtitlePathCache);
+        if (shouldDelayExternalSubtitleFallback(mediaPlayer, trackInfo,
+                userSelectedExternalSubtitle, attempt)) {
+            scheduleSubtitleInitRetry(generation, attempt + 1);
+            return;
+        }
+        boolean preferInternalSubtitle = shouldPreferInternalSubtitleByDefault();
+        if (userSelectedExternalSubtitle) {
             applyExternalSubtitle(subtitlePathCache);
+            markSubtitleInitSettled(generation, "user-external");
         } else {
-            if (playSubtitle != null && playSubtitle .length() > 0) {
+            if (!preferInternalSubtitle && playSubtitle != null && playSubtitle.length() > 0) {
                 applyExternalSubtitle(playSubtitle);
-            } else if (!sourceSubtitles.isEmpty()) {
+                markSubtitleInitSettled(generation, "play-subtitle");
+            } else if (!preferInternalSubtitle && !sourceSubtitles.isEmpty()) {
                 Subtitle preferred = SystemPlayerTrackManager.findPreferredExternalSubtitle(sourceSubtitles);
                 if (preferred != null) {
                     applyExternalSubtitle(preferred.getUrl());
+                    markSubtitleInitSettled(generation, "preferred-external");
                 }
             } else {
                 if (mController.mSubtitleView.hasInternal) {
-                    prepareInternalSubtitleOverlay(mVideoView.getMediaPlayer());
-                    if (trackInfo != null && trackInfo.getSubtitle().size()>0) {
-                        TrackInfoBean preferredTrack = SystemPlayerTrackManager.findPreferredSubtitleTrackBean(trackInfo);
-                        if (preferredTrack != null && preferredTrack.trackId >= 0) {
-                            if (mVideoView.getMediaPlayer() instanceof AndroidMediaPlayer) {
-                                LOG.i("echo-subtitle select internal fragment track=" + preferredTrack.trackId
-                                        + " name=" + preferredTrack.name + " lang=" + preferredTrack.language);
-                                ((AndroidMediaPlayer) (mVideoView.getMediaPlayer())).selectTrack(preferredTrack.trackId);
-                            } else if (mVideoView.getMediaPlayer() instanceof MPVCompatPlayer) {
-                                LOG.i("echo-subtitle select mpv internal fragment track=" + preferredTrack.trackId
-                                        + " name=" + preferredTrack.name + " lang=" + preferredTrack.language);
-                                ((MPVCompatPlayer) (mVideoView.getMediaPlayer())).selectSubtitleTrack(preferredTrack);
-                            }
-                        }
+                    TrackInfoBean preferredTrack = SystemPlayerTrackManager.findPreferredSubtitleTrackBean(trackInfo);
+                    if (preferredTrack == null) {
+                        LOG.i("echo-subtitle auto-select skipped fragment reliableTrack=false");
+                        hideOverlaySubtitleView();
+                        markSubtitleInitSettled(generation, "no-reliable-track");
+                        return;
                     }
+                    if (mediaPlayer instanceof AndroidMediaPlayer
+                            && SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(preferredTrack)) {
+                        applyMappedSubtitleTrackAsync(preferredTrack, false);
+                    } else if (mediaPlayer instanceof AndroidMediaPlayer
+                            && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)) {
+                        disableSystemSubtitleOverlayPassThrough(mediaPlayer);
+                        hideOverlaySubtitleView();
+                        SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, preferredTrack);
+                    } else {
+                        prepareInternalSubtitleOverlay(mediaPlayer);
+                        if (mediaPlayer instanceof AndroidMediaPlayer) {
+                            enableSystemSubtitleOverlayPassThrough(mediaPlayer);
+                        }
+                        applyPreferredInternalSubtitleTrack(mediaPlayer, trackInfo);
+                    }
+                    markSubtitleInitSettled(generation, "internal-ready");
                 } else {
                     LOG.i("echo-subtitle none fragment");
-                    if (attempt < SUBTITLE_INIT_MAX_ATTEMPTS) {
+                    if (shouldKeepRetryingSubtitleInit(mediaPlayer, trackInfo, attempt)) {
                         scheduleSubtitleInitRetry(generation, attempt + 1);
+                    } else {
+                        markSubtitleInitSettled(generation, "no-internal-track");
                     }
                 }
             }
@@ -1565,16 +2376,25 @@ public class PlayFragment extends BaseLazyFragment {
                                     + " active=" + activeProgressKey);
                             return;
                         }
+                        String resultRequestKey = info.optString("reqKey", null);
+                        if (!isCurrentPlayRequestKey(resultRequestKey)) {
+                            LOG.i("echo-play-stale playResult request=" + resultRequestKey
+                                    + " active=" + activePlayRequestKey);
+                            return;
+                        }
                         final int generation = currentPlayGeneration();
                         if (!TextUtils.isEmpty(resultProgressKey)) {
                             progressKey = resultProgressKey;
+                            activeProgressKey = resultProgressKey;
                         }
                         boolean parse = info.optString("parse", "1").equals("1");
                         boolean jx = info.optString("jx", "0").equals("1");
                         playSubtitle = info.optString("subt", "");
                         sourceSubtitles = SystemPlayerTrackManager.buildExternalSubtitleList(info.optJSONArray("subs"));
                         Subtitle preferredExternalSubtitle = SystemPlayerTrackManager.findPreferredExternalSubtitle(sourceSubtitles);
-                        if (playSubtitle.isEmpty() && preferredExternalSubtitle != null) {
+                        if (!shouldPreferInternalSubtitleByDefault()
+                                && playSubtitle.isEmpty()
+                                && preferredExternalSubtitle != null) {
                             playSubtitle = preferredExternalSubtitle.getUrl();
                         }
                         LOG.i("echo-subtitle playResult fragment externalCount=" + sourceSubtitles.size()
@@ -1582,11 +2402,11 @@ public class PlayFragment extends BaseLazyFragment {
                         subtitleCacheKey = info.optString("subtKey", null);
                         String playUrl = info.optString("playUrl", "");
                         String msg = extractPlayErrorMessage(info);
-                        if(!msg.isEmpty()){
-                            Toast.makeText(mContext, msg, Toast.LENGTH_SHORT).show();
-                        }
                         String flag = info.optString("flag");
                         String url = info.optString("url", "").trim();
+                        if (TextUtils.isEmpty(url) && !msg.isEmpty()) {
+                            Toast.makeText(mContext, msg, Toast.LENGTH_SHORT).show();
+                        }
                         if (TextUtils.isEmpty(url)) {
                             handleMissingPlayableUrl("empty-play-result-url", msg);
                             return;
@@ -1663,6 +2483,11 @@ public class PlayFragment extends BaseLazyFragment {
         if (!lastPlayLooksLikeDolbyVision || dolbyVisionFallbackTried) {
             return false;
         }
+        if (currentPlaybackUsesNativeJava64DolbyVision) {
+            LOG.i("echo-dolby-vision-fallback skip-native-java64-dv");
+            dolbyVisionFallbackTried = true;
+            return false;
+        }
         dolbyVisionFallbackTried = true;
         if (!useHdrFallbackPlayer && !useSdrFallbackPlayer) {
             return false;
@@ -1705,7 +2530,10 @@ public class PlayFragment extends BaseLazyFragment {
             if (!mVodPlayerCfg.has("pr")) {
                 mVodPlayerCfg.put("pr", Hawk.get(HawkConfig.PLAY_RENDER, 1));
             }
-            mVodPlayerCfg.put("sc", VideoView.SCREEN_SCALE_DEFAULT);
+            mVodPlayerCfg.put("sc", PlayerHelper.sanitizeScaleForPlayer(
+                    PlayerHelper.PLAYER_TYPE_SYSTEM,
+                    mVodPlayerCfg.optInt("sc", Hawk.get(HawkConfig.PLAY_SCALE, VideoView.SCREEN_SCALE_DEFAULT))
+            ));
             if (!mVodPlayerCfg.has("sp")) {
                 mVodPlayerCfg.put("sp", 1.0f);
             }
@@ -1825,6 +2653,8 @@ public class PlayFragment extends BaseLazyFragment {
         super.onDestroyView();
         playbackRequestSeq.incrementAndGet();
         playbackProbeExecutor.shutdownNow();
+        subtitleWorkExecutor.shutdownNow();
+        playbackPersistExecutor.shutdownNow();
         if (mHandler != null) {
             mHandler.removeCallbacksAndMessages(null);
         }
@@ -1836,6 +2666,7 @@ public class PlayFragment extends BaseLazyFragment {
             mVideoView = null;
         }
         currentPlaybackRequiresHdrOutput = false;
+        currentPlaybackUsesNativeJava64DolbyVision = false;
         applySubtitleToneForCurrentPlayback();
         HdrOutputManager.releaseHdr(mContext, "fragment-destroy-view");
         stopLoadWebView(true);
@@ -1992,6 +2823,16 @@ public class PlayFragment extends BaseLazyFragment {
         loadFoundVideoUrlsHeader = new HashMap<String, HashMap<String, String>>();
     }
 
+    private void clearParseLoadFound() {
+        loadFoundCount.set(0);
+        if (loadFoundVideoUrls != null) {
+            loadFoundVideoUrls.clear();
+        }
+        if (loadFoundVideoUrlsHeader != null) {
+            loadFoundVideoUrlsHeader.clear();
+        }
+    }
+
     public void setPlayTitle(boolean show)
     {
         if(show){
@@ -2012,13 +2853,17 @@ public class PlayFragment extends BaseLazyFragment {
         if (!mVideoView.isFullScreen()) {
             persistPlaybackProgress();
             mVideoView.startFullScreen();
-            mVideoView.setScreenScaleType(VideoView.SCREEN_SCALE_DEFAULT);
+            int scaleType = PlayerHelper.sanitizeScaleForPlayer(
+                    PlayerHelper.PLAYER_TYPE_SYSTEM,
+                    mVodPlayerCfg == null ? VideoView.SCREEN_SCALE_DEFAULT : mVodPlayerCfg.optInt("sc", VideoView.SCREEN_SCALE_DEFAULT)
+            );
+            mVideoView.setScreenScaleType(scaleType);
             mVideoView.post(new Runnable() {
                 @Override
                 public void run() {
                     syncEmbeddedControllerMode();
                     if (mController != null) {
-                        mController.setForceFullScreenInputMode(isPlayerVisuallyFullScreen());
+                        mController.setForceFullScreenInputMode(mVideoView != null && mVideoView.isFullScreen());
                         mController.syncFullScreenControlState();
                     }
                 }
@@ -2028,22 +2873,24 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     public boolean isEmbeddedPlayerFullScreen() {
-        return mVideoView != null && (mVideoView.isFullScreen() || isPlayerVisuallyFullScreen());
+        return mVideoView != null && (mVideoView.isFullScreen() || (!App.isJava64Build() && isPlayerVisuallyFullScreen()));
     }
 
     public void syncEmbeddedControllerMode() {
         if (mController != null) {
-            boolean visuallyFull = isPlayerVisuallyFullScreen();
-            mController.setForceFullScreenInputMode(visuallyFull);
-            mController.setEmbeddedPreviewMode(mVideoView == null || (!mVideoView.isFullScreen() && !visuallyFull));
+            boolean fullScreenInput = App.isJava64Build()
+                    ? (mVideoView != null && mVideoView.isFullScreen())
+                    : (mVideoView != null && (mVideoView.isFullScreen() || isPlayerVisuallyFullScreen()));
+            mController.setForceFullScreenInputMode(fullScreenInput);
+            mController.setEmbeddedPreviewMode(!fullScreenInput);
         }
-        if (mVideoView != null && !mVideoView.isFullScreen() && !isPlayerVisuallyFullScreen()) {
+        if (mVideoView != null && !mVideoView.isFullScreen() && (!App.isJava64Build() && !isPlayerVisuallyFullScreen())) {
             restorePreviewPlayerFocus();
         }
     }
 
     private boolean shouldRouteKeyToController() {
-        return mVideoView != null && (mVideoView.isFullScreen() || isPlayerVisuallyFullScreen());
+        return mVideoView != null && (mVideoView.isFullScreen() || (!App.isJava64Build() && isPlayerVisuallyFullScreen()));
     }
 
     private boolean isPlayerVisuallyFullScreen() {
@@ -2110,6 +2957,7 @@ public class PlayFragment extends BaseLazyFragment {
         useSdrFallbackPlayer = false;
         rememberPlaybackOutputStateBeforeReset();
         currentPlaybackRequiresHdrOutput = false;
+        currentPlaybackUsesNativeJava64DolbyVision = false;
         applySubtitleToneForCurrentPlayback();
         EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_REFRESH, mVodInfo));
         setTip("正在获取播放信息", true, false);
@@ -2125,11 +2973,18 @@ public class PlayFragment extends BaseLazyFragment {
         mController.stopOther();
         sourceSubtitles.clear();
         playSubtitle = "";
+        clearResolvedSubtitleTrackCache();
+        if (mVideoView != null) {
+            disableSystemSubtitleOverlayPassThrough(mVideoView.getMediaPlayer());
+        }
+        hideOverlaySubtitleView();
         if(mVideoView!=null) {
             persistPlaybackProgress();
             forceReleaseCurrentPlayer("fragment-play-switch");
         }
+        activePlayRequestKey = buildPlayRequestKey(resolvedSourceKey, mVodInfo.playFlag, mVodInfo.playIndex, vs, generation);
         //重新播放清除现有进度
+        bindPlaybackIdentity(resolvedSourceKey, mVodInfo.playFlag, mVodInfo.playIndex);
         if (reset) {
             CacheManager.delete(MD5.string2MD5(progressKey), 0);
             CacheManager.delete(MD5.string2MD5(subtitleCacheKey), 0);
@@ -2181,7 +3036,7 @@ public class PlayFragment extends BaseLazyFragment {
             mController.showParse(false);
             return;
         }
-        sourceViewModel.getPlay(resolvedSourceKey, mVodInfo.playFlag, progressKey, vs.url, subtitleCacheKey);
+        sourceViewModel.getPlay(resolvedSourceKey, mVodInfo.playFlag, progressKey, vs.url, subtitleCacheKey, activePlayRequestKey);
     }
 
     private boolean delayPlayUntilFullScreenExitStable(final boolean reset) {
@@ -2217,6 +3072,9 @@ public class PlayFragment extends BaseLazyFragment {
     private HashMap<String, String > webHeaderMap;
     private String webPlayUrl;
     private String currentPlaybackUrl;
+    private HashMap<String, String> currentPlaybackHeaders;
+    private String currentPlaybackProbeUrl;
+    private VideoStreamProbe.Result currentPlaybackProbe;
 
     private void initParse(String flag, boolean useParse, String playUrl, final String url) {
         initParse(flag, useParse, playUrl, url, currentPlayGeneration());
@@ -2326,8 +3184,10 @@ public class PlayFragment extends BaseLazyFragment {
 
     void stopParse() {
         activeParseGeneration = 0;
+        activeParseSessionId++;
         mHandler.removeMessages(MSG_PARSE_TIMEOUT);
         stopLoadWebView(false);
+        clearParseLoadFound();
         OkGo.getInstance().cancelTag("json_jx");
         if (parseThreadPool != null) {
             try {
@@ -2445,7 +3305,11 @@ public class PlayFragment extends BaseLazyFragment {
 
                                     }
                                 }
-                                playUrl(rs.getString("url"), headers, generation);
+                                String resolvedUrl = rs.getString("url");
+                                if (shouldIgnoreLateParsePlaybackResult(generation, resolvedUrl)) {
+                                    return;
+                                }
+                                playUrl(resolvedUrl, headers, generation);
                             } catch (Throwable e) {
                                 if (!isCurrentParseGeneration(generation)) {
                                     logStalePlayback("json-parse-catch", generation);
@@ -2523,7 +3387,11 @@ public class PlayFragment extends BaseLazyFragment {
                             String wvUrl = DefaultConfig.checkReplaceProxy(rs.optString("url", ""));
                             loadUrl(wvUrl, generation);
                         } else {
-                            playUrl(rs.optString("url", ""), headers, generation);
+                            String resolvedUrl = rs.optString("url", "");
+                            if (shouldIgnoreLateParsePlaybackResult(generation, resolvedUrl)) {
+                                return;
+                            }
+                            playUrl(resolvedUrl, headers, generation);
                         }
                     }
                 }
@@ -2700,7 +3568,11 @@ public class PlayFragment extends BaseLazyFragment {
                 }
             });
         }
-        playUrl(rs.optString("url", ""), headers, generation);
+        String resolvedUrl = rs.optString("url", "");
+        if (shouldIgnoreLateParsePlaybackResult(generation, resolvedUrl)) {
+            return;
+        }
+        playUrl(resolvedUrl, headers, generation);
     }
     public MyVideoView getPlayer() {
         return mVideoView;
@@ -2775,17 +3647,18 @@ public class PlayFragment extends BaseLazyFragment {
             logStalePlayback("loadUrl", generation);
             return;
         }
+        final int parseSessionId = activeParseSessionId;
         if(!isAdded())return;
         requireActivity().runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (!isCurrentParseGeneration(generation)) {
+                if (!isCurrentParseSession(generation, parseSessionId)) {
                     logStalePlayback("loadUrl-ui", generation);
                     return;
                 }
                 if (mXwalkWebView != null) {
                     mXwalkWebView.stopLoading();
-                    mXwalkWebView.setTag(Integer.valueOf(generation));
+                    mXwalkWebView.setTag(Long.valueOf(buildWebViewParseTag(generation, parseSessionId)));
                     if(webUserAgent != null) {
                         mXwalkWebView.getSettings().setUserAgentString(webUserAgent);
                     }
@@ -2798,7 +3671,7 @@ public class PlayFragment extends BaseLazyFragment {
                 }
                 if (mSysWebView != null) {
                     mSysWebView.stopLoading();
-                    mSysWebView.setTag(Integer.valueOf(generation));
+                    mSysWebView.setTag(Long.valueOf(buildWebViewParseTag(generation, parseSessionId)));
                     if(webUserAgent != null) {
                         mSysWebView.getSettings().setUserAgentString(webUserAgent);
                     }
@@ -2869,14 +3742,6 @@ public class PlayFragment extends BaseLazyFragment {
         }catch (Exception e){
             return false;
         }
-    }
-
-    private int getWebViewGeneration(View view) {
-        Object tag = view == null ? null : view.getTag();
-        if (tag instanceof Integer) {
-            return (Integer) tag;
-        }
-        return currentPlayGeneration();
     }
 
     class MyWebView extends WebView {
@@ -3029,8 +3894,8 @@ public class PlayFragment extends BaseLazyFragment {
             }
         }
 
-        WebResourceResponse checkIsVideo(String url, HashMap<String, String> headers, int generation) {
-            if (!isCurrentParseGeneration(generation)) {
+        WebResourceResponse checkIsVideo(String url, HashMap<String, String> headers, int generation, int parseSessionId) {
+            if (!isCurrentParseSession(generation, parseSessionId)) {
                 logStalePlayback("web-check-video", generation);
                 return null;
             }
@@ -3061,12 +3926,19 @@ public class PlayFragment extends BaseLazyFragment {
                     loadFoundVideoUrlsHeader.put(url, headers);
                     LOG.i("echo-loadFoundVideoUrl:" + url );
                     if (loadFoundCount.incrementAndGet() == 1) {
+                        if (!isCurrentParseSession(generation, parseSessionId)) {
+                            logStalePlayback("web-intercept-late-hit", generation);
+                            return null;
+                        }
                         stopLoadWebView(false);
                         SuperParse.stopJsonJx();
                         url = loadFoundVideoUrls.poll();
                         mHandler.removeMessages(MSG_PARSE_TIMEOUT);
                         String cookie = CookieManager.getInstance().getCookie(url);
                         if(!TextUtils.isEmpty(cookie))headers.put("Cookie", " " + cookie);//携带cookie
+                        if (shouldIgnoreLateParsePlaybackResult(generation, url)) {
+                            return AdBlocker.createEmptyResource();
+                        }
                         playUrl(url, headers, generation);
                     }
                 }
@@ -3089,7 +3961,8 @@ public class PlayFragment extends BaseLazyFragment {
         @TargetApi(Build.VERSION_CODES.LOLLIPOP)
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
             int generation = getWebViewGeneration(view);
-            if (!isCurrentParseGeneration(generation)) {
+            int parseSessionId = getWebViewParseSessionId(view);
+            if (!isCurrentParseSession(generation, parseSessionId)) {
                 logStalePlayback("web-intercept", generation);
                 return null;
             }
@@ -3106,7 +3979,7 @@ public class PlayFragment extends BaseLazyFragment {
                     }
                 }
             }
-            return checkIsVideo(url, webHeaders, generation);
+            return checkIsVideo(url, webHeaders, generation, parseSessionId);
         }
 
         @Override
@@ -3217,7 +4090,8 @@ public class PlayFragment extends BaseLazyFragment {
         @Override
         public XWalkWebResourceResponse shouldInterceptLoadRequest(XWalkView view, XWalkWebResourceRequest request) {
             int generation = getWebViewGeneration(view);
-            if (!isCurrentParseGeneration(generation)) {
+            int parseSessionId = getWebViewParseSessionId(view);
+            if (!isCurrentParseSession(generation, parseSessionId)) {
                 logStalePlayback("xwalk-intercept", generation);
                 return null;
             }
@@ -3261,12 +4135,19 @@ public class PlayFragment extends BaseLazyFragment {
                     loadFoundVideoUrlsHeader.put(url, webHeaders);
                     LOG.i("echo-loadFoundVideoUrl:" + url );
                     if (loadFoundCount.incrementAndGet() == 1) {
+                        if (!isCurrentParseSession(generation, parseSessionId)) {
+                            logStalePlayback("xwalk-intercept-late-hit", generation);
+                            return null;
+                        }
                         stopLoadWebView(false);
                         SuperParse.stopJsonJx();
                         mHandler.removeMessages(MSG_PARSE_TIMEOUT);
                         url = loadFoundVideoUrls.poll();
                         String cookie = CookieManager.getInstance().getCookie(url);
                         if(!TextUtils.isEmpty(cookie))webHeaders.put("Cookie", " " + cookie);//携带cookie
+                        if (shouldIgnoreLateParsePlaybackResult(generation, url)) {
+                            return createXWalkWebResourceResponse("text/plain", "utf-8", new ByteArrayInputStream("".getBytes()));
+                        }
                         playUrl(url, webHeaders, generation);
                     }
                 }

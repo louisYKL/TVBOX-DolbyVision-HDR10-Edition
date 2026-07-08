@@ -19,6 +19,7 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.base.BaseActivity;
 
@@ -66,13 +67,17 @@ public abstract class BaseController extends BaseVideoController implements Gest
                 int what = msg.what;
                 switch (what) {
                     case 100: { // 亮度+音量调整
-                        mSlideInfo.setVisibility(VISIBLE);
-                        mSlideInfo.setText(msg.obj.toString());
+                        if (mSlideInfo != null) {
+                            mSlideInfo.setVisibility(VISIBLE);
+                            mSlideInfo.setText(msg.obj == null ? "" : msg.obj.toString());
+                        }
                         break;
                     }
 
                     case 101: { // 亮度+音量调整 关闭
-                        mSlideInfo.setVisibility(GONE);
+                        if (mSlideInfo != null) {
+                            mSlideInfo.setVisibility(GONE);
+                        }
                         break;
                     }
                     default: {
@@ -107,6 +112,9 @@ public abstract class BaseController extends BaseVideoController implements Gest
         mGestureDetector.setOnDoubleTapListener(this);
         setOnTouchListener(this);
         mSlideInfo = findViewWithTag("vod_control_slide_info");
+        if (mSlideInfo == null) {
+            mSlideInfo = findViewById(R.id.tv_slide_progress_text);
+        }
         mLoading = findViewWithTag("vod_control_loading");
         mPauseRoot = findViewWithTag("vod_control_pause");
         mPauseTime = findViewWithTag("vod_control_pause_t");
@@ -115,7 +123,9 @@ public abstract class BaseController extends BaseVideoController implements Gest
     @Override
     protected void setProgress(int duration, int position) {
         super.setProgress(duration, position);
-        mPauseTime.setText(PlayerUtils.stringForTime(position) + " / " + PlayerUtils.stringForTime(duration));
+        if (mPauseTime != null) {
+            mPauseTime.setText(PlayerUtils.stringForTime(position) + " / " + PlayerUtils.stringForTime(duration));
+        }
     }
 
     @Override
@@ -124,31 +134,51 @@ public abstract class BaseController extends BaseVideoController implements Gest
         switch (playState) {
             case VideoView.STATE_IDLE:
                 mHasRenderedFirstFrame = false;
-                mLoading.setVisibility(GONE);
+                if (mLoading != null) {
+                    mLoading.setVisibility(GONE);
+                }
                 break;
             case VideoView.STATE_PLAYING:
                 mHasRenderedFirstFrame = true;
-                mPauseRoot.setVisibility(GONE);
-                mLoading.setVisibility(GONE);
+                if (mPauseRoot != null) {
+                    mPauseRoot.setVisibility(GONE);
+                }
+                if (mLoading != null) {
+                    mLoading.setVisibility(GONE);
+                }
                 break;
             case VideoView.STATE_PAUSED:
-                mPauseRoot.setVisibility(VISIBLE);
-                mLoading.setVisibility(GONE);
+                if (mPauseRoot != null) {
+                    mPauseRoot.setVisibility(VISIBLE);
+                }
+                if (mLoading != null) {
+                    mLoading.setVisibility(GONE);
+                }
                 break;
             case VideoView.STATE_PREPARED:
             case VideoView.STATE_ERROR:
             case VideoView.STATE_BUFFERED:
-                mLoading.setVisibility(GONE);
+                if (mLoading != null) {
+                    mLoading.setVisibility(GONE);
+                }
                 break;
             case VideoView.STATE_PREPARING:
-                mLoading.setVisibility(VISIBLE);
+                if (mLoading != null) {
+                    mLoading.setVisibility(VISIBLE);
+                }
                 break;
             case VideoView.STATE_BUFFERING:
-                mLoading.setVisibility(mHasRenderedFirstFrame ? GONE : VISIBLE);
+                if (mLoading != null) {
+                    mLoading.setVisibility(mHasRenderedFirstFrame ? GONE : VISIBLE);
+                }
                 break;
             case VideoView.STATE_PLAYBACK_COMPLETED:
-                mLoading.setVisibility(GONE);
-                mPauseRoot.setVisibility(GONE);
+                if (mLoading != null) {
+                    mLoading.setVisibility(GONE);
+                }
+                if (mPauseRoot != null) {
+                    mPauseRoot.setVisibility(GONE);
+                }
                 break;
         }
     }
