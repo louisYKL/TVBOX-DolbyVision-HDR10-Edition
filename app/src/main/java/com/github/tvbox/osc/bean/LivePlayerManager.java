@@ -23,6 +23,7 @@ public class LivePlayerManager {
             defaultPlayerConfig.put("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
             defaultPlayerConfig.put("pr", Hawk.get(HawkConfig.PLAY_RENDER, 1));
             defaultPlayerConfig.put("sc", Hawk.get(HawkConfig.PLAY_SCALE, 0));
+            defaultPlayerConfig.put(HawkConfig.PLAYER_IS_LIVE, true);
             defaultPlayerConfig.put(HawkConfig.PLAYER_SELECTION_MANUAL, false);
         } catch (JSONException e) {
             e.printStackTrace();
@@ -52,6 +53,7 @@ public class LivePlayerManager {
 
         try {
             playerConfig.put("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
+            playerConfig.put(HawkConfig.PLAYER_IS_LIVE, true);
             if (!playerConfig.optBoolean(HawkConfig.PLAYER_SELECTION_MANUAL, false)) {
                 playerConfig = new JSONObject(defaultPlayerConfig.toString());
             }
@@ -95,6 +97,7 @@ public class LivePlayerManager {
         JSONObject playerConfig = currentPlayerConfig;
         try {
             playerConfig.put("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
+            playerConfig.put(HawkConfig.PLAYER_IS_LIVE, true);
             playerConfig.put(HawkConfig.PLAYER_SELECTION_MANUAL, true);
         } catch (JSONException e) {
             e.printStackTrace();
@@ -127,6 +130,7 @@ public class LivePlayerManager {
         JSONObject playerConfig = currentPlayerConfig;
         try {
             playerConfig.put("sc", playerScale);
+            playerConfig.put(HawkConfig.PLAYER_IS_LIVE, true);
             playerConfig.put(HawkConfig.PLAYER_SELECTION_MANUAL, true);
         } catch (JSONException e) {
             e.printStackTrace();
