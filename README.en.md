@@ -5,13 +5,13 @@
 > A TV-first TVBox branch focused on native hardware playback, HDR activation, Dolby Vision fallback routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.3"><img alt="Release" src="https://img.shields.io/badge/release-v0.1.3-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.0"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.0-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TV-BOX-DolbyVision-HDR10-Edition/releases/tag/v0.1.3">Download 0.1.3</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.0">Download 0.2.0</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -25,9 +25,9 @@ This branch is built for real living-room playback: keep native system decoding 
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.1.3_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build |
-| `TVBox_v0.1.3_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
-| `TVBox_v0.1.3_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build |
+| `TVBox_v0.2.0_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, compatible with in-place updates from 0.1.9.1 |
+| `TVBox_v0.2.0_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, compatible with in-place updates from 0.1.9.1 |
+| `TVBox_v0.2.0_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, compatible with in-place updates from 0.1.9.1 |
 
 ## Preview
 
@@ -56,7 +56,7 @@ The core principle is simple:
 - Keep subtitles, audio passthrough, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
 
-## 0.1.3 Variants
+## 0.2.0 Variants
 
 | Variant | ABI | Target devices | Notes |
 | --- | --- | --- | --- |
@@ -64,14 +64,13 @@ The core principle is simple:
 | `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
 | `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Dedicated Hisense build |
 
-## What 0.1.3 focused on
+## What 0.2.0 focused on
 
-- Switched the `java64` non-TV system-player render path to `TextureView` so fullscreen taps, menus, and touch gestures are no longer swallowed by `SurfaceView`.
-- Added activity-level fullscreen touch dispatch in `PlayActivity` and completed double-tap listener registration in `BaseController` to stabilize fullscreen controls on phones and tablets.
-- Tightened the 32-bit Dolby Vision route so true native-DV devices are no longer downgraded by incomplete local-proxy MKV probes, while HDR-capable non-native-DV devices prefer the system-player HDR10 base layer for dual-layer / base-layer DV streams to reduce gray-screen cases.
-- Tightened the native Dolby Vision path on 64-bit devices so real DV-capable hardware stays on the system route instead of being downgraded too early by incomplete local-proxy MKV / DV probes.
-- Added stronger system-player audio-track selection/logging plus an MPV audio safe-mode branch for 64-bit touch devices to keep silent-playback edge cases under control.
-- Repackaged the three Android deliverables under release `0.1.3`: `java32`, `java64`, and `hisense32`.
+- Fixed 32-bit TV system-player cases where HDR/DV or local-proxy MKV playback could hit black-screen-with-audio, playback failure, or player errors from the old safe-pcm audio attributes.
+- `AndroidMediaPlayer` no longer marks HDR/DV system playback as `USAGE_GAME` / `CONTENT_TYPE_SPEECH`; it keeps the normal `USAGE_MEDIA` / `CONTENT_TYPE_MOVIE` media route.
+- Direct network playback preserves external `User-Agent`, `Referer`, `Origin`, and `Cookie` headers, reducing failures on protected or referer-bound video URLs.
+- Surface/Display teardown or rebuild no longer turns non-fatal detach failures into playback errors, reducing false player errors during fullscreen, screen, or surface transitions.
+- All three deliverables are versioned as `0.2.0` and signed with the same certificate as `0.1.9.1`, so installed `0.1.9.1` builds can be updated in place.
 
 ## Highlights
 
@@ -137,15 +136,15 @@ pyramid/    Python extension module
 
 The repository is arranged so build dependencies and caches can stay inside the project runtime directory.
 
-- Android SDK: `E:\apk\tvbox\TVBoxOS-main\_runtime\android-sdk`
-- JDK: `E:\apk\tvbox\TVBoxOS-main\_runtime\jdk\temurin11\jdk-11.0.31+11`
-- Gradle Home: `E:\apk\tvbox\TVBoxOS-main\_runtime\gradle-home`
+- Android SDK: `E:\tvbox\TVBoxOS-main\_runtime\android-sdk`
+- JDK: `E:\tvbox\TVBoxOS-main\_runtime\jdk\temurin11\jdk-11.0.31+11`
+- Gradle Home: `E:\tvbox\TVBoxOS-main\_runtime\gradle-home`
 
 PowerShell:
 
 ```powershell
-$env:JAVA_HOME='E:\apk\tvbox\TVBoxOS-main\_runtime\jdk\temurin11\jdk-11.0.31+11'
-$env:GRADLE_USER_HOME='E:\apk\tvbox\TVBoxOS-main\_runtime\gradle-home'
+$env:JAVA_HOME='E:\tvbox\TVBoxOS-main\_runtime\jdk\temurin11\jdk-11.0.31+11'
+$env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 
 .\gradlew.bat :app:assembleNormalDebug
 .\gradlew.bat :app:assembleJava64Debug
@@ -184,4 +183,6 @@ The repository includes a basic Android build workflow for:
 - `0.1`: unify the 32-bit TV build, 64-bit Android build, and Hisense 32-bit build.
 - `0.1.1`: continue closing HDR / DV probe issues, playback routing edge cases, progress persistence, and source-switch state isolation.
 - `0.1.3`: tighten the 64-bit system-player render/touch path and repack the three Android release variants.
-- Next: portable Windows build, more device-specific branches, and a proper GitHub Release workflow.
+- `0.1.9.1`: publish the three source trees and APKs through one GitHub Release.
+- `0.2.0`: fix 32-bit system-player black-screen-with-audio, playback-failure, and player-error risks while preserving in-place updates from `0.1.9.1`.
+- Next: keep closing playback, subtitle, HDR, and audio behavior from device logs.
