@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0
+
+### 中文
+
+- 修复 32 位 TV 系统播放器在 HDR/DV、本地代理 MKV 等场景下因 safe-pcm 音频属性导致的黑屏有声音、播放失败或播放出错风险。
+- 网络直连播放保留外部 `User-Agent`、`Referer`、`Origin`、`Cookie` 等请求头，减少需要鉴权/防盗链的视频源失败。
+- Surface/Display 销毁或重建时不再把非致命 detach 异常当成播放错误，降低切屏、全屏切换、Surface 重建时的误报错。
+- 三端统一版本为 `0.2.0`，并用仓库内 `_runtime` 本地环境构建。
+
+### English
+
+- Fixed 32-bit TV system-player risk where HDR/DV or local-proxy MKV playback could hit black-screen-with-audio, playback failure, or player errors from the old safe-pcm audio attributes.
+- Preserved external `User-Agent`, `Referer`, `Origin`, and `Cookie` headers for direct network playback to reduce failures on protected video URLs.
+- Treated Surface/Display detach failures during surface teardown or rebuild as non-fatal, reducing false playback errors during fullscreen or surface transitions.
+- Unified all three deliverables under version `0.2.0` and built them with the repo-local `_runtime` environment.
+
 ## 0.1.3
 
 ### 中文

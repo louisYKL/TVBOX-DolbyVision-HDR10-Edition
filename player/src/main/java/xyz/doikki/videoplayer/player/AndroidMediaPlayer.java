@@ -504,6 +504,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             startIfDisplayReady();
         } catch (Exception e) {
             Log.e(TAG, "setSurface failed in state=" + mState, e);
+            if (surface == null || !surface.isValid()) {
+                Log.w(TAG, "ignore non-fatal surface detach failure");
+                return;
+            }
             mPlayerEventListener.onError();
         }
     }
@@ -524,6 +528,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             startIfDisplayReady();
         } catch (Exception e) {
             Log.e(TAG, "setDisplay failed in state=" + mState, e);
+            if (holder == null || holder.getSurface() == null || !holder.getSurface().isValid()) {
+                Log.w(TAG, "ignore non-fatal display detach failure");
+                return;
+            }
             mPlayerEventListener.onError();
         }
     }
@@ -738,23 +746,16 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             boolean safePcmAudio = mForceSafePcmAudio && isLikelyTvOffloadRiskDevice();
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && safePcmAudio) {
-                AudioAttributes audioAttributes = new AudioAttributes.Builder()
-                        .setLegacyStreamType(AudioManager.STREAM_MUSIC)
-                        .setUsage(AudioAttributes.USAGE_GAME)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build();
-                mMediaPlayer.setAudioAttributes(audioAttributes);
-                logInfo("echo-system-audio safe-pcm usage=game content=speech tv32="
-                        + isLikely32BitTvDevice() + " tvLike=" + isLikelyTvOffloadRiskDevice());
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 AudioAttributes audioAttributes = new AudioAttributes.Builder()
                         .setLegacyStreamType(AudioManager.STREAM_MUSIC)
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
                         .build();
                 mMediaPlayer.setAudioAttributes(audioAttributes);
-                logInfo("echo-system-audio attrs usage=media content=movie");
+                logInfo("echo-system-audio attrs usage=media content=movie safePcmHint="
+                        + safePcmAudio + " tv32=" + isLikely32BitTvDevice()
+                        + " tvLike=" + isLikelyTvOffloadRiskDevice());
             } else {
                 mMediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
                 logInfo("echo-system-audio stream=music legacy-pre21");
@@ -1062,10 +1063,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (hasInternalHeaderValue(headers, HEADER_PROBE_TV32_SAFE_PCM, "1")) {
             return true;
         }
-        boolean hdrLike = hasInternalHeaderValue(headers, HEADER_PROBE_DOLBY_VISION, "1")
-                || hasInternalHeaderValue(headers, HEADER_PROBE_HDR10, "1")
-                || hasInternalHeaderValue(headers, HEADER_PROBE_HDR10_PLUS, "1");
-        return hdrLike;
+        return false;
     }
 
     private boolean canAccessPlaybackParams() {
@@ -1421,9 +1419,11 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             logInfo("echo-system-data-source uri url=" + uri + " matroska=" + matroskaLike + " network=" + networkUri);
             closeCustomDataSourceQuietly();
             if (networkUri) {
-                if (shouldUseContextUriNetworkDataSource(effectiveUrl, headers)) {
+                if (shouldUseContextUriNetworkDataSource(effectiveUrl, headers) || externalHeaders != null) {
                     mMediaPlayer.setDataSource(mAppContext, uri, externalHeaders == null ? Collections.emptyMap() : externalHeaders);
-                    logInfo("echo-system-data-source uri-context url=" + uri + " matroska=" + matroskaLike + " network=true");
+                    logInfo("echo-system-data-source uri-context url=" + uri
+                            + " matroska=" + matroskaLike
+                            + " network=true headers=" + (externalHeaders == null ? 0 : externalHeaders.size()));
                 } else {
                     mMediaPlayer.setDataSource(effectiveUrl);
                 }
@@ -1827,7 +1827,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         } catch (Throwable ignored) {
         }
         try {
-            if (mLastDisplayHolder != null) {
+            if (mLastDisplayHolder != null
+                    && mLastDisplayHolder.getSurface() != null
+                    && mLastDisplayHolder.getSurface().isValid()) {
                 mMediaPlayer.setDisplay(mLastDisplayHolder);
             }
         } catch (Throwable ignored) {

@@ -62,8 +62,12 @@ $env:APPDATA = $appData
 $env:TEMP = $tmpRoot
 $env:TMP = $tmpRoot
 
+$sdkDirForProperties = $sdkRoot -replace "\\", "/"
+Set-Content -Path (Join-Path $repoRoot "local.properties") -Encoding ASCII -Value "sdk.dir=$sdkDirForProperties"
+
 Write-Host "Using JAVA_HOME=$env:JAVA_HOME"
 Write-Host "Using ANDROID_HOME=$env:ANDROID_HOME"
 Write-Host "Using GRADLE_USER_HOME=$env:GRADLE_USER_HOME"
 
 & (Join-Path $repoRoot "gradlew.bat") @Tasks --console=plain
+exit $LASTEXITCODE
