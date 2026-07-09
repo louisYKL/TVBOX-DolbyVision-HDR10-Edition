@@ -1929,7 +1929,7 @@ public class PlayFragment extends BaseLazyFragment {
             return false;
         }
         if (probe.hasDolbyVision || probe.hasHdr10 || probe.hasHdr10Plus) {
-            return true;
+            return false;
         }
         return probe.hasHevcVideo && probe.hasImmersiveOrCompressedAudio();
     }

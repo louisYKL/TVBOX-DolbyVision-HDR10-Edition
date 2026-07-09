@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Fixed the shared system-player playback path used by the Hisense 32-bit build:
+  - HDR/DV and local-proxy MKV playback no longer forces the old safe-pcm `GAME/SPEECH` audio attributes.
+  - Direct network playback now preserves external request headers such as `User-Agent`, `Referer`, `Origin`, and `Cookie`.
+  - Surface/Display detach failures during teardown or rebuild are treated as non-fatal.
+- Updated the standalone Hisense package to version `0.2.0`.
+- Verified the generated APK is still `armeabi-v7a` only.
+
 ## 0.1.4-hisense
 
 - Split the Hisense build out of the shared TVBox workspace into a standalone repository.
