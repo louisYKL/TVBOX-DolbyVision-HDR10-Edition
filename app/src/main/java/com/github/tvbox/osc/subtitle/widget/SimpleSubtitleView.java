@@ -65,6 +65,7 @@ public class SimpleSubtitleView extends TextView
         SubtitleEngine.OnSubtitlePreparedListener {
 
     private static final String EMPTY_TEXT = "";
+    private static final String MANUAL_SUBTITLE_SELECTION_SUFFIX = "@manual";
 
     private SubtitleEngine mSubtitleEngine;
     private static final Pattern ASS_PRIMARY_COLOR =
@@ -226,10 +227,44 @@ public class SimpleSubtitleView extends TextView
         return mSubtitleEngine.getPlaySubtitleCacheKey();
     }
 
+    private String getManualSubtitleCacheKey() {
+        String subtitleCacheKey = getPlaySubtitleCacheKey();
+        if (TextUtils.isEmpty(subtitleCacheKey)) {
+            return null;
+        }
+        return subtitleCacheKey + MANUAL_SUBTITLE_SELECTION_SUFFIX;
+    }
+
+    public void setManualExternalSubtitleSelection(boolean manualSelection) {
+        String manualCacheKey = getManualSubtitleCacheKey();
+        if (TextUtils.isEmpty(manualCacheKey)) {
+            return;
+        }
+        String cacheKey = MD5.string2MD5(manualCacheKey);
+        if (manualSelection) {
+            CacheManager.save(cacheKey, "1");
+        } else {
+            CacheManager.delete(cacheKey, "");
+        }
+    }
+
+    public boolean hasManualExternalSubtitleSelection() {
+        String manualCacheKey = getManualSubtitleCacheKey();
+        if (TextUtils.isEmpty(manualCacheKey)) {
+            return false;
+        }
+        Object cached = CacheManager.getCache(MD5.string2MD5(manualCacheKey));
+        return "1".equals(String.valueOf(cached));
+    }
+
     public void clearSubtitleCache() {
         String subtitleCacheKey = getPlaySubtitleCacheKey();
         if (subtitleCacheKey != null && subtitleCacheKey.length() > 0) {
             CacheManager.delete(MD5.string2MD5(subtitleCacheKey), "");
+        }
+        String manualCacheKey = getManualSubtitleCacheKey();
+        if (!TextUtils.isEmpty(manualCacheKey)) {
+            CacheManager.delete(MD5.string2MD5(manualCacheKey), "");
         }
     }
 

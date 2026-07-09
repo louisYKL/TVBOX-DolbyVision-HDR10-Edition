@@ -49,17 +49,18 @@ public class Proxy {
             "Cookie",
             "Accept-Language"
     };
-    private static final int HLS_PREFETCH_LOOKAHEAD_SEGMENTS = 12;
-    private static final int HLS_PREFETCH_MAX_PLAYLISTS = 12;
-    private static final long HLS_PREFETCH_MAX_CACHE_BYTES = 128L * 1024L * 1024L;
-    private static final long HLS_PREFETCH_WAIT_MS = 2500L;
-    private static final int HLS_PREFETCH_STARTUP_SEGMENTS = 6;
-    private static final long HLS_PREFETCH_STARTUP_WAIT_MS = 3500L;
-    private static final long HLS_PREFETCH_FUTURE_POLL_WAIT_MS = 250L;
-    private static final int HLS_PREFETCH_MAX_SEGMENT_BYTES = 16 * 1024 * 1024;
+    private static final int HLS_PREFETCH_LOOKAHEAD_SEGMENTS = resolveHlsPrefetchLookaheadSegments();
+    private static final int HLS_PREFETCH_MAX_PLAYLISTS = 6;
+    private static final long HLS_PREFETCH_MAX_CACHE_BYTES = 64L * 1024L * 1024L;
+    private static final long HLS_PREFETCH_WAIT_MS = 500L;
+    private static final int HLS_PREFETCH_STARTUP_SEGMENTS = resolveHlsPrefetchStartupSegments();
+    private static final long HLS_PREFETCH_STARTUP_WAIT_MS = 900L;
+    private static final long HLS_PREFETCH_FUTURE_POLL_WAIT_MS = 120L;
+    private static final int HLS_PREFETCH_MAX_SEGMENT_BYTES = 10 * 1024 * 1024;
     private static final long HLS_PREFETCH_CACHE_BYTES = resolveHlsPrefetchCacheBytes();
+    private static final int HLS_PREFETCH_THREADS = resolveHlsPrefetchThreads();
     private static volatile OkHttpClient localProxyStreamClient;
-    private static final ExecutorService HLS_PREFETCH_EXECUTOR = Executors.newFixedThreadPool(4);
+    private static final ExecutorService HLS_PREFETCH_EXECUTOR = Executors.newFixedThreadPool(HLS_PREFETCH_THREADS);
     private static final Object HLS_PREFETCH_LOCK = new Object();
     private static final LinkedHashMap<String, HlsSegmentCacheEntry> HLS_SEGMENT_CACHE =
             new LinkedHashMap<>(16, 0.75f, true);
@@ -69,6 +70,7 @@ public class Proxy {
     private static final Map<String, String> HLS_SEGMENT_URL_ALIAS = new HashMap<>();
     private static final Map<String, Future<?>> HLS_PREFETCH_INFLIGHT = new HashMap<>();
     private static volatile boolean hlsPrefetchConfigLogged;
+    private static int hlsPrefetchDebugLogCount;
     private static long hlsSegmentCacheBytes;
     private static final String[] PASSTHROUGH_REQUEST_HEADERS = new String[]{
             "Range",
@@ -821,7 +823,7 @@ public class Proxy {
         if (cacheEntry == null) {
             return null;
         }
-        SpiderDebug.log("hls-prefetch hit"
+        logHlsPrefetchDetail("hls-prefetch hit"
                 + " bytes=" + cacheEntry.data.length
                 + " cache=" + (hlsSegmentCacheBytes / 1024L / 1024L) + "MB"
                 + " url=" + abbreviateUrl(url));
@@ -849,13 +851,13 @@ public class Proxy {
         if (future == null) {
             return false;
         }
-        SpiderDebug.log("hls-prefetch wait"
+        logHlsPrefetchDetail("hls-prefetch wait"
                 + " timeoutMs=" + HLS_PREFETCH_WAIT_MS
                 + " url=" + abbreviateUrl(url));
         try {
             future.get(HLS_PREFETCH_WAIT_MS, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
-            SpiderDebug.log("hls-prefetch wait-timeout url=" + abbreviateUrl(url));
+            logHlsPrefetchDetail("hls-prefetch wait-timeout url=" + abbreviateUrl(url));
             return false;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -907,7 +909,7 @@ public class Proxy {
             }
         }
         logHlsPrefetchConfigIfNeeded();
-        SpiderDebug.log("hls-prefetch playlist"
+        logHlsPrefetchDetail("hls-prefetch playlist"
                 + " segments=" + mediaSegmentUrls.size()
                 + " budget=" + (HLS_PREFETCH_CACHE_BYTES / 1024L / 1024L) + "MB"
                 + " url=" + abbreviateUrl(playlistUrl));
@@ -992,7 +994,7 @@ public class Proxy {
         synchronized (HLS_PREFETCH_LOCK) {
             readySegments = countWarmupReadySegmentsLocked(playlistState, targetSegments);
         }
-        SpiderDebug.log("hls-prefetch warmup"
+        logHlsPrefetchDetail("hls-prefetch warmup"
                 + " ready=" + readySegments + "/" + targetSegments
                 + " cache=" + (hlsSegmentCacheBytes / 1024L / 1024L) + "MB"
                 + " timeoutMs=" + HLS_PREFETCH_STARTUP_WAIT_MS
@@ -1049,20 +1051,20 @@ public class Proxy {
                                            String segmentUrl,
                                            String segmentKey) {
         try {
-            SpiderDebug.log("hls-prefetch start"
+            logHlsPrefetchDetail("hls-prefetch start"
                     + " index=" + index
                     + " url=" + abbreviateUrl(segmentUrl));
             HlsSegmentCacheEntry cacheEntry = fetchHlsSegment(segmentUrl, playlistState.headers);
             if (cacheEntry != null) {
                 storeHlsSegmentCacheEntry(segmentKey, cacheEntry);
-                SpiderDebug.log("hls-prefetch store"
+                logHlsPrefetchDetail("hls-prefetch store"
                         + " index=" + index
                         + " bytes=" + cacheEntry.data.length
                         + " cache=" + (hlsSegmentCacheBytes / 1024L / 1024L) + "MB"
                         + " url=" + abbreviateUrl(segmentUrl));
             }
         } catch (Throwable e) {
-            SpiderDebug.log("hls-prefetch fail"
+            logHlsPrefetchDetail("hls-prefetch fail"
                     + " index=" + index
                     + " url=" + abbreviateUrl(segmentUrl)
                     + " err=" + e.getMessage());
@@ -1082,7 +1084,7 @@ public class Proxy {
             }
             long declaredLength = response.body().contentLength();
             if (declaredLength > HLS_PREFETCH_MAX_SEGMENT_BYTES) {
-                SpiderDebug.log("hls-prefetch skip-oversize"
+                logHlsPrefetchDetail("hls-prefetch skip-oversize"
                         + " declared=" + declaredLength
                         + " url=" + abbreviateUrl(url));
                 return null;
@@ -1128,7 +1130,7 @@ public class Proxy {
                 Map.Entry<String, HlsSegmentCacheEntry> eldest = HLS_SEGMENT_CACHE.entrySet().iterator().next();
                 HLS_SEGMENT_CACHE.remove(eldest.getKey());
                 hlsSegmentCacheBytes -= eldest.getValue().data.length;
-                SpiderDebug.log("hls-prefetch evict"
+                logHlsPrefetchDetail("hls-prefetch evict"
                         + " bytes=" + eldest.getValue().data.length
                         + " cache=" + (hlsSegmentCacheBytes / 1024L / 1024L) + "MB");
             }
@@ -1169,7 +1171,7 @@ public class Proxy {
             }
             String aliasKey = HLS_SEGMENT_URL_ALIAS.get(url);
             if (aliasKey != null && !aliasKey.equals(directKey)) {
-                SpiderDebug.log("hls-prefetch alias"
+                logHlsPrefetchDetail("hls-prefetch alias"
                         + " url=" + abbreviateUrl(url));
                 return aliasKey;
             }
@@ -1240,24 +1242,60 @@ public class Proxy {
             SpiderDebug.log("hls-prefetch config"
                     + " heap=" + (Runtime.getRuntime().maxMemory() / 1024L / 1024L) + "MB"
                     + " budget=" + (HLS_PREFETCH_CACHE_BYTES / 1024L / 1024L) + "MB"
-                    + " threads=4"
+                    + " threads=" + HLS_PREFETCH_THREADS
                     + " lookahead=" + HLS_PREFETCH_LOOKAHEAD_SEGMENTS
                     + " startup=" + HLS_PREFETCH_STARTUP_SEGMENTS + "/" + HLS_PREFETCH_STARTUP_WAIT_MS
                     + " maxSegment=" + (HLS_PREFETCH_MAX_SEGMENT_BYTES / 1024 / 1024) + "MB");
         }
     }
 
+    private static int resolveHlsPrefetchThreads() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory > 0L && maxMemory <= 384L * 1024L * 1024L) {
+            return 1;
+        }
+        return 2;
+    }
+
+    private static int resolveHlsPrefetchLookaheadSegments() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
+            return 5;
+        }
+        return 6;
+    }
+
+    private static int resolveHlsPrefetchStartupSegments() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
+            return 2;
+        }
+        return 3;
+    }
+
     private static long resolveHlsPrefetchCacheBytes() {
         long maxMemory = Runtime.getRuntime().maxMemory();
         if (maxMemory <= 0L) {
-            return 64L * 1024L * 1024L;
+            return 32L * 1024L * 1024L;
         }
-        long preferred = maxMemory / 3L;
-        long minBudget = Math.max(16L * 1024L * 1024L, maxMemory / 6L);
-        if (preferred < minBudget) {
-            preferred = minBudget;
+        if (maxMemory <= 384L * 1024L * 1024L) {
+            return 24L * 1024L * 1024L;
         }
+        if (maxMemory <= 640L * 1024L * 1024L) {
+            return 36L * 1024L * 1024L;
+        }
+        long preferred = Math.max(48L * 1024L * 1024L, maxMemory / 6L);
         return Math.min(preferred, HLS_PREFETCH_MAX_CACHE_BYTES);
+    }
+
+    private static void logHlsPrefetchDetail(String message) {
+        synchronized (HLS_PREFETCH_LOCK) {
+            if (hlsPrefetchDebugLogCount >= 80) {
+                return;
+            }
+            hlsPrefetchDebugLogCount++;
+        }
+        SpiderDebug.log(message);
     }
 
     private static String abbreviateUrl(String url) {

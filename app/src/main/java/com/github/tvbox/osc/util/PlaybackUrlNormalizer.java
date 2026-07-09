@@ -3,7 +3,6 @@ package com.github.tvbox.osc.util;
 import android.net.Uri;
 import android.text.TextUtils;
 
-import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.server.ControlManager;
 
 import org.json.JSONObject;
@@ -17,6 +16,8 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class PlaybackUrlNormalizer {
+    private static final String HEADER_PROBE_CONTAINER = "X-TVBox-Probe-Container";
+
     private PlaybackUrlNormalizer() {
     }
 
@@ -115,22 +116,24 @@ public final class PlaybackUrlNormalizer {
             return path;
         }
         String normalizedPath = normalizeHttpUrl(path);
-        String directJava64LiveUrl = unwrapJava64LiveSystemProxyUrl(normalizedPath, live);
-        if (!TextUtils.isEmpty(directJava64LiveUrl)) {
-            LOG.i("echo-playback-url java64-live-direct -> " + safeSnippet(directJava64LiveUrl));
-            return directJava64LiveUrl;
-        }
-        if (shouldUseJava64SystemStreamProxy(normalizedPath, headers, live)) {
-            String wrapped = wrapWithNamedStreamProxy(normalizedPath, headers);
-            LOG.i("echo-playback-url java64-system-stream-proxy -> " + safeSnippet(wrapped));
-            return wrapped;
-        }
         if (isAnyLocalProxyPlayUrl(normalizedPath)) {
+            if (!live && shouldWrapLocalProxyPlayForSystemSeek(normalizedPath, headers)) {
+                String wrapped = wrapWithStreamProxy(normalizedPath, headers);
+                LOG.i("echo-playback-url wrap-local-proxy-play-system -> " + safeSnippet(wrapped));
+                return wrapped;
+            }
             LOG.i("echo-playback-url direct-local-proxy-play -> " + safeSnippet(normalizedPath));
             return normalizedPath;
         }
         if (isAppLocalProxyUrl(normalizedPath)) {
             String nested = unwrapAppStreamProxyToForeignLocalPlay(normalizedPath);
+            String nestedAnyLocalPlay = unwrapAppStreamProxyToAnyLocalPlay(normalizedPath);
+            if (!TextUtils.isEmpty(nestedAnyLocalPlay)
+                    && !live
+                    && shouldKeepDirectMatroskaLocalPlay(normalizedPath, nestedAnyLocalPlay, headers)) {
+                LOG.i("echo-playback-url unwrap-app-stream-any-local-matroska -> " + safeSnippet(nestedAnyLocalPlay));
+                return nestedAnyLocalPlay;
+            }
             if (!TextUtils.isEmpty(nested) && !live && !isHlsLike(nested)) {
                 LOG.i("echo-playback-url unwrap-app-stream -> " + safeSnippet(nested));
                 return nested;
@@ -165,6 +168,10 @@ public final class PlaybackUrlNormalizer {
         if (!live && !isHlsLike(normalizedPath)) {
             return normalizedPath;
         }
+        if (!live && isHlsLike(normalizedPath) && isRemoteNetworkUrl(normalizedPath)) {
+            LOG.i("echo-playback-url direct-system-hls -> " + safeSnippet(normalizedPath));
+            return normalizedPath;
+        }
         return resolvePlaybackUrl(normalizedPath, headers, live);
     }
 
@@ -181,26 +188,17 @@ public final class PlaybackUrlNormalizer {
             return path;
         }
         String normalizedPath = normalizeHttpUrl(path);
-        String java64SeekablePath = resolveJava64CompatSeekableLocalProxyUrl(normalizedPath, headers, live);
-        if (!TextUtils.isEmpty(java64SeekablePath)) {
-            if (TextUtils.equals(java64SeekablePath, normalizedPath)) {
-                LOG.i("echo-playback-url compat-java64-keep-seekable-stream -> " + safeSnippet(java64SeekablePath));
-            } else {
-                LOG.i("echo-playback-url compat-java64-wrap-seekable-stream -> " + safeSnippet(java64SeekablePath));
-            }
-            return java64SeekablePath;
-        }
         if (isAnyLocalProxyPlayUrl(normalizedPath)) {
-            if (shouldWrapCompatLocalProxyPlay(normalizedPath, headers, live)) {
-                String wrapped = wrapWithStreamProxy(normalizedPath, headers);
-                LOG.i("echo-playback-url compat-wrap-local-proxy-play -> " + safeSnippet(wrapped));
-                return wrapped;
-            }
             LOG.i("echo-playback-url compat-direct-local-proxy-play -> " + safeSnippet(normalizedPath));
             return normalizedPath;
         }
         if (isAppLocalProxyUrl(normalizedPath)) {
             String nested = unwrapAppStreamProxyToForeignLocalPlay(normalizedPath);
+            String nestedAnyLocalPlay = unwrapAppStreamProxyToAnyLocalPlay(normalizedPath);
+            if (!TextUtils.isEmpty(nestedAnyLocalPlay) && !live && isMatroskaLike(nestedAnyLocalPlay)) {
+                LOG.i("echo-playback-url compat-unwrap-app-stream-any-local-matroska -> " + safeSnippet(nestedAnyLocalPlay));
+                return nestedAnyLocalPlay;
+            }
             if (!TextUtils.isEmpty(nested)) {
                 LOG.i("echo-playback-url compat-unwrap-app-stream -> " + safeSnippet(nested));
                 return nested;
@@ -219,43 +217,11 @@ public final class PlaybackUrlNormalizer {
         if (!live && !isHlsLike(normalizedPath)) {
             return normalizedPath;
         }
-        return resolvePlaybackUrl(normalizedPath, headers, live);
-    }
-
-    private static String resolveJava64CompatSeekableLocalProxyUrl(String normalizedPath,
-                                                                   Map<String, String> headers,
-                                                                   boolean live) {
-        if (live || !App.isJava64Build() || TextUtils.isEmpty(normalizedPath)) {
-            return null;
-        }
-        if (isSeekableAppStreamProxyUrl(normalizedPath)) {
+        if (!live && isHlsLike(normalizedPath) && isRemoteNetworkUrl(normalizedPath)) {
+            LOG.i("echo-playback-url compat-direct-hls -> " + safeSnippet(normalizedPath));
             return normalizedPath;
         }
-        if (isAppLocalProxyUrl(normalizedPath)) {
-            String nested = unwrapAppStreamProxyToForeignLocalPlay(normalizedPath);
-            if (!TextUtils.isEmpty(nested)
-                    && isAnyLocalProxyPlayUrl(nested)
-                    && isMatroskaLike(nested)) {
-                return wrapWithNamedStreamProxy(nested, headers);
-            }
-            return null;
-        }
-        if (isAnyLocalProxyPlayUrl(normalizedPath) && isMatroskaLike(normalizedPath)) {
-            return wrapWithNamedStreamProxy(normalizedPath, headers);
-        }
-        return null;
-    }
-
-    private static boolean shouldWrapCompatLocalProxyPlay(String normalizedPath,
-                                                          Map<String, String> headers,
-                                                          boolean live) {
-        if (live || TextUtils.isEmpty(normalizedPath) || headers == null || headers.isEmpty()) {
-            return false;
-        }
-        if (!isAnyLocalProxyPlayUrl(normalizedPath) || !isMatroskaLike(normalizedPath)) {
-            return false;
-        }
-        return hasInternalHeaderValue(headers, "X-TVBox-Probe-CompatWrapStream", "1");
+        return resolvePlaybackUrl(normalizedPath, headers, live);
     }
 
     public static boolean isHlsLike(String uri) {
@@ -305,6 +271,26 @@ public final class PlaybackUrlNormalizer {
         return lower.contains(".mkv") || lower.contains(".webm");
     }
 
+    private static boolean shouldWrapLocalProxyPlayForSystemSeek(String path, Map<String, String> headers) {
+        if (TextUtils.isEmpty(path) || isHlsLike(path)) {
+            return false;
+        }
+        if (shouldKeepDirectMatroskaLocalPlay(path, null, headers)) {
+            return false;
+        }
+        String lower = path.toLowerCase(Locale.US);
+        return lower.startsWith("http://127.0.0.1:6677/proxy/play/")
+                || lower.startsWith("http://localhost:6677/proxy/play/");
+    }
+
+    private static boolean shouldKeepDirectMatroskaLocalPlay(String primaryPath,
+                                                              String secondaryPath,
+                                                              Map<String, String> headers) {
+        return isMatroskaLike(primaryPath)
+                || isMatroskaLike(secondaryPath)
+                || hasInternalHeaderValue(headers, HEADER_PROBE_CONTAINER, "matroska");
+    }
+
     private static String wrapWithStreamProxy(String path, Map<String, String> headers) {
         String localAddress = ControlManager.get().getAddress(true);
         if (TextUtils.isEmpty(localAddress)) {
@@ -322,94 +308,19 @@ public final class PlaybackUrlNormalizer {
         }
     }
 
-    private static String wrapWithNamedStreamProxy(String path, Map<String, String> headers) {
-        String localAddress = ControlManager.get().getAddress(true);
-        if (TextUtils.isEmpty(localAddress)) {
-            return path;
-        }
-        String fileName = resolveProxyStreamFileName(path);
-        try {
-            StringBuilder builder = new StringBuilder(localAddress)
-                    .append("proxy/stream/")
-                    .append(Uri.encode(fileName))
-                    .append("?url=")
-                    .append(URLEncoder.encode(path, "UTF-8"));
-            appendHeaders(builder, headers);
-            return builder.toString();
-        } catch (Exception ignored) {
-            return path;
-        }
-    }
-
-    private static String resolveProxyStreamFileName(String path) {
-        if (TextUtils.isEmpty(path)) {
-            return "stream.mkv";
-        }
-        try {
-            Uri uri = Uri.parse(path);
-            String lastSegment = uri == null ? null : uri.getLastPathSegment();
-            if (!TextUtils.isEmpty(lastSegment)) {
-                return lastSegment;
-            }
-        } catch (Exception ignored) {
-        }
-        String lower = path.toLowerCase(Locale.US);
-        if (lower.contains(".mp4")) {
-            return "stream.mp4";
-        }
-        if (lower.contains(".webm")) {
-            return "stream.webm";
-        }
-        return "stream.mkv";
-    }
-
-    private static boolean shouldUseJava64SystemStreamProxy(String normalizedPath,
-                                                            Map<String, String> headers,
-                                                            boolean live) {
-        if (live || !App.isJava64Build() || TextUtils.isEmpty(normalizedPath)) {
-            return false;
-        }
-        if (hasInternalHeaderValue(headers, "X-TVBox-Probe-NativeDvDevice", "1")) {
-            return false;
-        }
-        if (!isAnyLocalProxyPlayUrl(normalizedPath) || !isMatroskaLike(normalizedPath)) {
-            return false;
-        }
-        return hasInternalHeaderValue(headers, "X-TVBox-Probe-DolbyVision", "1")
-                || hasInternalHeaderValue(headers, "X-TVBox-Probe-Hdr10", "1")
-                || hasInternalHeaderValue(headers, "X-TVBox-Probe-Hdr10Plus", "1")
-                || hasInternalHeaderValue(headers, "X-TVBox-Probe-Java64LocalProxyFast", "1");
-    }
-
-    private static String unwrapJava64LiveSystemProxyUrl(String normalizedPath, boolean live) {
-        if (!live || !App.isJava64Build() || TextUtils.isEmpty(normalizedPath)) {
-            return null;
-        }
-        if (!isAppLocalProxyUrl(normalizedPath)) {
-            return null;
-        }
-        try {
-            Uri uri = Uri.parse(normalizedPath);
-            String go = uri == null ? null : uri.getQueryParameter("go");
-            String nestedUrl = uri == null ? null : uri.getQueryParameter("url");
-            if (!"live".equalsIgnoreCase(go) || TextUtils.isEmpty(nestedUrl)) {
-                return null;
-            }
-            String nestedNormalized = normalizeHttpUrl(nestedUrl);
-            if (TextUtils.isEmpty(nestedNormalized) || isLocalProxyUrl(nestedNormalized)) {
-                return null;
-            }
-            return nestedNormalized;
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
     private static boolean isLocalProxyUrl(String path) {
         return !TextUtils.isEmpty(path) && (path.startsWith("http://127.0.0.1")
                 || path.startsWith("https://127.0.0.1")
                 || path.startsWith("http://localhost")
                 || path.startsWith("https://localhost"));
+    }
+
+    private static boolean isRemoteNetworkUrl(String path) {
+        if (TextUtils.isEmpty(path) || isLocalProxyUrl(path)) {
+            return false;
+        }
+        String lower = path.toLowerCase(Locale.US);
+        return lower.startsWith("http://") || lower.startsWith("https://");
     }
 
     private static boolean isAnyLocalProxyPlayUrl(String path) {
@@ -448,23 +359,6 @@ public final class PlaybackUrlNormalizer {
                 return true;
             }
             return false;
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
-
-    private static boolean isSeekableAppStreamProxyUrl(String path) {
-        if (!isAppLocalProxyUrl(path)) {
-            return false;
-        }
-        try {
-            Uri uri = Uri.parse(path);
-            String valuePath = uri == null ? null : uri.getPath();
-            if (valuePath != null && valuePath.startsWith("/proxy/stream/")) {
-                return true;
-            }
-            String go = uri == null ? null : uri.getQueryParameter("go");
-            return "stream".equalsIgnoreCase(go);
         } catch (Exception ignored) {
             return false;
         }
@@ -515,8 +409,49 @@ public final class PlaybackUrlNormalizer {
         }
     }
 
+    private static String unwrapAppStreamProxyToAnyLocalPlay(String path) {
+        if (TextUtils.isEmpty(path)) {
+            return null;
+        }
+        try {
+            Uri uri = Uri.parse(path);
+            String host = uri.getHost();
+            String go = uri.getQueryParameter("go");
+            String nestedUrl = uri.getQueryParameter("url");
+            if (!("127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host))
+                    || (!"stream".equalsIgnoreCase(go) && !"play".equalsIgnoreCase(go))
+                    || TextUtils.isEmpty(nestedUrl)) {
+                return null;
+            }
+            String nestedNormalized = normalizeHttpUrl(nestedUrl);
+            if (isAnyLocalProxyPlayUrl(nestedNormalized)) {
+                return nestedNormalized;
+            }
+            return unwrapAppStreamProxyToAnyLocalPlay(nestedNormalized);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private static void appendHeaders(StringBuilder builder, Map<String, String> headers) {
         builder.append(encodeHeadersQuery(headers));
+    }
+
+    private static boolean hasInternalHeaderValue(Map<String, String> headers,
+                                                  String headerName,
+                                                  String expectedValue) {
+        if (headers == null || TextUtils.isEmpty(headerName) || TextUtils.isEmpty(expectedValue)) {
+            return false;
+        }
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() != null
+                    && headerName.equalsIgnoreCase(entry.getKey().trim())
+                    && entry.getValue() != null
+                    && expectedValue.equalsIgnoreCase(entry.getValue().trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String safeSnippet(String value) {
@@ -557,21 +492,6 @@ public final class PlaybackUrlNormalizer {
         }
         String lower = key.trim().toLowerCase(Locale.US);
         return lower.startsWith("x-tvbox-probe-");
-    }
-
-    private static boolean hasInternalHeaderValue(Map<String, String> headers, String headerName, String expectedValue) {
-        if (headers == null || TextUtils.isEmpty(headerName) || TextUtils.isEmpty(expectedValue)) {
-            return false;
-        }
-        for (Map.Entry<String, String> entry : headers.entrySet()) {
-            if (entry.getKey() != null
-                    && headerName.equalsIgnoreCase(entry.getKey())
-                    && entry.getValue() != null
-                    && expectedValue.equalsIgnoreCase(entry.getValue().trim())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     public static final class UrlWithHeaders {

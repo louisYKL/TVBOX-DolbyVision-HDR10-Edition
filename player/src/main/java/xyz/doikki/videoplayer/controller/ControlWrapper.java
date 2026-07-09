@@ -20,6 +20,10 @@ public class ControlWrapper implements MediaPlayerControl, IVideoController {
         mController = controller;
     }
 
+    public MediaPlayerControl getPlayerControl() {
+        return mPlayerControl;
+    }
+
     @Override
     public void start() {
         mPlayerControl.start();

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.1
+
+### 中文
+
+- 修复“文采”等 HLS 视频源在 32 位电视系统播放器上出现黑屏有声音、假首帧、一直准备播放、误报播放出错的问题。
+- HLS 空轨道/未知轨道现在按视频源处理，等待真实视频输出目标和系统首帧回调，不再提前伪造渲染开始。
+- 播放链路统一收紧为 `SurfaceView` + 硬解优先，删除软解兜底；兼容播放器硬解启动失败时直接上报真实错误，不再在系统/兼容播放器之间来回切换。
+- 对不支持硬解的 `H.264 High10` 片源，直接提示“此格式不支持硬件解码（H.264 High10）”。
+- 降低 HLS 预取、Range 数据源缓存和运行日志压力，减少低端电视上的空转、卡顿和播放页启动等待，并为页面进入、返回和退出补充轻量级 Apple TV / iOS 风格动画。
+- 三端统一版本为 `0.2.1`，继续支持从 `0.1.9.1` / `0.2.0` 覆盖安装。
+
+### English
+
+- Fixed 32-bit TV system-player HLS cases such as Wen Cai where playback could fall into black-screen-with-audio, fake first-frame success, endless prepare, or false playback errors.
+- Empty or unknown HLS track lists now stay on the video path and wait for a real output target plus the system first-frame callback instead of faking render start.
+- Tightened playback to `SurfaceView` and hardware decode only, removed software-decode fallback, and now surface compatibility-player hardware startup failures directly instead of bouncing between players.
+- Unsupported `H.264 High10` streams now fail explicitly with a hardware-decode-not-supported message.
+- Reduced HLS prefetch, range-source cache, and runtime-log pressure to avoid low-end TV stalls and slow playback-page startup, and added lightweight Apple TV / iOS-style transitions for page entry, back, and exit.
+- Unified all three deliverables under version `0.2.1`, preserving in-place updates from `0.1.9.1` / `0.2.0`.
+
 ## 0.2.0
 
 ### 中文

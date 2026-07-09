@@ -85,11 +85,12 @@ import static xyz.doikki.videoplayer.util.PlayerUtils.seconds2Time;
 import static xyz.doikki.videoplayer.util.PlayerUtils.safeTimeMs;
 
 public class VodController extends BaseController {
-    private static final long COMPLETION_GUARD_MS = 10_000L;
     private static final String TAG = "VodController";
     private boolean consumeBackKeyUpAfterFullScreenExit = false;
     private boolean embeddedPreviewMode = true;
     private boolean forceFullScreenInputMode = false;
+    private boolean pendingSeekResumeCheck = false;
+    private boolean pendingSeekResumeTriggered = false;
 
     public VodController(@NonNull @NotNull Context context) {
         super(context);
@@ -442,7 +443,7 @@ public class VodController extends BaseController {
                 myHandle.removeCallbacks(myRunnable);
                 myHandle.postDelayed(myRunnable, myHandleSeconds);
                 try {
-                    int scaleType = PlayerHelper.nextJava64TouchPhoneScale(mPlayerConfig.optInt("sc", VideoView.SCREEN_SCALE_DEFAULT));
+                    int scaleType = VideoView.SCREEN_SCALE_DEFAULT;
                     mPlayerConfig.put("sc", scaleType);
                     updatePlayerCfgView();
                     listener.updatePlayerCfg();
@@ -718,11 +719,8 @@ public class VodController extends BaseController {
         try {
             int playerType = mPlayerConfig.getInt("pl");
             mPlayerBtn.setText(PlayerHelper.getPlayerName(playerType));
-            int scaleType = PlayerHelper.sanitizeScaleForPlayer(playerType, mPlayerConfig.getInt("sc"));
-            if (scaleType != mPlayerConfig.getInt("sc")) {
-                mPlayerConfig.put("sc", scaleType);
-            }
-            mPlayerScaleBtn.setText(PlayerHelper.getScaleName(scaleType));
+            mPlayerScaleBtn.setText(PlayerHelper.getScaleName(mPlayerConfig.getInt("sc")));
+            mPlayerScaleBtn.setText(PlayerHelper.getScaleName(mPlayerConfig.getInt("sc")));
             mPlayerSpeedBtn.setText("x" + mPlayerConfig.getDouble("sp"));
             mPlayerTimeStartBtn.setText(stringForTime(mPlayerConfig.getInt("st") * 1000));
             mPlayerTimeSkipBtn.setText(stringForTime(mPlayerConfig.getInt("et") * 1000));
@@ -742,8 +740,6 @@ public class VodController extends BaseController {
     }
 
     public void resetSpeed() {
-        skipEnd = true;
-        skipEndGuardUntilMs = System.currentTimeMillis() + 4500L;
         mHandler.removeMessages(1004);
         mHandler.sendEmptyMessageDelayed(1004, 100);
     }
@@ -778,9 +774,6 @@ public class VodController extends BaseController {
 
     private VodControlListener listener;
 
-    private boolean skipEnd = true;
-    private long skipEndGuardUntilMs = 0L;
-
     @SuppressLint("SetTextI18n")
     @Override
     protected void setProgress(int duration, int position) {
@@ -789,20 +782,11 @@ public class VodController extends BaseController {
             return;
         }
         super.setProgress(duration, position);
-        boolean skipEndGuardActive = System.currentTimeMillis() < skipEndGuardUntilMs;
-        if (skipEnd && !skipEndGuardActive && position != 0 && duration != 0) {
-            int et = 0;
-            try {
-                et = mPlayerConfig.getInt("et");
-            } catch (JSONException e) {
-                e.printStackTrace();
-            }
-            long remainingMs = duration - position;
-            long allowedTailMs = et > 0 ? Math.min(et * 1000L, COMPLETION_GUARD_MS) : 0L;
-            if (allowedTailMs > 0L && remainingMs <= allowedTailMs) {
-                skipEnd = false;
-                listener.playNext(true);
-            }
+        if (duration > 0) {
+            cachedProgressDuration = duration;
+        }
+        if (position >= 0 && (duration <= 0 || position <= duration)) {
+            cachedProgressPosition = position;
         }
         mCurrentTime.setText(stringForTime(position));
         mTotalTime.setText(stringForTime(duration));
@@ -824,10 +808,13 @@ public class VodController extends BaseController {
 
     private boolean simSlideStart = false;
     private int simSeekPosition = 0;
+    private int simSeekBasePosition = 0;
     private long simSlideOffset = 0;
     private long lastSlideTime = 0;
     private long lastRemoteSeekCommitTime = 0;
     private boolean simSeekCommitted = false;
+    private int cachedProgressDuration = 0;
+    private int cachedProgressPosition = 0;
     private static final long FULLSCREEN_SEEK_COMMIT_GUARD_MS = 520L;
     private int pendingSeekRetryCount = 0;
     private String pendingSeekReason = null;
@@ -854,12 +841,18 @@ public class VodController extends BaseController {
     private final Runnable seekResumeCheckRunnable = new Runnable() {
         @Override
         public void run() {
-            if (!isInPlaybackState()) {
+            if (!pendingSeekResumeCheck || !isInPlaybackState()) {
+                return;
+            }
+            if (videoPlayState == VideoView.STATE_PLAYING) {
+                pendingSeekResumeCheck = false;
+                pendingSeekResumeTriggered = false;
                 return;
             }
             restorePlaybackAfterSeek("delayed-" + seekResumeCheckCount);
             seekResumeCheckCount++;
-            if (seekResumeCheckCount < 3 && mControlWrapper != null && !mControlWrapper.isPlaying()) {
+            if (seekResumeCheckCount < 3 && mControlWrapper != null
+                    && videoPlayState != VideoView.STATE_PLAYING) {
                 mHandler.postDelayed(this, 350);
             }
         }
@@ -873,6 +866,7 @@ public class VodController extends BaseController {
         }
         simSlideStart = false;
         simSeekPosition = 0;
+        simSeekBasePosition = 0;
         simSlideOffset = 0;
         simSeekCommitted = false;
     }
@@ -901,6 +895,7 @@ public class VodController extends BaseController {
         }
         lastRemoteSeekCommitTime = now;
         Log.i(TAG, "commitRemoteSeek reason=" + reason + " pos=" + simSeekPosition);
+        cachedProgressPosition = simSeekPosition;
         mControlWrapper.seekTo(simSeekPosition);
         simSeekCommitted = true;
         resumePlaybackAfterSeek(reason);
@@ -913,19 +908,13 @@ public class VodController extends BaseController {
     }
 
     private void resumePlaybackAfterSeek(String reason) {
-        if (!shouldControllerActivelyResumeAfterSeek()) {
-            try {
-                if (mControlWrapper != null) {
-                    mControlWrapper.startProgress();
-                    mControlWrapper.startFadeOut();
-                }
-            } catch (Throwable ignored) {
-            }
-            return;
-        }
-        restorePlaybackAfterSeek(reason);
+        // Cancel any pending resume retry left over from a previous seek so rapid, repeated
+        // seeks never stack multiple delayed start() runnables on top of each other.
         mHandler.removeCallbacks(seekResumeCheckRunnable);
         seekResumeCheckCount = 0;
+        pendingSeekResumeCheck = true;
+        pendingSeekResumeTriggered = false;
+        restorePlaybackAfterSeek(reason);
         mHandler.postDelayed(seekResumeCheckRunnable, 220);
     }
 
@@ -934,11 +923,13 @@ public class VodController extends BaseController {
             return;
         }
         try {
+            // Avoid platform isPlaying() here: on 32-bit TV firmware it can block while the
+            // extractor is seeking, which turns a remote key event into an input ANR.
             boolean resumeNeeded = videoPlayState == VideoView.STATE_PAUSED
                     || videoPlayState == VideoView.STATE_BUFFERING
-                    || videoPlayState == VideoView.STATE_BUFFERED
-                    || !mControlWrapper.isPlaying();
-            if (resumeNeeded) {
+                    || videoPlayState == VideoView.STATE_BUFFERED;
+            if (resumeNeeded && shouldControllerActivelyResumeAfterSeek()) {
+                pendingSeekResumeTriggered = true;
                 Log.i(TAG, "resumePlaybackAfterSeek start reason=" + reason + " state=" + videoPlayState);
                 mControlWrapper.start();
             }
@@ -949,7 +940,7 @@ public class VodController extends BaseController {
         }
     }
     public void tvSlideStart(int dir) {
-        int duration = safeTimeMs(mControlWrapper.getDuration());
+        int duration = resolveSeekDuration();
         if (duration <= 0)
             return;
 
@@ -960,6 +951,7 @@ public class VodController extends BaseController {
 
         if (!simSlideStart) {
             simSlideStart = true;
+            simSeekBasePosition = resolveSeekBasePosition(duration);
             simSlideOffset = (long) baseSkip * dir;
         } else {
             if (currentTime - lastSlideTime <= threshold) {
@@ -969,12 +961,40 @@ public class VodController extends BaseController {
             }
         }
         lastSlideTime = currentTime;
-        int currentPosition = safeTimeMs(mControlWrapper.getCurrentPosition());
-        int position = (int) (currentPosition + simSlideOffset);
+        int currentPosition = simSeekBasePosition;
+        int position = (int) (simSeekBasePosition + simSlideOffset);
         if (position > duration) position = duration;
         if (position < 0) position = 0;
         updateSeekUI(currentPosition, position, duration);
         simSeekPosition = position;
+    }
+
+    private int resolveSeekDuration() {
+        if (cachedProgressDuration > 0) {
+            return cachedProgressDuration;
+        }
+        if (mControlWrapper == null) {
+            return 0;
+        }
+        int duration = safeTimeMs(mControlWrapper.getDuration());
+        if (duration > 0) {
+            cachedProgressDuration = duration;
+        }
+        return duration;
+    }
+
+    private int resolveSeekBasePosition(int duration) {
+        int position = cachedProgressPosition;
+        if (position <= 0 && mControlWrapper != null) {
+            position = safeTimeMs(mControlWrapper.getCurrentPosition());
+            if (position > 0) {
+                cachedProgressPosition = position;
+            }
+        }
+        if (duration > 0 && position > duration) {
+            return duration;
+        }
+        return Math.max(0, position);
     }
 
     @Override
@@ -999,6 +1019,8 @@ public class VodController extends BaseController {
             case VideoView.STATE_IDLE:
                 break;
             case VideoView.STATE_PLAYING:
+                pendingSeekResumeCheck = false;
+                pendingSeekResumeTriggered = false;
                 initLandscapePortraitBtnInfo();
                 resetSpeed();
                 startProgress();
@@ -1236,20 +1258,13 @@ public class VodController extends BaseController {
         pendingResumeConfirm = false;
         menuNavigationStarted = false;
         if (isInPlaybackState()) {
-            if (shouldResumePlaybackNow()) {
+            if (videoPlayState == VideoView.STATE_PAUSED) {
                 mControlWrapper.start();
             } else {
-                mControlWrapper.pause();
+                mControlWrapper.togglePlay();
             }
         }
         hideBottom();
-    }
-
-    private boolean shouldResumePlaybackNow() {
-        return videoPlayState == VideoView.STATE_PAUSED
-                || videoPlayState == VideoView.STATE_BUFFERING
-                || videoPlayState == VideoView.STATE_BUFFERED
-                || (mControlWrapper != null && !mControlWrapper.isPlaying());
     }
 
     private boolean isDirectionalMenuNavigationKey(int keyCode) {
@@ -2050,11 +2065,21 @@ public class VodController extends BaseController {
     }
 
     private boolean shouldControllerActivelyResumeAfterSeek() {
+        if (mControlWrapper != null
+                && mControlWrapper.getPlayerControl() instanceof MyVideoView) {
+            MyVideoView videoView = (MyVideoView) mControlWrapper.getPlayerControl();
+            if (videoView.getMediaPlayer() instanceof xyz.doikki.videoplayer.player.AndroidMediaPlayer) {
+                return false;
+            }
+        }
         MyVideoView videoView = findVideoView(this);
         if (videoView == null || videoView.getMediaPlayer() == null) {
-            return true;
+            return false;
         }
-        return !(videoView.getMediaPlayer() instanceof xyz.doikki.videoplayer.player.AndroidMediaPlayer);
+        if (videoView.getMediaPlayer() instanceof xyz.doikki.videoplayer.player.AndroidMediaPlayer) {
+            return false;
+        }
+        return true;
     }
 
     private MyVideoView findVideoView(View view) {
@@ -2102,16 +2127,6 @@ public class VodController extends BaseController {
                 + " forceFs=" + forceFullScreenInputMode);
         if (!isPlayerFullScreen()) {
             return enterFullScreenFromPreview();
-        }
-        if (isJava64TouchPhone() && videoPlayState == VideoView.STATE_PAUSED) {
-            LOG.i(TAG + " singleTap resume state=" + videoPlayState);
-            if (mControlWrapper != null) {
-                mControlWrapper.start();
-                mControlWrapper.startProgress();
-                mControlWrapper.startFadeOut();
-            }
-            hideBottom();
-            return true;
         }
         myHandle.removeCallbacks(myRunnable);
         if (!isBottomVisible()) {

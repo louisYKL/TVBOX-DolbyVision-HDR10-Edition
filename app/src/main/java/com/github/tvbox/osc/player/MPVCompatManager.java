@@ -40,15 +40,10 @@ public final class MPVCompatManager {
         currentPlayIsDolbyVision = isDV;
         LOG.i("echo-mpvcompat setCurrentPlayIsDolbyVision=" + isDV);
     }
-
-    public static boolean isCurrentPlayDolbyVision() {
-        return currentPlayIsDolbyVision;
-    }
     private static volatile boolean tv32AudioSafeMode = false;
     private static volatile boolean currentFileAllowsPassthrough = false;
     private static volatile boolean currentFileForcesTv32LocalProxyPcm = false;
     private static final String VO_GPU = "gpu";
-    private static final String VO_MEDIACODEC_EMBED = "mediacodec_embed";
 
     private MPVCompatManager() {
     }
@@ -88,15 +83,14 @@ public final class MPVCompatManager {
             setOption("ytdl", "no");
             setOption("script-opts", "ytdl_hook-ytdl_path=");
             setOption("profile", "fast");
-            // tv32/Hisense keep the old GPU route. For java64 touch phones we can
-            // experiment with mediacodec_embed to hand HDR-capable streams to the
-            // platform surface path directly while leaving audio on mpv.
-            String initialVo = selectVideoOutput(isHdrOutputMode(), isMappingMode());
-            setOption("vo", initialVo);
+            // mediacodec_embed aborts on some Huawei/Android TV Surface transitions
+            // when WinID becomes 0. Keep GPU output and MediaCodec decoding separate
+            // so source switching/fullscreen exits cannot trip that native assert.
+            setOption("vo", VO_GPU);
             setOption("gpu-api", "opengl");
             setOption("gpu-context", "android");
             setOption("opengl-es", "yes");
-            setOption("fbo-format", resolveFboFormat(isHdrOutputMode()));
+            setOption("fbo-format", "rgba8");
             setOption("video-sync", "audio");
             setOption("framedrop", "vo");
             setOption("interpolation", "no");
@@ -192,17 +186,34 @@ public final class MPVCompatManager {
             if (!INITIALIZED.get() || !CREATED.get()) {
                 return;
             }
-            resetPlaybackState();
-            currentPlayIsDolbyVision = false;
-            currentFileForcesTv32LocalProxyPcm = false;
-            try {
-                MPVLib.destroy();
-            } catch (Throwable th) {
-                Log.w(TAG, "hard reset destroy failed", th);
+            pauseAndDetachForRelease("hard-reset");
+            LOG.i("echo-mpvcompat playback-reset");
+        }
+    }
+
+    public static void pauseAndDetachForRelease(String reason) {
+        currentPlayIsDolbyVision = false;
+        currentFileForcesTv32LocalProxyPcm = false;
+        synchronized (MPVCompatManager.class) {
+            if (!INITIALIZED.get() || !CREATED.get()) {
+                return;
             }
-            INITIALIZED.set(false);
-            CREATED.set(false);
-            LOG.i("echo-mpvcompat hard-reset");
+            try {
+                MPVLib.setPropertyBoolean("pause", true);
+            } catch (Throwable ignored) {
+            }
+            try {
+                MPVLib.detachSurface();
+            } catch (Throwable ignored) {
+            }
+            try {
+                MPVLib.setOptionString("http-header-fields", "");
+                MPVLib.setOptionString("referrer", "");
+                MPVLib.setOptionString("force-window", "no");
+                MPVLib.setPropertyString("audio-device", "auto");
+            } catch (Throwable ignored) {
+            }
+            LOG.i("echo-mpvcompat pause-detach reason=" + reason);
         }
     }
 
@@ -267,7 +278,7 @@ public final class MPVCompatManager {
     public static void applyPlaybackModeOptions() {
         boolean hdr = isHdrOutputMode();
         boolean mapping = isMappingMode();
-        String vo = selectVideoOutput(hdr, mapping);
+        String vo = selectVideoOutput(mapping);
         applyAudioOutputOptions();
         setRuntimeString("vo", vo);
         setRuntimeString("hwdec", "mediacodec");
@@ -276,11 +287,13 @@ public final class MPVCompatManager {
         setRuntimeString("vd-lavc-threads", "0");
         setRuntimeString("vd-lavc-software-fallback", "no");
         setRuntimeString("hwdec-software-fallback", "no");
-        if (isGpuVideoOutput(vo)) {
+        if (VO_GPU.equals(vo)) {
             setRuntimeString("gpu-api", "opengl");
             setRuntimeString("gpu-context", "android");
             setRuntimeString("opengl-es", "yes");
-            setRuntimeString("fbo-format", resolveFboFormat(hdr));
+            // Huawei 32-bit TV firmware fails or drops frames with rgba10a2/rgba16f.
+            // Keep the GL path light; HDR activation is requested through the Activity window.
+            setRuntimeString("fbo-format", "rgba8");
         }
         setRuntimeString("video-sync", currentFileForcesTv32LocalProxyPcm ? "display-desync" : "audio");
         setRuntimeString("framedrop", "vo");
@@ -293,7 +306,7 @@ public final class MPVCompatManager {
         setRuntimeString("video-zoom", "0");
         setRuntimeString("video-align-x", "0");
         setRuntimeString("video-align-y", "0");
-        setRuntimeString("target-colorspace-hint", shouldUseSurfaceColorspaceHint(vo, hdr) ? "yes" : "no");
+        setRuntimeString("target-colorspace-hint", hdr ? "yes" : "no");
         setRuntimeString("target-colorspace-hint-mode", mapping && hdr ? "source-dynamic" : "target");
         setRuntimeString("target-trc", mapping ? (hdr ? "pq" : "bt.1886") : "auto");
         setRuntimeString("target-prim", mapping ? (hdr ? "bt.2020" : "bt.709") : "auto");
@@ -303,17 +316,14 @@ public final class MPVCompatManager {
         setRuntimeString("hdr-compute-peak", "no");
         setRuntimeString("hdr-peak-percentile", "100");
         setRuntimeString("sigmoid-upscaling", "no");
+        setRuntimeString("dither-depth", "auto");
         setRuntimeString("deband", "no");
         setRuntimeString("scale", "bilinear");
         setRuntimeString("cscale", "bilinear");
         setRuntimeString("dscale", "bilinear");
         setRuntimeString("vf", "");
-        LOG.i("echo-mpvcompat mode=" + outputMode
-                + " vo=" + vo
-                + " fbo=" + resolveFboFormat(hdr)
-                + " hdr=" + hdr
+        LOG.i("echo-mpvcompat mode=" + outputMode + " vo=" + vo + " hdr=" + hdr
                 + " mapping=" + mapping
-                + " colorspaceHint=" + shouldUseSurfaceColorspaceHint(vo, hdr)
                 + " targetPeak=" + (hdr ? hdrTargetPeakNits : 0));
     }
 
@@ -331,13 +341,13 @@ public final class MPVCompatManager {
         appendFileOption(builder, "vd-lavc-threads", "0");
         appendFileOption(builder, "vd-lavc-software-fallback", "no");
         appendFileOption(builder, "hwdec-software-fallback", "no");
-        String vo = selectVideoOutput(hdr, mapping);
+        String vo = selectVideoOutput(mapping);
         appendFileOption(builder, "vo", vo);
-        if (isGpuVideoOutput(vo)) {
+        if (VO_GPU.equals(vo)) {
             appendFileOption(builder, "gpu-api", "opengl");
             appendFileOption(builder, "gpu-context", "android");
             appendFileOption(builder, "opengl-es", "yes");
-            appendFileOption(builder, "fbo-format", resolveFboFormat(hdr));
+            appendFileOption(builder, "fbo-format", "rgba8");
         }
         appendFileOption(builder, "video-sync",
                 currentFileForcesTv32LocalProxyPcm ? "display-desync" : "audio");
@@ -350,7 +360,7 @@ public final class MPVCompatManager {
             appendFileOption(builder, "audio-channels", "stereo");
             appendFileOption(builder, "audio-normalize-downmix", "yes");
             appendFileOption(builder, "audio-buffer", "1.0");
-            appendFileOption(builder, "audio-stream-silence", "yes");
+            appendFileOption(builder, "audio-stream-silence", "no");
         }
         // slang contains commas; passing it through loadfile's comma-separated
         // option string makes mpv treat later language tokens as option names.
@@ -373,8 +383,7 @@ public final class MPVCompatManager {
         appendFileOption(builder, "video-zoom", "0");
         appendFileOption(builder, "video-align-x", "0");
         appendFileOption(builder, "video-align-y", "0");
-        appendFileOption(builder, "target-colorspace-hint",
-                shouldUseSurfaceColorspaceHint(vo, hdr) ? "yes" : "no");
+        appendFileOption(builder, "target-colorspace-hint", hdr ? "yes" : "no");
         appendFileOption(builder, "target-colorspace-hint-mode", mapping && hdr ? "source-dynamic" : "target");
         appendFileOption(builder, "target-trc", mapping ? (hdr ? "pq" : "bt.1886") : "auto");
         appendFileOption(builder, "target-prim", mapping ? (hdr ? "bt.2020" : "bt.709") : "auto");
@@ -438,7 +447,7 @@ public final class MPVCompatManager {
             setRuntimeString("audio-spdif", effectivePassthrough ? spdifCodecs : "");
             setRuntimeString("audio-normalize-downmix", effectivePassthrough ? "no" : "yes");
             setRuntimeString("audio-buffer", currentFileForcesTv32LocalProxyPcm ? "1.0" : "0.2");
-            setRuntimeString("audio-stream-silence", currentFileForcesTv32LocalProxyPcm ? "yes" : "no");
+            setRuntimeString("audio-stream-silence", "no");
             setRuntimeString("audio-fallback-to-null", "no");
             // 保持容器默认音轨，用户手动切换时再改。
             setRuntimeString("alang", "");
@@ -525,30 +534,8 @@ public final class MPVCompatManager {
                 || "dv-base-hdr".equals(mode);
     }
 
-    private static String selectVideoOutput(boolean hdr, boolean mapping) {
-        if (shouldUseJava64EmbeddedVideoOutput(hdr, mapping)) {
-            return VO_MEDIACODEC_EMBED;
-        }
+    private static String selectVideoOutput(boolean mapping) {
         return VO_GPU;
-    }
-
-    private static boolean isGpuVideoOutput(String vo) {
-        return VO_GPU.equals(vo);
-    }
-
-    private static boolean shouldUseJava64EmbeddedVideoOutput(boolean hdr, boolean mapping) {
-        return java64PhoneAudioSafeMode
-                && hdr
-                && !mapping
-                && currentPlayIsDolbyVision;
-    }
-
-    private static boolean shouldUseSurfaceColorspaceHint(String vo, boolean hdr) {
-        return hdr && VO_GPU.equals(vo);
-    }
-
-    private static String resolveFboFormat(boolean hdr) {
-        return "rgba8";
     }
 
     private static String normalizeOutputMode(String mode) {
