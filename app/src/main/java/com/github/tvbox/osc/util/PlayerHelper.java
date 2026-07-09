@@ -28,7 +28,6 @@ import java.util.Locale;
 import xyz.doikki.videoplayer.player.AndroidMediaPlayerFactory;
 import xyz.doikki.videoplayer.player.VideoView;
 import xyz.doikki.videoplayer.render.RenderViewFactory;
-import xyz.doikki.videoplayer.render.TextureRenderViewFactory;
 
 public class PlayerHelper {
     private static final int[] ORDERED_PLAYER_TYPES = new int[]{0, 6, 10, 11, 12, 13};
@@ -58,17 +57,6 @@ public class PlayerHelper {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP;
     }
 
-    private static boolean shouldUseTextureRenderForSystemPlayer(@androidx.annotation.Nullable Context context,
-                                                                 @androidx.annotation.Nullable JSONObject playerCfg) {
-        if (!isJava64TouchPhone(context)) {
-            return false;
-        }
-        String outputMode = playerCfg == null ? "" : playerCfg.optString("dvm", "");
-        boolean hdrOutputRequested = (playerCfg != null && playerCfg.optInt("hro", 0) == 1)
-                || (!TextUtils.isEmpty(outputMode) && !"sdr".equalsIgnoreCase(outputMode));
-        return !hdrOutputRequested;
-    }
-
     public static void updateCfg(VideoView videoView, JSONObject playerCfg) {
         updateCfg(videoView,playerCfg,-1);
     }
@@ -78,7 +66,6 @@ public class PlayerHelper {
         int scale = Hawk.get(HawkConfig.PLAY_SCALE, 0);
         boolean preferHdrOutput = true;
         Context context = videoView == null ? null : videoView.getContext();
-        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(context, playerCfg);
         try {
             playerType = playerCfg.getInt("pl");
             renderType = playerCfg.getInt("pr");
@@ -92,7 +79,7 @@ public class PlayerHelper {
             playerType = PLAYER_TYPE_SYSTEM;
         }
         if (playerType == PLAYER_TYPE_SYSTEM) {
-            renderType = preferTextureSystemRender ? 0 : 1;
+            renderType = 1;
         }
         if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
             renderType = 1;
@@ -100,16 +87,7 @@ public class PlayerHelper {
         } else if (playerType == PLAYER_TYPE_SYSTEM) {
             scale = VideoView.SCREEN_SCALE_DEFAULT;
         }
-        RenderViewFactory renderViewFactory = null;
-        switch (renderType) {
-            case 0:
-            default:
-                renderViewFactory = TextureRenderViewFactory.create();
-                break;
-            case 1:
-                renderViewFactory = SurfaceRenderViewFactory.create();
-                break;
-        }
+        RenderViewFactory renderViewFactory = SurfaceRenderViewFactory.create();
         if(videoView!=null){
             if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
                 MPVCompatManager.setOutputMode(playerCfg == null ? "base-hdr" : playerCfg.optString("dvm", preferHdrOutput ? "base-hdr" : "sdr"));
@@ -117,9 +95,7 @@ public class PlayerHelper {
                 renderViewFactory = SurfaceRenderViewFactory.create();
             } else {
                 videoView.setPlayerFactory(AndroidMediaPlayerFactory.create());
-                renderViewFactory = preferTextureSystemRender
-                        ? TextureRenderViewFactory.create()
-                        : SurfaceRenderViewFactory.create();
+                renderViewFactory = SurfaceRenderViewFactory.create();
             }
             String routeMode = "";
             int hdrOut = 0;
@@ -141,18 +117,8 @@ public class PlayerHelper {
     }
 
     public static void updateCfg(VideoView videoView) {
-        boolean preferTextureSystemRender = shouldUseTextureRenderForSystemPlayer(videoView == null ? null : videoView.getContext(), null);
-        int renderType = preferTextureSystemRender ? 0 : 1;
-        RenderViewFactory renderViewFactory = null;
-        switch (renderType) {
-            case 0:
-            default:
-                renderViewFactory = TextureRenderViewFactory.create();
-                break;
-            case 1:
-                renderViewFactory = SurfaceRenderViewFactory.create();
-                break;
-        }
+        int renderType = 1;
+        RenderViewFactory renderViewFactory = SurfaceRenderViewFactory.create();
         videoView.setPlayerFactory(AndroidMediaPlayerFactory.create());
         videoView.setRenderViewFactory(renderViewFactory);
     }
@@ -317,11 +283,7 @@ public class PlayerHelper {
     }
 
     public static String getRenderName(int renderType) {
-        if (renderType == 1) {
-            return "SurfaceView";
-        } else {
-            return "TextureView";
-        }
+        return "SurfaceView";
     }
 
     public static String getScaleName(int screenScaleType) {

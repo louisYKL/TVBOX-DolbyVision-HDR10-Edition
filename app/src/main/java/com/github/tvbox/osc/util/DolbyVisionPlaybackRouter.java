@@ -213,23 +213,6 @@ public final class DolbyVisionPlaybackRouter {
                     "tv32-local-proxy-hevc-system-hdr");
         }
 
-        // Huawei tv32 firmware can route local-proxy VOD through NuPlayer audio offload even
-        // for AAC/MP4-like SDR files, causing silent audio plus severe video underruns. Keep
-        // HDR/DV on the existing native routes, but decode SDR local-proxy VOD in MPV so audio
-        // is rendered as PCM instead of broken firmware passthrough/offload.
-        if (shouldRouteTv32LocalProxySdrVodToCompat(context, url, streamProbe, extraHints)) {
-            LOG.i("echo-dolby-route route=tv32-local-proxy-sdr-compat player="
-                    + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
-                    + " caps=" + caps.summary
-                    + " audioMime=" + streamProbe.primaryAudioMime
-                    + " matroska=" + matroskaLike
-                    + " probe=" + streamProbe.summary
-                    + " url=" + safeSnippet(url));
-            return new Decision(false, true, false, true, false, "sdr", false,
-                    PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT,
-                    "tv32-local-proxy-sdr-audio-safe");
-        }
-
         // 路由3：普通 SDR/HDR10/HDR10+ 且容器系统播放器能打开（MP4/TS）→ 系统播放器原生硬解 + 原生 HDR。
         if (systemCanOpenContainer) {
             LOG.i("echo-dolby-route route=system-native player=" + nativeRequestedPlayerType
@@ -273,9 +256,9 @@ public final class DolbyVisionPlaybackRouter {
     }
 
     private static boolean shouldRouteTv32LocalProxyHevcToSystemHdr(Context context,
-                                                                    String url,
-                                                                    VideoStreamProbe.Result streamProbe,
-                                                                    String... extraHints) {
+                                                                     String url,
+                                                                     VideoStreamProbe.Result streamProbe,
+                                                                     String... extraHints) {
         if (context == null || !ScreenUtils.isTv32Device(context) || streamProbe == null) {
             return false;
         }
@@ -289,22 +272,6 @@ public final class DolbyVisionPlaybackRouter {
             return true;
         }
         return streamProbe.hasHevcVideo && streamProbe.hasImmersiveOrCompressedAudio();
-    }
-
-    private static boolean shouldRouteTv32LocalProxySdrVodToCompat(Context context,
-                                                                   String url,
-                                                                   VideoStreamProbe.Result streamProbe,
-                                                                   String... extraHints) {
-        if (context == null || !ScreenUtils.isTv32Device(context) || streamProbe == null) {
-            return false;
-        }
-        if (streamProbe.hasDolbyVision || streamProbe.hasHdr10 || streamProbe.hasHdr10Plus) {
-            return false;
-        }
-        if (isHlsLike(url) || containsHlsLike(extraHints)) {
-            return false;
-        }
-        return isLocalProxyVodLike(url) || containsLocalProxyVodLike(extraHints);
     }
 
     private static boolean containsLocalProxyVodLike(String... values) {
@@ -360,7 +327,7 @@ public final class DolbyVisionPlaybackRouter {
         for (int i = 0; i < 2; i++) {
             try {
                 String next = java.net.URLDecoder.decode(decoded, "UTF-8");
-                if (next == null || next.isEmpty() || next.equals(decoded)) {
+                if (next == null || next.equals(decoded)) {
                     break;
                 }
                 decoded = next;

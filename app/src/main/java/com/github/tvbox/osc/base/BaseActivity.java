@@ -23,7 +23,6 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsetsController;
 import android.graphics.Rect;
-import android.view.animation.PathInterpolator;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
@@ -31,6 +30,7 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.PermissionChecker;
 
+import com.github.tvbox.osc.BuildConfig;
 import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.callback.EmptyCallback;
 import com.github.tvbox.osc.callback.LoadingCallback;
@@ -59,11 +59,6 @@ import xyz.doikki.videoplayer.util.CutoutUtil;
 public abstract class BaseActivity extends AppCompatActivity implements CustomAdapt {
     protected Context mContext;
     private LoadService mLoadService;
-    private static final PathInterpolator APPLE_TV_TRANSITION =
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
-                    ? new PathInterpolator(0.22f, 1f, 0.36f, 1f)
-                    : null;
-
     private static float screenRatio = -100.0f;
     private Boolean tvDevice;
     private boolean contentInitialized;
@@ -311,14 +306,12 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
     public void jumpActivity(Class<? extends BaseActivity> clazz) {
         Intent intent = new Intent(mContext, clazz);
         startActivity(intent);
-        applyActivityTransition();
     }
 
     public void jumpActivity(Class<? extends BaseActivity> clazz, Bundle bundle) {
         Intent intent = new Intent(mContext, clazz);
         intent.putExtras(bundle);
         startActivity(intent);
-        applyActivityTransition();
     }
 
     @Override
@@ -327,29 +320,36 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         applyBackTransition();
     }
 
+    @Override
+    public void startActivity(Intent intent) {
+        super.startActivity(intent);
+        applyActivityTransition();
+    }
+
+    @Override
+    public void startActivity(Intent intent, @Nullable Bundle options) {
+        super.startActivity(intent, options);
+        applyActivityTransition();
+    }
+
+    @Override
+    public void startActivityForResult(Intent intent, int requestCode) {
+        super.startActivityForResult(intent, requestCode);
+        applyActivityTransition();
+    }
+
+    @Override
+    public void startActivityForResult(Intent intent, int requestCode, @Nullable Bundle options) {
+        super.startActivityForResult(intent, requestCode, options);
+        applyActivityTransition();
+    }
+
     protected void applyActivityTransition() {
-        overridePendingTransition(0, 0);
-        View decor = getWindow() == null ? null : getWindow().getDecorView();
-        if (decor != null) {
-            decor.setAlpha(0.82f);
-            decor.setScaleX(0.972f);
-            decor.setScaleY(0.972f);
-            decor.setTranslationY(26f);
-            decor.setTranslationX(0f);
-            decor.animate()
-                    .alpha(1f)
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .translationX(0f)
-                    .translationY(0f)
-                    .setDuration(520)
-                    .setInterpolator(APPLE_TV_TRANSITION)
-                    .start();
-        }
+        overridePendingTransition(R.anim.apple_tv_activity_enter, R.anim.apple_tv_activity_exit);
     }
 
     protected void applyBackTransition() {
-        overridePendingTransition(0, 0);
+        overridePendingTransition(R.anim.apple_tv_pop_enter, R.anim.apple_tv_pop_exit);
     }
 
     protected String getAssetText(String fileName) {

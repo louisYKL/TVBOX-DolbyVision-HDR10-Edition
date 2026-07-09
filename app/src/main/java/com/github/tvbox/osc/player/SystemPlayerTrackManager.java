@@ -322,6 +322,19 @@ public final class SystemPlayerTrackManager {
         return subtitles.get(0);
     }
 
+    @Nullable
+    public static Subtitle findSelectedExternalSubtitle(List<Subtitle> subtitles) {
+        if (subtitles == null || subtitles.isEmpty()) {
+            return null;
+        }
+        for (Subtitle subtitle : subtitles) {
+            if (subtitle != null && subtitle.isSelected() && !TextUtils.isEmpty(subtitle.getUrl())) {
+                return subtitle;
+            }
+        }
+        return null;
+    }
+
     public static List<Subtitle> buildExternalSubtitleList(org.json.JSONArray array) {
         List<Subtitle> list = new ArrayList<>();
         if (array == null) {
@@ -342,6 +355,7 @@ public final class SystemPlayerTrackManager {
             Subtitle subtitle = new Subtitle();
             subtitle.setName(name);
             subtitle.setIsZip(false);
+            subtitle.setSelected(obj.optBoolean("selected", false));
             if (!hasKnownSubtitleExt(url)) {
                 String suffix = new String((name + ext).getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8);
                 subtitle.setUrl(url + "#" + java.net.URLEncoder.encode(suffix));

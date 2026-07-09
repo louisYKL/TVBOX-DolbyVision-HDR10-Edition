@@ -1,59 +1,51 @@
-package com.github.tvbox.osc.player.render;
+package xyz.doikki.videoplayer.render;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.os.Build;
 import android.util.AttributeSet;
-import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
-import android.view.ViewParent;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import com.github.tvbox.osc.player.MPVCompatPlayer;
-
 import xyz.doikki.videoplayer.player.AbstractPlayer;
-import xyz.doikki.videoplayer.player.VideoView;
-import xyz.doikki.videoplayer.render.IRenderView;
-import xyz.doikki.videoplayer.render.MeasureHelper;
 
 public class SurfaceRenderView extends SurfaceView implements IRenderView, SurfaceHolder.Callback {
-    private static final String TAG = "SurfaceRenderView";
-    private MeasureHelper mMeasureHelper;
-
+    private final MeasureHelper mMeasureHelper = new MeasureHelper();
+    @Nullable
     private AbstractPlayer mMediaPlayer;
     @Nullable
     private SurfaceListener mSurfaceListener;
 
     public SurfaceRenderView(Context context) {
         super(context);
+        init();
     }
 
     public SurfaceRenderView(Context context, AttributeSet attrs) {
         super(context, attrs);
+        init();
     }
 
     public SurfaceRenderView(Context context, AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
+        init();
     }
 
-    {
-        mMeasureHelper = new MeasureHelper();
-        SurfaceHolder surfaceHolder = getHolder();
-        surfaceHolder.addCallback(this);
-        // Keep the video surface opaque so TV firmware can promote it to the hardware video plane.
+    private void init() {
+        SurfaceHolder holder = getHolder();
+        holder.addCallback(this);
         setZOrderOnTop(false);
         setZOrderMediaOverlay(false);
     }
 
     @Override
     public void attachToPlayer(@NonNull AbstractPlayer player) {
-        this.mMediaPlayer = player;
+        mMediaPlayer = player;
         refreshSurface();
-        notifySurfaceAvailableIfReady("attach");
+        notifySurfaceAvailableIfReady();
     }
 
     @Override
@@ -70,7 +62,7 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
     @Override
     public void setSurfaceListener(@Nullable SurfaceListener listener) {
         mSurfaceListener = listener;
-        notifySurfaceAvailableIfReady("listener");
+        notifySurfaceAvailableIfReady();
     }
 
     @Override
@@ -137,7 +129,7 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
         if (mMediaPlayer != null) {
             mMediaPlayer.setDisplay(holder);
         }
-        notifySurfaceAvailableIfReady("created");
+        notifySurfaceAvailableIfReady();
     }
 
     @Override
@@ -145,7 +137,7 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
         if (mMediaPlayer != null) {
             mMediaPlayer.setDisplay(holder);
         }
-        notifySurfaceAvailableIfReady("changed");
+        notifySurfaceAvailableIfReady();
     }
 
     @Override
@@ -155,39 +147,14 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
             listener.onSurfaceDestroyed(this);
         }
         if (mMediaPlayer != null) {
-            if (mMediaPlayer instanceof MPVCompatPlayer) {
-                if (isParentVideoViewMovingFullScreen()) {
-                    return;
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !isAttachedToWindow()) {
-                    return;
-                }
-                mMediaPlayer.setDisplay(null);
-                return;
-            }
             mMediaPlayer.setDisplay(null);
         }
     }
 
-    private boolean isParentVideoViewMovingFullScreen() {
-        ViewParent parent = getParent();
-        while (parent != null) {
-            if (parent instanceof VideoView) {
-                return ((VideoView) parent).isFullScreenViewMoving();
-            }
-            parent = parent.getParent();
-        }
-        return false;
-    }
-
-    private void notifySurfaceAvailableIfReady(String reason) {
+    private void notifySurfaceAvailableIfReady() {
         SurfaceListener listener = mSurfaceListener;
-        if (listener == null || !hasValidSurface()) {
-            return;
+        if (listener != null && hasValidSurface()) {
+            listener.onSurfaceAvailable(this);
         }
-        Log.i(TAG, "echo-surface-ready reason=" + reason
-                + " w=" + getWidth()
-                + " h=" + getHeight());
-        listener.onSurfaceAvailable(this);
     }
 }

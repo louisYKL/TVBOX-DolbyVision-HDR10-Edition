@@ -186,15 +186,34 @@ public final class MPVCompatManager {
             if (!INITIALIZED.get() || !CREATED.get()) {
                 return;
             }
-            resetPlaybackState();
-            try {
-                MPVLib.destroy();
-            } catch (Throwable th) {
-                Log.w(TAG, "hard reset destroy failed", th);
+            pauseAndDetachForRelease("hard-reset");
+            LOG.i("echo-mpvcompat playback-reset");
+        }
+    }
+
+    public static void pauseAndDetachForRelease(String reason) {
+        currentPlayIsDolbyVision = false;
+        currentFileForcesTv32LocalProxyPcm = false;
+        synchronized (MPVCompatManager.class) {
+            if (!INITIALIZED.get() || !CREATED.get()) {
+                return;
             }
-            INITIALIZED.set(false);
-            CREATED.set(false);
-            LOG.i("echo-mpvcompat hard-reset");
+            try {
+                MPVLib.setPropertyBoolean("pause", true);
+            } catch (Throwable ignored) {
+            }
+            try {
+                MPVLib.detachSurface();
+            } catch (Throwable ignored) {
+            }
+            try {
+                MPVLib.setOptionString("http-header-fields", "");
+                MPVLib.setOptionString("referrer", "");
+                MPVLib.setOptionString("force-window", "no");
+                MPVLib.setPropertyString("audio-device", "auto");
+            } catch (Throwable ignored) {
+            }
+            LOG.i("echo-mpvcompat pause-detach reason=" + reason);
         }
     }
 
@@ -297,13 +316,15 @@ public final class MPVCompatManager {
         setRuntimeString("hdr-compute-peak", "no");
         setRuntimeString("hdr-peak-percentile", "100");
         setRuntimeString("sigmoid-upscaling", "no");
+        setRuntimeString("dither-depth", "auto");
         setRuntimeString("deband", "no");
         setRuntimeString("scale", "bilinear");
         setRuntimeString("cscale", "bilinear");
         setRuntimeString("dscale", "bilinear");
         setRuntimeString("vf", "");
         LOG.i("echo-mpvcompat mode=" + outputMode + " vo=" + vo + " hdr=" + hdr
-                + " mapping=" + mapping + " targetPeak=" + (hdr ? hdrTargetPeakNits : 0));
+                + " mapping=" + mapping
+                + " targetPeak=" + (hdr ? hdrTargetPeakNits : 0));
     }
 
     public static String buildDolbyVisionPerFileOptions() {
@@ -339,7 +360,7 @@ public final class MPVCompatManager {
             appendFileOption(builder, "audio-channels", "stereo");
             appendFileOption(builder, "audio-normalize-downmix", "yes");
             appendFileOption(builder, "audio-buffer", "1.0");
-            appendFileOption(builder, "audio-stream-silence", "yes");
+            appendFileOption(builder, "audio-stream-silence", "no");
         }
         // slang contains commas; passing it through loadfile's comma-separated
         // option string makes mpv treat later language tokens as option names.
@@ -426,7 +447,7 @@ public final class MPVCompatManager {
             setRuntimeString("audio-spdif", effectivePassthrough ? spdifCodecs : "");
             setRuntimeString("audio-normalize-downmix", effectivePassthrough ? "no" : "yes");
             setRuntimeString("audio-buffer", currentFileForcesTv32LocalProxyPcm ? "1.0" : "0.2");
-            setRuntimeString("audio-stream-silence", currentFileForcesTv32LocalProxyPcm ? "yes" : "no");
+            setRuntimeString("audio-stream-silence", "no");
             setRuntimeString("audio-fallback-to-null", "no");
             // 保持容器默认音轨，用户手动切换时再改。
             setRuntimeString("alang", "");

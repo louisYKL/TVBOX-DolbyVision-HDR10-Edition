@@ -16,7 +16,6 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -50,8 +49,6 @@ import xyz.doikki.videoplayer.util.PlayerUtils;
 public class VideoView<P extends AbstractPlayer> extends FrameLayout
         implements MediaPlayerControl, AbstractPlayer.PlayerEventListener {
     private static final String TAG = "VideoView";
-    private static final long COMPLETION_END_TOLERANCE_MS = 10_000L;
-    private static final long PERSIST_END_TOLERANCE_MS = COMPLETION_END_TOLERANCE_MS;
     protected static final long PERSIST_PROGRESS_SKIP = -1L;
 
     protected P mMediaPlayer;//播放器
@@ -66,6 +63,20 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
 
     protected IRenderView mRenderView;
     protected RenderViewFactory mRenderViewFactory;
+    private boolean mPendingPrepareAfterSurface;
+    private boolean mPendingPrepareResetAfterSurface;
+    private int mPendingPrepareSurfaceAttempts;
+    private final IRenderView.SurfaceListener mRenderSurfaceListener = new IRenderView.SurfaceListener() {
+        @Override
+        public void onSurfaceAvailable(@NonNull IRenderView renderView) {
+            post(() -> startPendingPrepareIfSurfaceReady("surface-available"));
+        }
+
+        @Override
+        public void onSurfaceDestroyed(@NonNull IRenderView renderView) {
+            Log.i(TAG, "echo-surface-destroyed pendingPrepare=" + mPendingPrepareAfterSurface);
+        }
+    };
 
     public static final int SCREEN_SCALE_DEFAULT = 0;
     public static final int SCREEN_SCALE_16_9 = 1;
@@ -273,7 +284,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mResumeSeekAppliedAfterRender = false;
         initPlayer();
         addDisplay();
-        startPrepare(false);
+        startPrepareWhenRenderReady(false, "start");
         return true;
     }
 
@@ -331,16 +342,67 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     protected void addDisplay() {
         if (mRenderView != null) {
+            mRenderView.setSurfaceListener(null);
             mPlayerContainer.removeView(mRenderView.getView());
             mRenderView.release();
         }
         mRenderView = mRenderViewFactory.createRenderView(getContext());
+        mRenderView.setSurfaceListener(mRenderSurfaceListener);
         mRenderView.attachToPlayer(mMediaPlayer);
         LayoutParams params = new LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 Gravity.CENTER);
         mPlayerContainer.addView(mRenderView.getView(), 0, params);
+    }
+
+    private void startPrepareWhenRenderReady(boolean reset, String reason) {
+        if (mRenderView != null
+                && mRenderView.requiresValidSurfaceBeforePrepare()
+                && !mRenderView.hasValidSurface()) {
+            mPendingPrepareAfterSurface = true;
+            mPendingPrepareResetAfterSurface = reset;
+            mPendingPrepareSurfaceAttempts = 0;
+            Log.i(TAG, "echo-startPrepare wait-surface reason=" + reason
+                    + " reset=" + reset
+                    + " render=" + mRenderView.getClass().getSimpleName());
+            setPlayState(STATE_PREPARING);
+            setPlayerState(isFullScreen() ? PLAYER_FULL_SCREEN : isTinyScreen() ? PLAYER_TINY_SCREEN : PLAYER_NORMAL);
+            mRenderView.refreshSurface();
+            schedulePendingPrepareSurfaceCheck(reason);
+            return;
+        }
+        startPrepare(reset);
+    }
+
+    private void startPendingPrepareIfSurfaceReady(String reason) {
+        if (!mPendingPrepareAfterSurface || mMediaPlayer == null || mRenderView == null) {
+            return;
+        }
+        mRenderView.refreshSurface();
+        if (!mRenderView.hasValidSurface()) {
+            schedulePendingPrepareSurfaceCheck(reason);
+            return;
+        }
+        boolean reset = mPendingPrepareResetAfterSurface;
+        mPendingPrepareAfterSurface = false;
+        mPendingPrepareResetAfterSurface = false;
+        mPendingPrepareSurfaceAttempts = 0;
+        Log.i(TAG, "echo-startPrepare after-surface reason=" + reason
+                + " reset=" + reset
+                + " render=" + mRenderView.getClass().getSimpleName());
+        startPrepare(reset);
+    }
+
+    private void schedulePendingPrepareSurfaceCheck(String reason) {
+        if (!mPendingPrepareAfterSurface || mPendingPrepareSurfaceAttempts >= 60) {
+            if (mPendingPrepareAfterSurface) {
+                Log.w(TAG, "echo-startPrepare still-waiting-surface reason=" + reason);
+            }
+            return;
+        }
+        mPendingPrepareSurfaceAttempts++;
+        postDelayed(() -> startPendingPrepareIfSurfaceReady(reason), 80L);
     }
 
     /**
@@ -470,6 +532,9 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         if (mIsFullScreen) {
             stopFullScreen();
         }
+        mPendingPrepareAfterSurface = false;
+        mPendingPrepareResetAfterSurface = false;
+        mPendingPrepareSurfaceAttempts = 0;
         if (!isInIdleState()) {
             //释放播放器
             if (mMediaPlayer != null) {
@@ -478,6 +543,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             }
             //释放renderView
             if (mRenderView != null) {
+                mRenderView.setSurfaceListener(null);
                 mPlayerContainer.removeView(mRenderView.getView());
                 mRenderView.release();
                 mRenderView = null;
@@ -525,7 +591,6 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
 
     /**
      * Resolve a progress value that is safe to persist as a resume point.
-     * Positions near the end are treated as completed playback and cleared.
      */
     protected long resolvePersistableProgressPosition() {
         if (mCurrentPlayState == STATE_PLAYBACK_COMPLETED) {
@@ -546,13 +611,6 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             AndroidMediaPlayer player = (AndroidMediaPlayer) mMediaPlayer;
             if (player.isPositionQueryUnstable() || player.isSeekInFlight()) {
                 return PERSIST_PROGRESS_SKIP;
-            }
-        }
-        long duration = resolvePersistableDuration();
-        if (duration > 0L) {
-            long finishThreshold = Math.max(0L, duration - PERSIST_END_TOLERANCE_MS);
-            if (position >= finishThreshold) {
-                return 0L;
             }
         }
         return position;
@@ -613,7 +671,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mPendingResumeSeekAfterRender = false;
         mResumeSeekAppliedAfterRender = false;
         addDisplay();
-        startPrepare(true);
+        startPrepareWhenRenderReady(true, "replay");
     }
 
     /**
@@ -711,9 +769,6 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         setPlayState(STATE_PREPARED);
         resolvePersistableDuration();
         long resumePosition = sanitizeResumePosition(mResumePosition);
-        if (resumePosition != mResumePosition && resumePosition == 0L) {
-            saveProgress(0L);
-        }
         mResumePosition = resumePosition;
         if (mAudioFocusHelper != null) {
             mAudioFocusHelper.requestFocus();
@@ -772,57 +827,10 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             return;
         }
         mPlayerContainer.setKeepScreenOn(false);
-        if (!shouldTreatCompletionAsPlaybackFinished()) {
-            L.d("ignore abnormal completion position=" + mCurrentPosition);
-            return;
-        }
         mCurrentPosition = 0;
         mResumePosition = 0L;
         saveProgress(0L);
         setPlayState(STATE_PLAYBACK_COMPLETED);
-    }
-
-    private boolean shouldTreatCompletionAsPlaybackFinished() {
-        long duration = resolveCompletionDurationForGuard();
-        if (duration <= 0L) {
-            return false;
-        }
-        long position = resolveCompletionPositionForGuard();
-        long finishThreshold = Math.max(0L, duration - COMPLETION_END_TOLERANCE_MS);
-        return position >= finishThreshold;
-    }
-
-    private long resolveCompletionPositionForGuard() {
-        if (mCurrentPosition > 0L) {
-            return mCurrentPosition;
-        }
-        if (mMediaPlayer == null) {
-            return 0L;
-        }
-        try {
-            long position = mMediaPlayer.getCurrentPosition();
-            if (position > 0L) {
-                mCurrentPosition = position;
-            }
-            return position;
-        } catch (Throwable ignored) {
-            return 0L;
-        }
-    }
-
-    private long resolveCompletionDurationForGuard() {
-        if (mMediaPlayer == null) {
-            return mLastKnownDuration;
-        }
-        try {
-            long duration = mMediaPlayer.getDuration();
-            if (duration > 0L) {
-                mLastKnownDuration = duration;
-                return duration;
-            }
-        } catch (Throwable ignored) {
-        }
-        return mLastKnownDuration;
     }
 
     /**
@@ -961,8 +969,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         if (duration <= 0L) {
             return sanitized;
         }
-        long finishThreshold = Math.max(0L, duration - PERSIST_END_TOLERANCE_MS);
-        if (sanitized > duration || sanitized >= finishThreshold) {
+        if (sanitized > duration) {
             L.d("clear stale resume position=" + sanitized + " duration=" + duration);
             return 0L;
         }
@@ -1520,9 +1527,17 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     protected void setPlayState(int playState) {
         mCurrentPlayState = playState;
+        if (playState == STATE_ERROR) {
+            notifyPlayStateChanged(playState);
+            return;
+        }
         if (mVideoController != null) {
             mVideoController.setPlayState(playState);
         }
+        notifyPlayStateChanged(playState);
+    }
+
+    private void notifyPlayStateChanged(int playState) {
         if (mOnStateChangeListeners != null) {
             for (OnStateChangeListener l : PlayerUtils.getSnapshot(mOnStateChangeListeners)) {
                 if (l != null) {
