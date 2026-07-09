@@ -111,7 +111,7 @@ public abstract class AbstractPlayer {
     public abstract int getBufferedPercentage();
 
     /**
-     * 设置渲染视频的View,主要用于TextureView
+     * 设置渲染视频的Surface。
      */
     public abstract void setSurface(Surface surface);
 

@@ -9,12 +9,29 @@ import xyz.doikki.videoplayer.player.AbstractPlayer;
 
 public interface IRenderView {
 
+    interface SurfaceListener {
+        void onSurfaceAvailable(@NonNull IRenderView renderView);
+
+        void onSurfaceDestroyed(@NonNull IRenderView renderView);
+    }
+
     /**
      * 关联AbstractPlayer
      */
     void attachToPlayer(@NonNull AbstractPlayer player);
 
     default void refreshSurface() {
+    }
+
+    default void setSurfaceListener(SurfaceListener listener) {
+    }
+
+    default boolean requiresValidSurfaceBeforePrepare() {
+        return false;
+    }
+
+    default boolean hasValidSurface() {
+        return true;
     }
 
     /**

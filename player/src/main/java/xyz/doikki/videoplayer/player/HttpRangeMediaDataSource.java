@@ -25,11 +25,11 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private static final String TAG = "HttpRangeDataSource";
     private static final long DEFAULT_WINDOW_SIZE = 512L * 1024L;
     private static final long MAX_WINDOW_SIZE = 2L * 1024L * 1024L;
-    private static final long STREAMING_DEFAULT_WINDOW_SIZE = 8L * 1024L * 1024L;
-    private static final long STREAMING_MAX_WINDOW_SIZE = 32L * 1024L * 1024L;
-    private static final long STREAMING_TARGET_BUFFER_SIZE = 64L * 1024L * 1024L;
-    private static final long STREAMING_MAX_CACHE_SIZE = 128L * 1024L * 1024L;
-    private static final long STREAMING_BACK_BUFFER_SIZE = 16L * 1024L * 1024L;
+    private static final long STREAMING_DEFAULT_WINDOW_SIZE = resolveStreamingDefaultWindowSize();
+    private static final long STREAMING_MAX_WINDOW_SIZE = resolveStreamingMaxWindowSize();
+    private static final long STREAMING_TARGET_BUFFER_SIZE = resolveStreamingTargetBufferSize();
+    private static final long STREAMING_MAX_CACHE_SIZE = resolveStreamingMaxCacheSize();
+    private static final long STREAMING_BACK_BUFFER_SIZE = resolveStreamingBackBufferSize();
     private static final long PROBE_WINDOW_SIZE = 256L * 1024L;
     private static final int MAX_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 150L;
@@ -58,6 +58,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private long playbackAnchorPosition = -1L;
     private long lastReadPosition = -1L;
     private int debugLoadCount;
+    private int debugReadCount;
     private int debugPrefetchCount;
     private Future<?> prefetchFuture;
     private long scheduledPrefetchStart = -1L;
@@ -145,7 +146,8 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 break;
             }
         }
-        if (debugLoadCount < 20) {
+        if (debugReadCount < 8) {
+            debugReadCount++;
             logInfo("echo-range-source readAt pos=" + position + " size=" + requestedSize + " copied=" + totalCopied + " total=" + totalSize);
         }
         return totalCopied > 0 ? totalCopied : -1;
@@ -625,6 +627,46 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
             sRuntimeLogLookupDone = true;
             return sRuntimeLogInfoMethod;
         }
+    }
+
+    private static long resolveStreamingDefaultWindowSize() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
+            return 4L * 1024L * 1024L;
+        }
+        return 8L * 1024L * 1024L;
+    }
+
+    private static long resolveStreamingMaxWindowSize() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
+            return 12L * 1024L * 1024L;
+        }
+        return 24L * 1024L * 1024L;
+    }
+
+    private static long resolveStreamingTargetBufferSize() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
+            return 16L * 1024L * 1024L;
+        }
+        return 32L * 1024L * 1024L;
+    }
+
+    private static long resolveStreamingMaxCacheSize() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
+            return 32L * 1024L * 1024L;
+        }
+        return 64L * 1024L * 1024L;
+    }
+
+    private static long resolveStreamingBackBufferSize() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
+            return 4L * 1024L * 1024L;
+        }
+        return 8L * 1024L * 1024L;
     }
 
     private static void discardFully(InputStream stream, long bytesToSkip) throws IOException {

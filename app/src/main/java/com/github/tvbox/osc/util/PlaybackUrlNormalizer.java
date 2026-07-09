@@ -168,6 +168,10 @@ public final class PlaybackUrlNormalizer {
         if (!live && !isHlsLike(normalizedPath)) {
             return normalizedPath;
         }
+        if (!live && isHlsLike(normalizedPath) && isRemoteNetworkUrl(normalizedPath)) {
+            LOG.i("echo-playback-url direct-system-hls -> " + safeSnippet(normalizedPath));
+            return normalizedPath;
+        }
         return resolvePlaybackUrl(normalizedPath, headers, live);
     }
 
@@ -211,6 +215,10 @@ public final class PlaybackUrlNormalizer {
             return normalizedPath;
         }
         if (!live && !isHlsLike(normalizedPath)) {
+            return normalizedPath;
+        }
+        if (!live && isHlsLike(normalizedPath) && isRemoteNetworkUrl(normalizedPath)) {
+            LOG.i("echo-playback-url compat-direct-hls -> " + safeSnippet(normalizedPath));
             return normalizedPath;
         }
         return resolvePlaybackUrl(normalizedPath, headers, live);
@@ -305,6 +313,14 @@ public final class PlaybackUrlNormalizer {
                 || path.startsWith("https://127.0.0.1")
                 || path.startsWith("http://localhost")
                 || path.startsWith("https://localhost"));
+    }
+
+    private static boolean isRemoteNetworkUrl(String path) {
+        if (TextUtils.isEmpty(path) || isLocalProxyUrl(path)) {
+            return false;
+        }
+        String lower = path.toLowerCase(Locale.US);
+        return lower.startsWith("http://") || lower.startsWith("https://");
     }
 
     private static boolean isAnyLocalProxyPlayUrl(String path) {

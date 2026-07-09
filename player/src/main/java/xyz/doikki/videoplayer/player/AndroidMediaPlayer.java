@@ -11,6 +11,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.storage.StorageManager;
 import android.content.res.Configuration;
@@ -83,6 +84,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private boolean mForceSafePcmAudio;
     private String mLastDispatchedSubtitleText;
     private long mLastDispatchedSubtitleAtMs;
+    private long mLastVolumeStateLogAtMs;
+    private boolean mWaitForRealVideoFrame;
+    private boolean mVideoRenderStartSeen;
+    private int mVideoRenderWatchdogGeneration;
     private int mLastObservedTrackCount = -1;
     private int mLastKnownSubtitleTrackCount;
     private int mSubtitleTrackStableTicks;
@@ -98,6 +103,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private static final int NETWORK_SOURCE_MODE_AUTO = 0;
     private static final int NETWORK_SOURCE_MODE_FORCE_URI = 1;
     private static final int NETWORK_SOURCE_MODE_FORCE_PROXY = 2;
+    private static final int MEDIA_INFO_VIDEO_NOT_PLAYING = 805;
+    private static final long VIDEO_RENDER_START_TIMEOUT_MS = 5500L;
     private static final String HEADER_PROBE_CONTAINER = "X-TVBox-Probe-Container";
     private static final String HEADER_PROBE_DOLBY_VISION = "X-TVBox-Probe-DolbyVision";
     private static final String HEADER_PROBE_NATIVE_DV_DEVICE = "X-TVBox-Probe-NativeDvDevice";
@@ -109,6 +116,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private static final String HEADER_PROBE_JAVA64_LOCAL_PROXY_FAST = "X-TVBox-Probe-Java64LocalProxyFast";
     private int mNetworkSourceMode = NETWORK_SOURCE_MODE_AUTO;
     private boolean mJava64MissingAudioRecoveryAttempted;
+    private final Handler mMainHandler = new Handler(Looper.getMainLooper());
 
     public AndroidMediaPlayer(Context context) {
         mAppContext = context.getApplicationContext();
@@ -241,6 +249,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mMediaPlayer.start();
             restoreRequestedVolume();
             mState = STATE_STARTED;
+            scheduleVideoRenderWatchdogIfNeeded("start");
         } catch (IllegalStateException e) {
             Log.e(TAG, "start failed in state=" + mState, e);
             mState = STATE_ERROR;
@@ -338,6 +347,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mWasPlayingBeforeSeek = false;
             mLastDispatchedSubtitleText = null;
             mLastDispatchedSubtitleAtMs = 0L;
+            mLastVolumeStateLogAtMs = 0L;
+            clearVideoRenderGate("reset");
             resetSystemTrackState();
         } catch (Exception e) {
             Log.e(TAG, "reset failed in state=" + mState, e);
@@ -432,6 +443,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mWasPlayingBeforeSeek = false;
         mLastDispatchedSubtitleText = null;
         mLastDispatchedSubtitleAtMs = 0L;
+        mLastVolumeStateLogAtMs = 0L;
+        clearVideoRenderGate("release");
         resetSystemTrackState();
         try {
             mediaPlayer.setSurface(null);
@@ -616,6 +629,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         Log.i(TAG, "onInfo what=" + what + " extra=" + extra);
         //解决MEDIA_INFO_VIDEO_RENDERING_START多次回调问题
         if (what == AbstractPlayer.MEDIA_INFO_RENDERING_START) {
+            mVideoRenderStartSeen = true;
+            mWaitForRealVideoFrame = false;
+            mVideoRenderWatchdogGeneration++;
             if (mIsPreparing) {
                 mPlayerEventListener.onInfo(what, extra);
                 mIsPreparing = false;
@@ -625,6 +641,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 ensurePreferredAudioTrackSelected("render-start");
                 logTrackState("render-start");
             }
+        } else if (what == MEDIA_INFO_VIDEO_NOT_PLAYING
+                && shouldTreatAsVideoStartupFailure(extra)) {
+            failBeforeFirstVideoFrame("media-info-805:" + extra);
         } else {
             mPlayerEventListener.onInfo(what, extra);
         }
@@ -678,11 +697,13 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return;
         }
         mPlayerEventListener.onPrepared();
-        if (!isVideo()) {
+        if (isAudioOnlyTrackList()) {
+            clearVideoRenderGate("audio-only");
             start();
             mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_RENDERING_START, 0);
             return;
         }
+        armVideoRenderGate("prepared");
         logInfo("echo-system-start-gate prepared hasTarget=" + hasVideoOutputTarget()
                 + " matroska=" + mCurrentDataSourceMatroskaLike
                 + " hdrLike=" + isCurrentHdrLikeDataSource());
@@ -694,25 +715,33 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
     }
 
-    private boolean isVideo() {
+    private boolean isAudioOnlyTrackList() {
         if (!canInspectTrackInfo()) {
-            return true;
+            return false;
         }
+        boolean hasAudio = false;
         try {
             MediaPlayer.TrackInfo[] trackInfo = mMediaPlayer.getTrackInfo();
-            if (trackInfo == null) {
-                return true;
+            if (trackInfo == null || trackInfo.length == 0) {
+                logInfo("echo-system-track unknown-empty assume-video");
+                return false;
             }
             for (MediaPlayer.TrackInfo info :
                     trackInfo) {
+                if (info == null) {
+                    continue;
+                }
                 if (info.getTrackType() == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_VIDEO) {
-                    return true;
+                    return false;
+                }
+                if (info.getTrackType() == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_AUDIO) {
+                    hasAudio = true;
                 }
             }
         } catch (Exception e) {
-            return true;
+            return false;
         }
-        return false;
+        return hasAudio;
     }
 
     @Override
@@ -781,10 +810,14 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             mMediaPlayer.setVolume(1f, 1f);
-            logInfo("echo-system-audio volume=100");
-            AudioManager audioManager = (AudioManager) mAppContext.getSystemService(Context.AUDIO_SERVICE);
-            if (audioManager != null) {
-                logCurrentStreamState(audioManager, "restore");
+            long now = System.currentTimeMillis();
+            if (now - mLastVolumeStateLogAtMs >= 5000L) {
+                mLastVolumeStateLogAtMs = now;
+                logInfo("echo-system-audio volume=100");
+                AudioManager audioManager = (AudioManager) mAppContext.getSystemService(Context.AUDIO_SERVICE);
+                if (audioManager != null) {
+                    logCurrentStreamState(audioManager, "restore");
+                }
             }
         } catch (RuntimeException e) {
             Log.w(TAG, "restoreRequestedVolume failed in state=" + mState, e);
@@ -1103,6 +1136,86 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 + " hdrLike=" + isCurrentHdrLikeDataSource());
         mPendingStartAfterDisplayReady = false;
         start();
+    }
+
+    private void armVideoRenderGate(String reason) {
+        mWaitForRealVideoFrame = true;
+        mVideoRenderStartSeen = false;
+        mVideoRenderWatchdogGeneration++;
+        logInfo("echo-system-video render-watch-arm reason=" + reason
+                + " timeoutMs=" + VIDEO_RENDER_START_TIMEOUT_MS);
+        restoreRequestedVolume();
+    }
+
+    private void clearVideoRenderGate(String reason) {
+        mWaitForRealVideoFrame = false;
+        mVideoRenderStartSeen = false;
+        mVideoRenderWatchdogGeneration++;
+        logInfo("echo-system-video gate-clear reason=" + reason);
+    }
+
+    private void scheduleVideoRenderWatchdogIfNeeded(String reason) {
+        if (!mWaitForRealVideoFrame || mVideoRenderStartSeen || mMediaPlayer == null) {
+            return;
+        }
+        final int generation = mVideoRenderWatchdogGeneration;
+        final String gateReason = reason;
+        logInfo("echo-system-video watchdog-start reason=" + gateReason
+                + " gen=" + generation);
+        mMainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                handleVideoRenderWatchdog(generation, gateReason);
+            }
+        }, VIDEO_RENDER_START_TIMEOUT_MS);
+    }
+
+    private void handleVideoRenderWatchdog(int generation, String reason) {
+        if (generation != mVideoRenderWatchdogGeneration
+                || !mWaitForRealVideoFrame
+                || mVideoRenderStartSeen
+                || mMediaPlayer == null
+                || mState != STATE_STARTED) {
+            return;
+        }
+        failBeforeFirstVideoFrame("watchdog:" + reason);
+    }
+
+    private boolean shouldTreatAsVideoStartupFailure(int extra) {
+        if (mVideoRenderStartSeen || mMediaPlayer == null) {
+            return false;
+        }
+        if (mState != STATE_STARTED && mState != STATE_PREPARED && mState != STATE_PREPARING) {
+            return false;
+        }
+        if (!mWaitForRealVideoFrame && mState != STATE_STARTED) {
+            return false;
+        }
+        return !isAudioOnlyTrackList();
+    }
+
+    private void failBeforeFirstVideoFrame(String reason) {
+        if (mState == STATE_ERROR || mMediaPlayer == null) {
+            return;
+        }
+        logInfo("echo-system-video first-frame-recover reason=" + reason
+                + " state=" + mState
+                + " hasTarget=" + hasVideoOutputTarget()
+                + " url=" + firstNonEmpty(mCurrentDataSourceUrl));
+        mState = STATE_ERROR;
+        mIsPreparing = false;
+        mPendingStartAfterDisplayReady = false;
+        mWaitForRealVideoFrame = false;
+        mVideoRenderWatchdogGeneration++;
+        try {
+            if (canPause()) {
+                mMediaPlayer.pause();
+            }
+        } catch (Throwable ignored) {
+        }
+        if (mPlayerEventListener != null) {
+            mPlayerEventListener.onError();
+        }
     }
 
     public boolean shouldDelayResumeSeekUntilRenderingStart() {

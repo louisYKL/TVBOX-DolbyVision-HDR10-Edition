@@ -125,7 +125,7 @@ public class ModelSettingFragment extends BaseLazyFragment {
         tvHomeApi.setText(ApiConfig.get().getHomeSourceBean().getName());
         tvScale.setText(PlayerHelper.getScaleName(Hawk.get(HawkConfig.PLAY_SCALE, 0)));
         tvPlay.setText(PlayerHelper.getPlayerName(Hawk.get(HawkConfig.PLAY_TYPE, 0)));
-        tvRender.setText(PlayerHelper.getRenderName(Hawk.get(HawkConfig.PLAY_RENDER, 0)));
+        tvRender.setText(PlayerHelper.getRenderName(1));
         tvAudioPassthrough.setText(Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false) ? "开启" : "关闭");
         HdrDeviceSupport.Capabilities hdrCapabilities = HdrDeviceSupport.query(mContext);
         String hdrRouteSummary = hdrCapabilities.supportsHdrButNotDolbyVision()
@@ -440,17 +440,16 @@ public class ModelSettingFragment extends BaseLazyFragment {
             @Override
             public void onClick(View v) {
                 FastClickCheckUtil.check(v);
-                int defaultPos = Hawk.get(HawkConfig.PLAY_RENDER, 0);
+                int defaultPos = 0;
                 ArrayList<Integer> renders = new ArrayList<>();
-                renders.add(0);
                 renders.add(1);
                 SelectDialog<Integer> dialog = new SelectDialog<>(mActivity);
                 dialog.setTip("请选择默认渲染方式");
                 dialog.setAdapter(new SelectDialogAdapter.SelectDialogInterface<Integer>() {
                     @Override
                     public void click(Integer value, int pos) {
-                        Hawk.put(HawkConfig.PLAY_RENDER, value);
-                        tvRender.setText(PlayerHelper.getRenderName(value));
+                        Hawk.put(HawkConfig.PLAY_RENDER, 1);
+                        tvRender.setText(PlayerHelper.getRenderName(1));
                         PlayerHelper.init();
                     }
 

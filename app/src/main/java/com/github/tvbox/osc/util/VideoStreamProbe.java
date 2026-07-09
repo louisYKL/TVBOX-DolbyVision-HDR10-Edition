@@ -20,6 +20,7 @@ import com.github.tvbox.osc.player.TrackInfoBean;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -54,6 +55,9 @@ public final class VideoStreamProbe {
     private static final int MATROSKA_TRACKS_TARGET_MAX_BYTES = 8 * 1024 * 1024;
     private static final int MATROSKA_TRACKS_TARGET_REOPEN_MARGIN_BYTES = 64 * 1024;
     private static final int SAMPLE_PROBE_BYTES = 192 * 1024;
+    private static final int HLS_PLAYLIST_PROBE_BYTES = 512 * 1024;
+    private static final int HLS_SEGMENT_PROBE_BYTES = 2 * 1024 * 1024;
+    private static final int HLS_AVC_PROFILE_UNSUPPORTED_HIGH10 = 110;
     private static final int MAX_VIDEO_SAMPLE_PROBE_COUNT = 6;
     private static final long MAIN_THREAD_LOCAL_PROXY_PROBE_TIMEOUT_MS = 2500L;
     private static final ExecutorService PROBE_EXECUTOR = Executors.newFixedThreadPool(2);
@@ -161,6 +165,37 @@ public final class VideoStreamProbe {
             }
         }
         return probeWithTimeout(context, url, headers, timeoutMs);
+    }
+
+    public static Result probeHlsAvcProfile(Context context, String url, Map<String, String> headers) {
+        if (TextUtils.isEmpty(url) || !PlaybackUrlNormalizer.isHlsLike(url)) {
+            return Result.unknown("hls-avc-profile-not-hls");
+        }
+        String normalizedUrl = PlaybackUrlNormalizer.normalizeHttpUrl(unwrapAppStreamProxy(url));
+        String cacheKey = buildCacheKey("hls-avc-profile:" + normalizedUrl, headers);
+        Result cached = CACHE.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            Result result = probeHlsAvcProfileInternal(normalizedUrl, headers, 0);
+            CACHE.put(cacheKey, result);
+            return result;
+        } catch (Throwable th) {
+            Result result = Result.unknown("hls-avc-profile-error:" + th.getClass().getSimpleName());
+            CACHE.put(cacheKey, result);
+            return result;
+        }
+    }
+
+    public static boolean hasUnsupportedHigh10AvcVideo(@Nullable Result result) {
+        if (result == null || TextUtils.isEmpty(result.summary)) {
+            return false;
+        }
+        String lower = result.summary.toLowerCase(Locale.US);
+        return lower.contains("avc-profile=110")
+                || lower.contains("avc-high10")
+                || lower.contains("high10");
     }
 
     @Nullable
@@ -1062,6 +1097,246 @@ public final class VideoStreamProbe {
 
     private static ProbeChunk readRange(String url, Map<String, String> headers, long start, long end) throws Exception {
         return readRange(url, headers, start, end, PROBE_BYTES);
+    }
+
+    private static Result probeHlsAvcProfileInternal(String url,
+                                                     Map<String, String> headers,
+                                                     int depth) throws Exception {
+        byte[] playlistBytes = readUrlLimited(url, headers, HLS_PLAYLIST_PROBE_BYTES);
+        String playlist = new String(playlistBytes, StandardCharsets.UTF_8);
+        String variantUrl = findFirstHlsVariantUrl(url, playlist);
+        if (!TextUtils.isEmpty(variantUrl) && depth < 2) {
+            return probeHlsAvcProfileInternal(variantUrl, headers, depth + 1);
+        }
+        List<String> segments = findFirstHlsSegmentUrls(url, playlist, 3);
+        if (segments.isEmpty()) {
+            return Result.unknown("hls-avc-profile-no-segment");
+        }
+        for (int i = 0; i < segments.size(); i++) {
+            String segmentUrl = segments.get(i);
+            byte[] segment = readUrlLimited(segmentUrl, headers, HLS_SEGMENT_PROBE_BYTES);
+            int profile = extractAvcProfileFromTransportStream(segment);
+            if (profile > 0) {
+                boolean high10 = profile == HLS_AVC_PROFILE_UNSUPPORTED_HIGH10;
+                return new Result(true, false, false, false, false, -1, false,
+                        "video/avc", null,
+                        true, false,
+                        false, false, false, false, false, 0,
+                        null,
+                        "hls-avc-profile avc-profile=" + profile
+                                + (high10 ? " avc-high10" : "")
+                                + " segment=" + i);
+            }
+        }
+        return Result.unknown("hls-avc-profile-no-sps");
+    }
+
+    private static byte[] readUrlLimited(String url, Map<String, String> headers, int maxBytes) throws Exception {
+        Request.Builder builder = new Request.Builder()
+                .url(url)
+                .header("Accept-Encoding", "identity")
+                .header("Connection", "close");
+        if (headers != null) {
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                if (!TextUtils.isEmpty(entry.getKey()) && !TextUtils.isEmpty(entry.getValue())) {
+                    builder.header(entry.getKey(), entry.getValue().trim());
+                }
+            }
+        }
+        Response response = CLIENT.newCall(builder.build()).execute();
+        try {
+            if (!response.isSuccessful() || response.body() == null) {
+                throw new IllegalStateException("HTTP " + response.code());
+            }
+            return readLimited(response.body().byteStream(), maxBytes);
+        } finally {
+            response.close();
+        }
+    }
+
+    private static String findFirstHlsVariantUrl(String playlistUrl, String playlist) {
+        if (TextUtils.isEmpty(playlist)) {
+            return "";
+        }
+        String[] lines = playlist.split("\\r?\\n");
+        boolean nextUriIsVariant = false;
+        for (String rawLine : lines) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (TextUtils.isEmpty(line)) {
+                continue;
+            }
+            if (line.startsWith("#EXT-X-STREAM-INF")) {
+                nextUriIsVariant = true;
+                continue;
+            }
+            if (nextUriIsVariant && !line.startsWith("#")) {
+                return resolveHlsUri(playlistUrl, line);
+            }
+            if (line.startsWith("#")) {
+                continue;
+            }
+            nextUriIsVariant = false;
+        }
+        return "";
+    }
+
+    private static List<String> findFirstHlsSegmentUrls(String playlistUrl, String playlist, int maxCount) {
+        if (TextUtils.isEmpty(playlist)) {
+            return Collections.emptyList();
+        }
+        ArrayList<String> segments = new ArrayList<>();
+        String[] lines = playlist.split("\\r?\\n");
+        for (String rawLine : lines) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (TextUtils.isEmpty(line) || line.startsWith("#")) {
+                continue;
+            }
+            segments.add(resolveHlsUri(playlistUrl, line));
+            if (segments.size() >= maxCount) {
+                break;
+            }
+        }
+        return segments;
+    }
+
+    private static String resolveHlsUri(String playlistUrl, String line) {
+        try {
+            return new URI(playlistUrl).resolve(line).toString();
+        } catch (Throwable ignored) {
+            return line;
+        }
+    }
+
+    private static int extractAvcProfileFromTransportStream(byte[] data) {
+        if (data == null || data.length < 188) {
+            return -1;
+        }
+        int pmtPid = -1;
+        int videoPid = -1;
+        for (int offset = 0; offset + 188 <= data.length; offset += 188) {
+            if ((data[offset] & 0xff) != 0x47) {
+                continue;
+            }
+            boolean payloadUnitStart = (data[offset + 1] & 0x40) != 0;
+            int pid = ((data[offset + 1] & 0x1f) << 8) | (data[offset + 2] & 0xff);
+            int payloadOffset = tsPayloadOffset(data, offset);
+            if (payloadOffset < 0 || payloadOffset >= offset + 188) {
+                continue;
+            }
+            if (pid == 0 && payloadUnitStart) {
+                pmtPid = parsePatForPmtPid(data, payloadOffset, offset + 188);
+            } else if (pmtPid >= 0 && pid == pmtPid && payloadUnitStart) {
+                videoPid = parsePmtForAvcVideoPid(data, payloadOffset, offset + 188);
+                if (videoPid >= 0) {
+                    break;
+                }
+            }
+        }
+        if (videoPid < 0) {
+            return -1;
+        }
+        ByteArrayOutputStream video = new ByteArrayOutputStream(Math.min(data.length, HLS_SEGMENT_PROBE_BYTES));
+        for (int offset = 0; offset + 188 <= data.length; offset += 188) {
+            if ((data[offset] & 0xff) != 0x47) {
+                continue;
+            }
+            boolean payloadUnitStart = (data[offset + 1] & 0x40) != 0;
+            int pid = ((data[offset + 1] & 0x1f) << 8) | (data[offset + 2] & 0xff);
+            if (pid != videoPid) {
+                continue;
+            }
+            int payloadOffset = tsPayloadOffset(data, offset);
+            if (payloadOffset < 0 || payloadOffset >= offset + 188) {
+                continue;
+            }
+            if (payloadUnitStart
+                    && payloadOffset + 9 < offset + 188
+                    && data[payloadOffset] == 0
+                    && data[payloadOffset + 1] == 0
+                    && data[payloadOffset + 2] == 1) {
+                int headerLength = data[payloadOffset + 8] & 0xff;
+                payloadOffset += 9 + headerLength;
+            }
+            if (payloadOffset < offset + 188) {
+                video.write(data, payloadOffset, offset + 188 - payloadOffset);
+            }
+        }
+        return extractAvcProfileFromAnnexB(video.toByteArray());
+    }
+
+    private static int tsPayloadOffset(byte[] data, int packetOffset) {
+        int adaptationControl = (data[packetOffset + 3] >> 4) & 0x03;
+        if (adaptationControl == 0 || adaptationControl == 2) {
+            return -1;
+        }
+        int payloadOffset = packetOffset + 4;
+        if (adaptationControl == 3) {
+            int adaptationLength = data[payloadOffset] & 0xff;
+            payloadOffset += 1 + adaptationLength;
+        }
+        return payloadOffset;
+    }
+
+    private static int parsePatForPmtPid(byte[] data, int payloadOffset, int packetEnd) {
+        if (payloadOffset >= packetEnd) {
+            return -1;
+        }
+        int pointer = data[payloadOffset] & 0xff;
+        int section = payloadOffset + 1 + pointer;
+        if (section + 12 > packetEnd || (data[section] & 0xff) != 0x00) {
+            return -1;
+        }
+        int sectionLength = ((data[section + 1] & 0x0f) << 8) | (data[section + 2] & 0xff);
+        int end = Math.min(packetEnd, section + 3 + sectionLength - 4);
+        for (int pos = section + 8; pos + 4 <= end; pos += 4) {
+            int program = ((data[pos] & 0xff) << 8) | (data[pos + 1] & 0xff);
+            if (program != 0) {
+                return ((data[pos + 2] & 0x1f) << 8) | (data[pos + 3] & 0xff);
+            }
+        }
+        return -1;
+    }
+
+    private static int parsePmtForAvcVideoPid(byte[] data, int payloadOffset, int packetEnd) {
+        if (payloadOffset >= packetEnd) {
+            return -1;
+        }
+        int pointer = data[payloadOffset] & 0xff;
+        int section = payloadOffset + 1 + pointer;
+        if (section + 12 > packetEnd || (data[section] & 0xff) != 0x02) {
+            return -1;
+        }
+        int sectionLength = ((data[section + 1] & 0x0f) << 8) | (data[section + 2] & 0xff);
+        int programInfoLength = ((data[section + 10] & 0x0f) << 8) | (data[section + 11] & 0xff);
+        int pos = section + 12 + programInfoLength;
+        int end = Math.min(packetEnd, section + 3 + sectionLength - 4);
+        while (pos + 5 <= end) {
+            int streamType = data[pos] & 0xff;
+            int elementaryPid = ((data[pos + 1] & 0x1f) << 8) | (data[pos + 2] & 0xff);
+            int esInfoLength = ((data[pos + 3] & 0x0f) << 8) | (data[pos + 4] & 0xff);
+            if (streamType == 0x1b) {
+                return elementaryPid;
+            }
+            pos += 5 + esInfoLength;
+        }
+        return -1;
+    }
+
+    private static int extractAvcProfileFromAnnexB(byte[] data) {
+        if (data == null || data.length < 8) {
+            return -1;
+        }
+        for (int i = 0; i + 6 < data.length; i++) {
+            int startCodeLength = startCodeLengthAt(data, i, data.length);
+            if (startCodeLength <= 0 || i + startCodeLength + 2 >= data.length) {
+                continue;
+            }
+            int nalType = data[i + startCodeLength] & 0x1f;
+            if (nalType == 7) {
+                return data[i + startCodeLength + 1] & 0xff;
+            }
+        }
+        return -1;
     }
 
     private static ProbeChunk readRange(String url, Map<String, String> headers, long start, long end, int maxBytes) throws Exception {

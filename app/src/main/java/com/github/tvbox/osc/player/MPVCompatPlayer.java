@@ -82,6 +82,8 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
     private OnRuntimeVideoModeListener runtimeVideoModeListener;
     private boolean runtimeVideoModeNotified;
     private OnBridgeTrackInfoListener bridgeTrackInfoListener;
+    private boolean playbackErrorNotified;
+    private boolean hardwareDecodeStartupFailed;
 
     public interface OnBridgeTrackInfoListener {
         void onTrackInfo(TrackInfo trackInfo);
@@ -154,6 +156,8 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         subtitleTextListener = null;
         runtimeVideoModeListener = null;
         runtimeVideoModeNotified = false;
+        playbackErrorNotified = false;
+        hardwareDecodeStartupFailed = false;
         clearParsedSubtitleTracks();
         forceMaxVolume();
         if (subtitleHelperMode) {
@@ -196,6 +200,8 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         subtitleTrackStableTicks = 0;
         subtitleTrackListSettled = false;
         runtimeVideoModeNotified = false;
+        playbackErrorNotified = false;
+        hardwareDecodeStartupFailed = false;
         clearParsedSubtitleTracks();
     }
 
@@ -360,6 +366,8 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         lastObservedSubtitleTrackCount = -1;
         subtitleTrackStableTicks = 0;
         subtitleTrackListSettled = false;
+        playbackErrorNotified = false;
+        hardwareDecodeStartupFailed = false;
         clearParsedSubtitleTracks();
     }
 
@@ -408,31 +416,15 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         }
         released = true;
         mainHandler.removeCallbacksAndMessages(null);
+        MPVCompatManager.pauseAndDetachForRelease("player-release");
         try {
-            MPVLib.setPropertyBoolean("pause", true);
+            MPVLib.removeObserver(this);
+            MPVLib.removeLogObserver(this);
         } catch (Throwable ignored) {
         }
-        try {
-            MPVLib.command(new String[]{"stop"});
-        } catch (Throwable ignored) {
-        }
-        if (surfaceAttached) {
-            try {
-                MPVLib.detachSurface();
-            } catch (Throwable ignored) {
-            }
-            surfaceAttached = false;
-            attachedSurface = null;
-        }
-        MPVLib.removeObserver(this);
-        MPVLib.removeLogObserver(this);
-        try {
-            MPVLib.setOptionString("http-header-fields", "");
-            MPVLib.setOptionString("referrer", "");
-            MPVLib.setOptionString("force-window", "no");
-            MPVLib.setPropertyString("audio-device", "auto");
-        } catch (Throwable ignored) {
-        }
+        surfaceAttached = false;
+        attachedSurface = null;
+        pendingSurface = null;
         started = false;
         prepared = false;
         completed = true;
@@ -454,6 +446,8 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         subtitleTrackStableTicks = 0;
         subtitleTrackListSettled = false;
         subtitleTextListener = null;
+        playbackErrorNotified = false;
+        hardwareDecodeStartupFailed = false;
         clearParsedSubtitleTracks();
     }
 
@@ -910,10 +904,47 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         }
         parseSubtitleTrackLog(prefix, text);
         String lower = text.toLowerCase(Locale.US);
+        if (isHardwareDecodeStartupFailure(lower)) {
+            handleHardwareDecodeStartupFailure(prefix + ": " + text);
+        }
         if (lower.contains("error") || lower.contains("failed") || lower.contains("underrun")) {
             Log.w(TAG, prefix + ": " + text);
             LOG.i("echo-mpv-log " + prefix + ": " + text);
         }
+    }
+
+    private boolean isHardwareDecodeStartupFailure(String lower) {
+        if (subtitleHelperMode || TextUtils.isEmpty(lower)) {
+            return false;
+        }
+        if (!lower.contains("mediacodec")) {
+            return false;
+        }
+        return lower.contains("failed to start")
+                || lower.contains("does not support required profile")
+                || lower.contains("hardware accelerator failed to decode picture");
+    }
+
+    private void handleHardwareDecodeStartupFailure(String reason) {
+        if (released || playbackErrorNotified || subtitleHelperMode) {
+            return;
+        }
+        hardwareDecodeStartupFailed = true;
+        started = false;
+        completed = false;
+        playWhenPrepared = false;
+        pendingResumeAfterSurfaceAttach = false;
+        pendingInitialSeekAfterRestart = false;
+        logInfo("echo-mpv-fatal hwdec-start-failed reason=" + shrink(reason));
+        try {
+            MPVLib.setPropertyBoolean("pause", true);
+        } catch (Throwable ignored) {
+        }
+        try {
+            MPVLib.command(new String[]{"stop"});
+        } catch (Throwable ignored) {
+        }
+        notifyError();
     }
 
     private void loadCurrentFile() {
@@ -1068,17 +1099,22 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
             updateAndroidSurfaceSize();
         }
         if (surface == null || !surface.isValid()) {
+            boolean shouldPauseForMissingSurface = fileLoadRequested && (started || playWhenPrepared);
             if (surfaceAttached) {
                 lastSurfaceLossPositionMs = getCurrentPosition();
                 wasPlayingBeforeSurfaceLoss = started;
                 pendingResumeAfterSurfaceAttach = wasPlayingBeforeSurfaceLoss;
                 pendingSurfaceLoss = true;
+                pauseAndDetachForSurfaceLoss("surface-null");
                 surfaceAttached = false;
                 attachedSurface = null;
                 logInfo("echo-mpv-surface-null defer-detach loaded=" + fileLoadRequested
                         + " pos=" + lastSurfaceLossPositionMs
                         + " wasPlaying=" + wasPlayingBeforeSurfaceLoss);
             } else {
+                if (shouldPauseForMissingSurface) {
+                    pauseAndDetachForSurfaceLoss("surface-null-unattached");
+                }
                 logInfo("echo-mpv-surface-null keep-current-file loaded=" + fileLoadRequested);
             }
             return;
@@ -1110,6 +1146,19 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         }
         surfaceAttached = false;
         attachedSurface = null;
+    }
+
+    private void pauseAndDetachForSurfaceLoss(String reason) {
+        try {
+            MPVLib.setPropertyBoolean("pause", true);
+        } catch (Throwable ignored) {
+        }
+        try {
+            MPVLib.detachSurface();
+        } catch (Throwable ignored) {
+        }
+        started = false;
+        logInfo("echo-mpv-surface-loss-pause reason=" + reason);
     }
 
     private void recoverAfterSurfaceAttachIfNeeded() {
@@ -1407,9 +1456,10 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
 
     private void notifyError() {
         final PlayerEventListener listener = mPlayerEventListener;
-        if (listener == null || released) {
+        if (listener == null || released || playbackErrorNotified) {
             return;
         }
+        playbackErrorNotified = true;
         mainHandler.post(() -> {
             if (!released && mPlayerEventListener != null) {
                 mPlayerEventListener.onError();

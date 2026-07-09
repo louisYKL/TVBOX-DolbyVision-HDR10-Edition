@@ -68,6 +68,7 @@ public final class HdrDeviceSupport {
         public final boolean codecListDolbyVisionDecoder;
         public final boolean declaredDolbyVisionDecoder;
         public final boolean hevcMain10Decoder;
+        public final boolean avcHigh10Decoder;
         public final String summary;
 
         // 兼容旧字段名：hdr10/hdr10Plus 表示“显示端可输出 HDR10/HDR10+”
@@ -82,7 +83,9 @@ public final class HdrDeviceSupport {
                              boolean dolbyVisionDecoder,
                              boolean codecListDolbyVisionDecoder,
                              boolean declaredDolbyVisionDecoder,
-                             boolean hevcMain10Decoder, String summary) {
+                             boolean hevcMain10Decoder,
+                             boolean avcHigh10Decoder,
+                             String summary) {
             this.displayHdr10 = displayHdr10;
             this.displayHdr10Plus = displayHdr10Plus;
             this.displayHlg = displayHlg;
@@ -94,6 +97,7 @@ public final class HdrDeviceSupport {
             this.codecListDolbyVisionDecoder = codecListDolbyVisionDecoder;
             this.declaredDolbyVisionDecoder = declaredDolbyVisionDecoder;
             this.hevcMain10Decoder = hevcMain10Decoder;
+            this.avcHigh10Decoder = avcHigh10Decoder;
             this.summary = summary;
             this.hdr10 = displayHdr10;
             this.hdr10Plus = displayHdr10Plus;
@@ -206,14 +210,16 @@ public final class HdrDeviceSupport {
         boolean codecListHevcMain10Decoder = hasHevcMain10Decoder();
         boolean xmlHevcMain10Decoder = codecListHevcMain10Decoder || hasDeclaredCodecMarker(HEVC_MAIN10_CODEC_MARKERS);
         boolean hevcMain10Decoder = codecListHevcMain10Decoder || xmlHevcMain10Decoder;
+        boolean codecListAvcHigh10Decoder = hasAvcHigh10Decoder();
 
         Capabilities result = new Capabilities(displayHdr10, displayHdr10Plus, displayHlg,
                 displayDolbyVision, desiredMaxLuminance, desiredMaxAverageLuminance,
                 desiredMinLuminance, dolbyVisionDecoder, codecListDolbyVisionDecoder,
                 xmlDolbyVisionDecoder || propertyDolbyVisionDecoder, hevcMain10Decoder,
+                codecListAvcHigh10Decoder,
                 buildSummary(displayHdr10, displayHdr10Plus, displayHlg, displayDolbyVision,
                         desiredMaxLuminance, desiredMaxAverageLuminance, desiredMinLuminance,
-                        dolbyVisionDecoder, hevcMain10Decoder,
+                        dolbyVisionDecoder, hevcMain10Decoder, codecListAvcHigh10Decoder,
                         codecListDolbyVisionDecoder, xmlDolbyVisionDecoder, propertyDolbyVisionDecoder,
                         codecListHevcMain10Decoder, xmlHevcMain10Decoder));
         sCached = result;
@@ -276,6 +282,41 @@ public final class HdrDeviceSupport {
                             if (pl.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
                                     || pl.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10HDR10
                                     || pl.profile == 0x4000 /* HEVCProfileMain10HDR10Plus */) {
+                                return true;
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** 是否存在支持 AVC High 10（H.264 10-bit）的解码器。 */
+    private static boolean hasAvcHigh10Decoder() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            return false;
+        }
+        try {
+            MediaCodecList list = new MediaCodecList(MediaCodecList.ALL_CODECS);
+            for (MediaCodecInfo info : list.getCodecInfos()) {
+                if (info.isEncoder()) {
+                    continue;
+                }
+                for (String type : info.getSupportedTypes()) {
+                    if (type == null || !type.equalsIgnoreCase(MediaFormat.MIMETYPE_VIDEO_AVC)) {
+                        continue;
+                    }
+                    try {
+                        MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType(type);
+                        if (caps == null || caps.profileLevels == null) {
+                            continue;
+                        }
+                        for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels) {
+                            if (pl != null
+                                    && pl.profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh10) {
                                 return true;
                             }
                         }
@@ -388,6 +429,7 @@ public final class HdrDeviceSupport {
                                        float desiredMaxAverageLuminance, float desiredMinLuminance,
                                        boolean dolbyVisionDecoder,
                                        boolean hevcMain10Decoder,
+                                       boolean avcHigh10Decoder,
                                        boolean codecListDolbyVisionDecoder,
                                        boolean xmlDolbyVisionDecoder,
                                        boolean propertyDolbyVisionDecoder,
@@ -402,6 +444,7 @@ public final class HdrDeviceSupport {
         List<String> decode = new ArrayList<>();
         if (dolbyVisionDecoder) decode.add("DV");
         if (hevcMain10Decoder) decode.add("HEVC10");
+        if (avcHigh10Decoder) decode.add("AVC10");
         String decodePart = decode.isEmpty() ? "none" : android.text.TextUtils.join("/", decode);
         List<String> detect = new ArrayList<>();
         if (codecListDolbyVisionDecoder) detect.add("DV-CODEC");
@@ -409,6 +452,7 @@ public final class HdrDeviceSupport {
         else if (propertyDolbyVisionDecoder) detect.add("DV-PROP");
         if (codecListHevcMain10Decoder) detect.add("HEVC10-CODEC");
         else if (xmlHevcMain10Decoder) detect.add("HEVC10-XML");
+        if (avcHigh10Decoder) detect.add("AVC10-CODEC");
         String detectPart = detect.isEmpty() ? "" : " SRC=" + android.text.TextUtils.join("/", detect);
         String luminance = "LUM=" + formatLuminance(desiredMaxLuminance)
                 + "/" + formatLuminance(desiredMaxAverageLuminance)

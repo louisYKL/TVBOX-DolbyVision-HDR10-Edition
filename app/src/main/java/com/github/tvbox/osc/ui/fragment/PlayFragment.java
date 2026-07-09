@@ -1311,18 +1311,71 @@ public class PlayFragment extends BaseLazyFragment {
         if (!finish && tryDolbyVisionFallback()) {
             return;
         }
+        String resolvedError = resolvePlaybackErrorMessage(err);
         if (!isAdded()) return;
         requireActivity().runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 if (finish) {
-                    setTip(err, false, true);
-                    Toast.makeText(mContext, err, Toast.LENGTH_SHORT).show();
+                    setTip(resolvedError, false, true);
+                    Toast.makeText(mContext, resolvedError, Toast.LENGTH_SHORT).show();
                 } else {
-                    setTip(err, false, true);
+                    setTip(resolvedError, false, true);
                 }
             }
         });
+    }
+
+    private String resolvePlaybackErrorMessage(String err) {
+        if (TextUtils.isEmpty(err)) {
+            return err;
+        }
+        if (!"视频播放出错".equals(err) && !"播放超时".equals(err)) {
+            return err;
+        }
+        String hardwareFailure = getCurrentPlaybackHardwareFailureMessage();
+        return TextUtils.isEmpty(hardwareFailure) ? err : hardwareFailure;
+    }
+
+    private String getUnsupportedAvcHigh10Message() {
+        return "此格式不支持硬件解码（H.264 High10）";
+    }
+
+    @Nullable
+    private String getCurrentPlaybackHardwareFailureMessage() {
+        if (mContext == null) {
+            return null;
+        }
+        VideoStreamProbe.Result probe = getCurrentPlaybackProbe();
+        if (!VideoStreamProbe.hasUnsupportedHigh10AvcVideo(probe)) {
+            return null;
+        }
+        HdrDeviceSupport.Capabilities caps = HdrDeviceSupport.query(mContext);
+        if (caps.avcHigh10Decoder) {
+            return null;
+        }
+        return getUnsupportedAvcHigh10Message();
+    }
+
+    private boolean isUnsupportedAvcHigh10Playback(@Nullable VideoStreamProbe.Result probe) {
+        if (mContext == null || !VideoStreamProbe.hasUnsupportedHigh10AvcVideo(probe)) {
+            return false;
+        }
+        return !HdrDeviceSupport.query(mContext).avcHigh10Decoder;
+    }
+
+    private void handleUnsupportedAvcHigh10Playback() {
+        keepHdrWindowDuringPlayerSwitch = false;
+        cancelPlayTimeout();
+        webPlayUrl = null;
+        currentPlaybackUrl = null;
+        currentPlaybackHeaders = null;
+        clearCurrentPlaybackProbe();
+        currentPlaybackRequiresHdrOutput = false;
+        currentPlaybackUsesNativeJava64DolbyVision = false;
+        applySubtitleToneForCurrentPlayback();
+        HdrOutputManager.releaseHdr(mContext, "fragment-unsupported-avc-high10");
+        errorWithRetry(getUnsupportedAvcHigh10Message(), false);
     }
 
     void playUrl(String url, HashMap<String, String> headers) {
@@ -1442,9 +1495,17 @@ public class PlayFragment extends BaseLazyFragment {
         try {
             final JSONObject playbackPlayerCfg = copyPlayerConfigForPlayback();
             HashMap<String, String> activeHeaders = preflight.headers == null ? null : new HashMap<>(preflight.headers);
-            int requestedPlayerType = PlayerHelper.PLAYER_TYPE_SYSTEM;
+            int requestedPlayerType = playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
+            if (!PlayerHelper.isInternalPlayerType(requestedPlayerType)) {
+                requestedPlayerType = PlayerHelper.PLAYER_TYPE_SYSTEM;
+            }
             final DolbyVisionPlaybackRouter.Decision dvDecision = preflight.decision;
             VideoStreamProbe.Result streamProbe = preflight.probe;
+            if (isUnsupportedAvcHigh10Playback(streamProbe)) {
+                LOG.i("echo-playback-block unsupported-hwdec format=avc-high10 url=" + safeLogSnippet(preflight.url));
+                handleUnsupportedAvcHigh10Playback();
+                return;
+            }
             if (activeHeaders == null && shouldCreateInternalPlaybackHeaders(preflight.url, streamProbe)) {
                 activeHeaders = new HashMap<>();
             }
@@ -1600,11 +1661,15 @@ public class PlayFragment extends BaseLazyFragment {
             }
             activeHeaders = mergedHeaders.isEmpty() ? null : mergedHeaders;
             if (!TextUtils.isEmpty(probeUrl) && PlaybackUrlNormalizer.isHlsLike(probeUrl)) {
-                VideoStreamProbe.Result probe = VideoStreamProbe.Result.unknown("skip-hls-probe");
+                VideoStreamProbe.Result probe = VideoStreamProbe.probeHlsAvcProfile(mContext, probeUrl, activeHeaders);
                 DolbyVisionPlaybackRouter.Decision decision = DolbyVisionPlaybackRouter.resolve(mContext,
                         PlayerHelper.PLAYER_TYPE_SYSTEM, probeUrl, activeHeaders, probe,
                         buildContainerHintText(rawUrl, probeUrl));
-                LOG.i("echo-probe-prefetch fragment skip-hls url=" + safeLogSnippet(probeUrl));
+                LOG.i("echo-probe-prefetch fragment hls-light probed=" + probe.probed
+                        + " avc=" + probe.hasAvcVideo
+                        + " high10=" + VideoStreamProbe.hasUnsupportedHigh10AvcVideo(probe)
+                        + " summary=" + probe.summary
+                        + " url=" + safeLogSnippet(probeUrl));
                 return new PlaybackPreflight(rawUrl, probeUrl, activeHeaders, probe, decision, false);
             }
             String probeTargetUrl = PlaybackUrlNormalizer.resolveSystemPlaybackUrl(probeUrl, activeHeaders, false);
@@ -2099,20 +2164,11 @@ public class PlayFragment extends BaseLazyFragment {
                 return true;
             }
             if (PlayerHelper.isBuiltInCompatPlayerType(currentPlayerType)) {
-                if (systemFallbackTried || TextUtils.isEmpty(pendingCompatFallbackSourceUrl)) {
-                    return false;
-                }
-                systemFallbackTried = true;
-                mVodPlayerCfg.put("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
-                mVodPlayerCfg.put("dvm", "sdr");
-                PlayerHelper.updateCfg(mVideoView, mVodPlayerCfg);
-                LOG.i("echo-player-fallback compat->system reason=" + reason
-                        + " player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
-                        + " url=" + safeLogSnippet(pendingCompatFallbackSourceUrl));
-                goPlayUrl(pendingCompatFallbackSourceUrl,
-                        pendingCompatFallbackHeaders == null ? null : new HashMap<>(pendingCompatFallbackHeaders),
-                        currentPlayGeneration());
-                return true;
+                String hardwareFailure = getCurrentPlaybackHardwareFailureMessage();
+                LOG.i("echo-player-fallback compat-stop reason=" + reason
+                        + " msg=" + (TextUtils.isEmpty(hardwareFailure) ? "none" : hardwareFailure)
+                        + " url=" + safeLogSnippet(currentPlaybackUrl));
+                return false;
             }
         } catch (Throwable th) {
             LOG.e("echo-player-fallback failed reason=" + reason + " err=" + th.getMessage());
@@ -2136,7 +2192,7 @@ public class PlayFragment extends BaseLazyFragment {
         }
         String lower = currentPlaybackUrl.toLowerCase(Locale.US);
         if (PlaybackUrlNormalizer.isHlsLike(lower)) {
-            return false;
+            return lower.startsWith("http://") || lower.startsWith("https://");
         }
         if (isTv32LocalProxySdrVod(currentPlaybackUrl, probe)) {
             return true;

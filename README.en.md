@@ -5,13 +5,13 @@
 > A TV-first TVBox branch focused on native hardware playback, HDR activation, Dolby Vision fallback routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.0"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.0-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.0">Download 0.2.0</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.1">Download 0.2.1</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -25,9 +25,9 @@ This branch is built for real living-room playback: keep native system decoding 
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.2.0_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, compatible with in-place updates from 0.1.9.1 |
-| `TVBox_v0.2.0_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, compatible with in-place updates from 0.1.9.1 |
-| `TVBox_v0.2.0_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, compatible with in-place updates from 0.1.9.1 |
+| `TVBox_v0.2.1_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, compatible with in-place updates from 0.1.9.1 / 0.2.0 |
+| `TVBox_v0.2.1_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, compatible with in-place updates from 0.1.9.1 / 0.2.0 |
+| `TVBox_v0.2.1_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, compatible with in-place updates from 0.1.9.1 / 0.2.0 |
 
 ## Preview
 
@@ -56,7 +56,7 @@ The core principle is simple:
 - Keep subtitles, audio passthrough, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
 
-## 0.2.0 Variants
+## 0.2.1 Variants
 
 | Variant | ABI | Target devices | Notes |
 | --- | --- | --- | --- |
@@ -64,13 +64,14 @@ The core principle is simple:
 | `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
 | `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Dedicated Hisense build |
 
-## What 0.2.0 focused on
+## What 0.2.1 focused on
 
-- Fixed 32-bit TV system-player cases where HDR/DV or local-proxy MKV playback could hit black-screen-with-audio, playback failure, or player errors from the old safe-pcm audio attributes.
-- `AndroidMediaPlayer` no longer marks HDR/DV system playback as `USAGE_GAME` / `CONTENT_TYPE_SPEECH`; it keeps the normal `USAGE_MEDIA` / `CONTENT_TYPE_MOVIE` media route.
-- Direct network playback preserves external `User-Agent`, `Referer`, `Origin`, and `Cookie` headers, reducing failures on protected or referer-bound video URLs.
-- Surface/Display teardown or rebuild no longer turns non-fatal detach failures into playback errors, reducing false player errors during fullscreen, screen, or surface transitions.
-- All three deliverables are versioned as `0.2.0` and signed with the same certificate as `0.1.9.1`, so installed `0.1.9.1` builds can be updated in place.
+- Fixed 32-bit TV system-player cases on HLS sources such as Wen Cai where playback could fall into black-screen-with-audio, fake first-frame success, endless prepare, or false playback errors.
+- Empty or unknown HLS track lists now stay on the video path and wait for a real video output target plus the system first-frame callback instead of faking render start.
+- The playback stack is now tightened around `SurfaceView` and hardware decode only; the old software-decode fallback path is removed, and compatibility-player hardware startup failures are surfaced directly instead of bouncing between system and compat players.
+- Streams that require unsupported `H.264 High10` hardware decode now fail clearly with “This format is not supported by hardware decoding (H.264 High10)” instead of entering a black-screen-with-audio state.
+- Reduced HLS prefetch, range-source cache, and runtime-log pressure to avoid low-memory TV stalls and slow playback-page startup, and added lightweight Apple TV / iOS-style transitions for page entry, back, and exit.
+- All three deliverables are versioned as `0.2.1` and signed with the same certificate as `0.1.9.1`, so installed `0.1.9.1` / `0.2.0` builds can be updated in place.
 
 ## Highlights
 
@@ -185,4 +186,5 @@ The repository includes a basic Android build workflow for:
 - `0.1.3`: tighten the 64-bit system-player render/touch path and repack the three Android release variants.
 - `0.1.9.1`: publish the three source trees and APKs through one GitHub Release.
 - `0.2.0`: fix 32-bit system-player black-screen-with-audio, playback-failure, and player-error risks while preserving in-place updates from `0.1.9.1`.
+- `0.2.1`: fix Wen Cai HLS black-screen-with-audio / fake-first-frame / false-error cases, unify the `SurfaceView` hardware-decode path, and fail unsupported `H.264 High10` streams explicitly.
 - Next: keep closing playback, subtitle, HDR, and audio behavior from device logs.
