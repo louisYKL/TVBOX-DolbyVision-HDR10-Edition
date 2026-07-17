@@ -143,8 +143,10 @@ public abstract class BaseActivity extends AppCompatActivity implements CustomAd
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             window.setStatusBarColor(Color.TRANSPARENT);
             window.setNavigationBarColor(Color.TRANSPARENT);
-            window.setElevation(0f);
             window.setBackgroundDrawable(null);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+            window.setElevation(0f);
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.getAttributes().layoutInDisplayCutoutMode =

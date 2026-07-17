@@ -251,6 +251,11 @@
                     android:text="字幕" />
 
                 <com.github.tvbox.osc.ui.tv.widget.LiquidGlassTextView
+                    android:id="@+id/subtitle_toggle"
+                    style="@style/AppleTvControlChip"
+                    android:text="字幕 开" />
+
+                <com.github.tvbox.osc.ui.tv.widget.LiquidGlassTextView
                     android:id="@+id/audio_track_select"
                     style="@style/AppleTvControlChip"
                     android:text="音轨"
@@ -450,6 +455,7 @@
         android:layout_marginTop="@dimen/vs_42"
         android:textColor="@color/apple_tv_text_secondary"
         android:textSize="@dimen/ts_18"
+        android:visibility="gone"
         tools:text="0KB/s" />
 
     <ImageView

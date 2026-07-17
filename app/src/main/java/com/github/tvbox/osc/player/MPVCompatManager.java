@@ -23,7 +23,7 @@ import is.xyz.mpv.MPVLib;
 public final class MPVCompatManager {
     private static final String TAG = "MPVCompatManager";
     private static final String SPDIF_CODECS_FULL = "ac3,eac3,dts,dts-hd,truehd";
-    private static final String SPDIF_CODECS_TV32 = "ac3,eac3,dts";
+    private static final String SPDIF_CODECS_TV32 = "ac3,eac3,dts,truehd";
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean(false);
     private static final AtomicBoolean CREATED = new AtomicBoolean(false);
     private static volatile boolean preferHdrOutput = true;
@@ -155,6 +155,7 @@ public final class MPVCompatManager {
     public static void resetPlaybackState() {
         currentPlayIsDolbyVision = false;
         currentFileForcesTv32LocalProxyPcm = false;
+        currentFileAllowsPassthrough = false;
         synchronized (MPVCompatManager.class) {
             if (!INITIALIZED.get() || !CREATED.get()) {
                 return;
@@ -275,6 +276,17 @@ public final class MPVCompatManager {
         }
     }
 
+    public static void setCurrentFileAudioRoute(boolean forceTv32LocalProxyPcm,
+                                                boolean allowPassthrough) {
+        currentFileForcesTv32LocalProxyPcm = forceTv32LocalProxyPcm;
+        currentFileAllowsPassthrough = allowPassthrough;
+        LOG.i("echo-mpv-audio fileRoute forcePcm=" + forceTv32LocalProxyPcm
+                + " passthroughAllowed=" + allowPassthrough);
+        if (INITIALIZED.get() && CREATED.get()) {
+            applyAudioOutputOptions();
+        }
+    }
+
     public static void applyPlaybackModeOptions() {
         boolean hdr = isHdrOutputMode();
         boolean mapping = isMappingMode();
@@ -295,7 +307,7 @@ public final class MPVCompatManager {
             // Keep the GL path light; HDR activation is requested through the Activity window.
             setRuntimeString("fbo-format", "rgba8");
         }
-        setRuntimeString("video-sync", currentFileForcesTv32LocalProxyPcm ? "display-desync" : "audio");
+        setRuntimeString("video-sync", "audio");
         setRuntimeString("framedrop", "vo");
         setRuntimeString("video-output-levels", "limited");
         applySubtitleOutputOptions();
@@ -349,8 +361,7 @@ public final class MPVCompatManager {
             appendFileOption(builder, "opengl-es", "yes");
             appendFileOption(builder, "fbo-format", "rgba8");
         }
-        appendFileOption(builder, "video-sync",
-                currentFileForcesTv32LocalProxyPcm ? "display-desync" : "audio");
+        appendFileOption(builder, "video-sync", "audio");
         appendFileOption(builder, "framedrop", "vo");
         appendFileOption(builder, "interpolation", "no");
         if (currentFileForcesTv32LocalProxyPcm) {
@@ -411,6 +422,9 @@ public final class MPVCompatManager {
         boolean effectivePassthrough = passthrough
                 && currentFileAllowsPassthrough
                 && !java64PhoneAudioSafeMode;
+        // File-level capability gating has already rejected unsupported output formats.
+        // The probe does not yet distinguish DTS core from DTS-HD, so TV32 keeps DTS-HD on
+        // software decode while allowing capability-verified TrueHD passthrough.
         String spdifCodecs = tv32AudioSafeMode ? SPDIF_CODECS_TV32 : SPDIF_CODECS_FULL;
         setRuntimeString("ao", "audiotrack");
         setRuntimeDouble("volume", 100d);

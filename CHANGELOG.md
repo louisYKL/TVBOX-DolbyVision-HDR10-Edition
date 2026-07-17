@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.2.2
+
+### 中文
+
+- 重构系统播放器的启动与预缓冲流程：打开视频后立即开始读取，使用连续 Range 窗口和后台预取积累播放缓存；达到目标缓存后才开始出画面，同时设置最低缓存和超时兜底，避免无限停在“正在准备播放”或无缓存起播。
+- 初始历史进度恢复与普通拖动统一交给单一 `SeekCoordinator`：同一时刻只向系统播放器提交一个 seek，快速连续拖动只保留最新目标，最终 seek 完成后再恢复播放，避免并发 seek、错误回调和播放器卡死。
+- 修复 seek 后的进度保存和假播放完成：seek 进行中优先保存目标位置，忽略旧位置回灌；对拖动后几秒内出现的厂商播放器错误完成回调做原地恢复，不再误跳下一集、显示“最后一集”或黑屏。
+- 新增准备/缓冲/拖动时的百分比和实时网速显示；百分比按当前读取窗口重新计算并限制在真实完成前不显示 100%，播放、暂停、完成或详情页小窗稳定后立即移除加载层，修复 0%/99% 假卡住和画面上残留网速的问题。
+- 全屏底部菜单新增独立“字幕 开/关”按钮，字幕默认开启；关闭时只取消当前系统字幕、TimedText 或兼容播放器字幕轨道，不销毁字幕视图，重新开启或手动选字幕可以可靠恢复。
+- 字幕初始化改为首帧/播放就绪后执行，系统轨道只允许一次补查，并避免逐轨取消后再选择；修复字幕时有时无、重复双层字幕以及轨道查询阻塞主线程的问题。
+- 详情页在“播放地址”上方新增“正在播放”视频文件名，长文件名使用无限横向滚动；恢复历史集数、切换集数或线路时，文件名和地址始终跟随当前实际集数。
+- 音频直通改为同时检查片源编码和 HDMI / ARC / eARC / 数字输出能力：设备支持的 AC-3、E-AC-3、E-AC-3 JOC、DTS、TrueHD 才直通，不支持的格式交给电视解码后仍由系统音频路由输出到外置设备；不再强制指定可能静音的内置扬声器设备。
+- 修复准备、首帧、seek 和重建数据源期间的音频状态：保持媒体音频属性和满幅应用音量，保留已选音轨，并为 java64 缺失音轨信息提供一次受控的数据源恢复。
+- 缩短并可取消播放前探测，复用探测到的首段数据，限制内存预热缓存；播放器释放、旧请求回调和全屏布局同步均按代际隔离，减少主线程阻塞、卡顿和掉帧，同时保留现有动画效果。
+- 三端共享同一套播放、字幕和性能修复，并保留 java64 触控/手势/焦点链、Hisense 独立包名与 32 位 ABI。正式版本统一为 `0.2.2`（`versionCode 2026`），继续使用原签名，可覆盖安装 `0.2.1` 及 `0.2.1.x` 测试版。
+
+### English
+
+- Rebuilt native-player startup and prebuffering so reads begin immediately, continuous range windows and background prefetch build a healthy buffer, and video starts only after the target is reached, with minimum-buffer and timeout fallbacks to prevent endless preparation.
+- Unified initial resume and normal timeline seeks under a single `SeekCoordinator`. Only one native seek is in flight; rapid repeated scrubbing coalesces to the latest target and playback resumes only after the final seek completes.
+- Fixed progress persistence and false completion after seeking. In-flight targets take precedence over stale native positions, while vendor completion callbacks shortly after a seek are recovered in place instead of advancing to the next episode or showing a black screen.
+- Added real buffering percentage plus network speed for prepare, rebuffer, and seek states. Progress is reset per range window, capped below 100 until actually complete, and removed immediately after stable playback, pause, completion, or embedded-preview recovery.
+- Added a dedicated fullscreen subtitle on/off control, enabled by default. Disabling subtitles clears only the active native TimedText/subtitle or compatibility-player track and keeps the subtitle view reusable.
+- Deferred subtitle discovery until the first frame or playback-ready state, limited native track discovery to one retry, and removed deselect-every-track behavior to prevent missing, duplicated, or main-thread-blocking subtitle initialization.
+- Added a marquee “Now playing” filename above the playback URL on the detail page, kept in sync with restored history, episode changes, and source changes.
+- Passthrough now checks both stream encoding and HDMI / ARC / eARC / digital-output capability. Supported AC-3, E-AC-3, E-AC-3 JOC, DTS, and TrueHD formats can pass through; unsupported formats are decoded while Android keeps routing audio to the active external output.
+- Stabilized media audio attributes, app volume, selected audio tracks, and the prepare/first-frame/seek/source-rebuild lifecycle, including one controlled missing-audio-track recovery for java64.
+- Made preflight probes shorter and cancellable, reused warmed probe bytes, bounded memory warmup caches, and isolated stale callbacks/layout sync by playback generation to reduce main-thread stalls without reducing animation effects.
+- Shipped the same playback, subtitle, and performance core across all three variants while preserving java64 touch/gesture/focus behavior and the Hisense package/ABI boundary. All builds use `0.2.2` (`versionCode 2026`) with the existing signing certificate for in-place updates.
+
 ## 0.2.1
 
 ### 中文

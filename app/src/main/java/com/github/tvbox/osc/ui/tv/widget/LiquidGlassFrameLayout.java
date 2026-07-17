@@ -86,7 +86,9 @@ public class LiquidGlassFrameLayout extends FrameLayout {
     public void setGlassRadius(float radius) {
         cornerRadius = radius;
         glassHelper = new LiquidGlassBackgroundHelper(getResources(), radius);
-        invalidateOutline();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            invalidateOutline();
+        }
         invalidate();
     }
 
