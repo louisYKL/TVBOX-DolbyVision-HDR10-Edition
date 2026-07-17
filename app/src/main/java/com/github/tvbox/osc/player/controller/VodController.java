@@ -100,10 +100,12 @@ public class VodController extends BaseController {
                 switch (msg.what) {
                     case 1000: { // seek 刷新
                         mProgressRoot.setVisibility(VISIBLE);
+                        updatePlaybackLoadingSpeedVisibility(videoPlayState);
                         break;
                     }
                     case 1001: { // seek 关闭
                         mProgressRoot.setVisibility(GONE);
+                        updatePlaybackLoadingSpeedVisibility(videoPlayState);
                         break;
                     }
                     case 1002: { // 显示底部菜单
@@ -197,6 +199,7 @@ public class VodController extends BaseController {
     public SimpleSubtitleView mSubtitleView;
     TextView mResumeAnchor;
     TextView mZimuBtn;
+    TextView mSubtitleToggleBtn;
     TextView mAudioTrackBtn;
     public TextView mLandscapePortraitBtn;
     private View backBtn;//返回键
@@ -210,6 +213,7 @@ public class VodController extends BaseController {
 
     LockRunnable lockRunnable = new LockRunnable();
     private boolean isLock = false;
+    private boolean subtitleEnabled = true;
     Handler myHandle;
     Runnable myRunnable;
     int myHandleSeconds = 10000;//闲置多少毫秒秒关闭底栏  默认6秒
@@ -230,7 +234,10 @@ public class VodController extends BaseController {
             String speed = PlayerHelper.getDisplaySpeed(mSpeed,false);
             String speedBps = PlayerHelper.getDisplaySpeedBps(mSpeed,true);
             mPlayLoadNetSpeedRightTop.setText(speedBps);
-            mPlayLoadNetSpeed.setText(speed);
+            mPlayLoadNetSpeed.setText(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
+                    videoPlayState,
+                    mControlWrapper.getBufferedPercentage(),
+                    speed));
             net_play_speed.setText(speedBps);
             int[] mVideoSizes = mControlWrapper.getVideoSize();
             String width = Integer.toString(mVideoSizes[0]);
@@ -285,6 +292,7 @@ public class VodController extends BaseController {
         mSubtitleView = findViewById(R.id.subtitle_view);
         mResumeAnchor = findViewById(R.id.play_resume_anchor);
         mZimuBtn = findViewById(R.id.zimu_select);
+        mSubtitleToggleBtn = findViewById(R.id.subtitle_toggle);
         mAudioTrackBtn = findViewById(R.id.audio_track_select);
         mLandscapePortraitBtn = findViewById(R.id.landscape_portrait);
         backBtn = findViewById(R.id.tv_back);
@@ -402,6 +410,7 @@ public class VodController extends BaseController {
                 myHandle.postDelayed(myRunnable, myHandleSeconds);
                 long duration = mControlWrapper.getDuration();
                 long newPosition = (duration * seekBar.getProgress()) / seekBar.getMax();
+                cachedProgressPosition = safeTimeMs(newPosition);
                 mControlWrapper.seekTo(newPosition);
                 resumePlaybackAfterSeek("touch");
                 mIsDragging = false;
@@ -608,13 +617,21 @@ public class VodController extends BaseController {
         mZimuBtn.setOnLongClickListener(new OnLongClickListener() {
             @Override
             public boolean onLongClick(View view) {
-                mSubtitleView.setVisibility(View.GONE);
-                mSubtitleView.destroy();
-                mSubtitleView.clearSubtitleCache();
-                mSubtitleView.isInternal = false;
+                setSubtitleEnabled(false);
+                if (listener != null) listener.setSubtitleEnabled(false);
                 hideBottom();
                 Toast.makeText(getContext(), "字幕已关闭", Toast.LENGTH_SHORT).show();
                 return true;
+            }
+        });
+        setSubtitleEnabled(true);
+        mSubtitleToggleBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                FastClickCheckUtil.check(view);
+                setSubtitleEnabled(!subtitleEnabled);
+                if (listener != null) listener.setSubtitleEnabled(subtitleEnabled);
+                hideBottom();
             }
         });
         mAudioTrackBtn.setOnClickListener(new OnClickListener() {
@@ -739,6 +756,17 @@ public class VodController extends BaseController {
         mPlayTitle.setText(playTitleInfo);
     }
 
+    public boolean isSubtitleEnabled() {
+        return subtitleEnabled;
+    }
+
+    public void setSubtitleEnabled(boolean enabled) {
+        subtitleEnabled = enabled;
+        if (mSubtitleToggleBtn != null) {
+            mSubtitleToggleBtn.setText(enabled ? "字幕 开" : "字幕 关");
+        }
+    }
+
     public void resetSpeed() {
         mHandler.removeMessages(1004);
         mHandler.sendEmptyMessageDelayed(1004, 100);
@@ -761,6 +789,8 @@ public class VodController extends BaseController {
 
         void selectSubtitle();
 
+        void setSubtitleEnabled(boolean enabled);
+
         void selectAudioTrack();
 
         void startPlayUrl(String url, HashMap<String, String> headers);
@@ -781,11 +811,17 @@ public class VodController extends BaseController {
         if (mIsDragging) {
             return;
         }
+        int systemSeekTarget = resolveAndroidSystemSeekTarget();
+        boolean systemSeekInFlight = systemSeekTarget >= 0;
+        if (systemSeekInFlight) {
+            cachedProgressPosition = systemSeekTarget;
+            position = systemSeekTarget;
+        }
         super.setProgress(duration, position);
         if (duration > 0) {
             cachedProgressDuration = duration;
         }
-        if (position >= 0 && (duration <= 0 || position <= duration)) {
+        if (!systemSeekInFlight && position >= 0 && (duration <= 0 || position <= duration)) {
             cachedProgressPosition = position;
         }
         mCurrentTime.setText(stringForTime(position));
@@ -818,12 +854,14 @@ public class VodController extends BaseController {
     private static final long FULLSCREEN_SEEK_COMMIT_GUARD_MS = 520L;
     private int pendingSeekRetryCount = 0;
     private String pendingSeekReason = null;
+    private int pendingSeekPosition = -1;
     private final Runnable pendingRemoteSeekCommitRunnable = new Runnable() {
         @Override
         public void run() {
-            if (TextUtils.isEmpty(pendingSeekReason) || simSeekPosition < 0) {
+            if (TextUtils.isEmpty(pendingSeekReason) || pendingSeekPosition < 0) {
                 pendingSeekRetryCount = 0;
                 pendingSeekReason = null;
+                pendingSeekPosition = -1;
                 return;
             }
             if (shouldDelaySeekUntilFullscreenStable() && pendingSeekRetryCount < 4) {
@@ -832,9 +870,11 @@ public class VodController extends BaseController {
                 return;
             }
             String reason = pendingSeekReason;
+            int target = pendingSeekPosition;
             pendingSeekReason = null;
+            pendingSeekPosition = -1;
             pendingSeekRetryCount = 0;
-            commitRemoteSeekNow(reason + "-stable");
+            commitRemoteSeekNow(reason + "-stable", target);
         }
     };
     private int seekResumeCheckCount = 0;
@@ -877,16 +917,17 @@ public class VodController extends BaseController {
         }
         if (shouldDelaySeekUntilFullscreenStable()) {
             pendingSeekReason = reason;
+            pendingSeekPosition = simSeekPosition;
             mHandler.removeCallbacks(pendingRemoteSeekCommitRunnable);
             mHandler.postDelayed(pendingRemoteSeekCommitRunnable, FULLSCREEN_SEEK_COMMIT_GUARD_MS);
             Log.i(TAG, "commitRemoteSeek delayed reason=" + reason + " pos=" + simSeekPosition);
             return;
         }
-        commitRemoteSeekNow(reason);
+        commitRemoteSeekNow(reason, simSeekPosition);
     }
 
-    private void commitRemoteSeekNow(String reason) {
-        if (mControlWrapper == null || simSeekPosition < 0) {
+    private void commitRemoteSeekNow(String reason, int target) {
+        if (mControlWrapper == null || target < 0) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -894,9 +935,9 @@ public class VodController extends BaseController {
             return;
         }
         lastRemoteSeekCommitTime = now;
-        Log.i(TAG, "commitRemoteSeek reason=" + reason + " pos=" + simSeekPosition);
-        cachedProgressPosition = simSeekPosition;
-        mControlWrapper.seekTo(simSeekPosition);
+        Log.i(TAG, "commitRemoteSeek reason=" + reason + " pos=" + target);
+        cachedProgressPosition = target;
+        mControlWrapper.seekTo(target);
         simSeekCommitted = true;
         resumePlaybackAfterSeek(reason);
     }
@@ -908,8 +949,6 @@ public class VodController extends BaseController {
     }
 
     private void resumePlaybackAfterSeek(String reason) {
-        // Cancel any pending resume retry left over from a previous seek so rapid, repeated
-        // seeks never stack multiple delayed start() runnables on top of each other.
         mHandler.removeCallbacks(seekResumeCheckRunnable);
         seekResumeCheckCount = 0;
         pendingSeekResumeCheck = true;
@@ -923,11 +962,11 @@ public class VodController extends BaseController {
             return;
         }
         try {
-            // Avoid platform isPlaying() here: on 32-bit TV firmware it can block while the
-            // extractor is seeking, which turns a remote key event into an input ANR.
             boolean resumeNeeded = videoPlayState == VideoView.STATE_PAUSED
                     || videoPlayState == VideoView.STATE_BUFFERING
                     || videoPlayState == VideoView.STATE_BUFFERED;
+            // AndroidMediaPlayer owns its asynchronous resume. Other player cores retain
+            // their established controller-driven resume behavior.
             if (resumeNeeded && shouldControllerActivelyResumeAfterSeek()) {
                 pendingSeekResumeTriggered = true;
                 Log.i(TAG, "resumePlaybackAfterSeek start reason=" + reason + " state=" + videoPlayState);
@@ -984,6 +1023,13 @@ public class VodController extends BaseController {
     }
 
     private int resolveSeekBasePosition(int duration) {
+        int pendingSystemSeekTarget = resolveAndroidSystemSeekTarget();
+        if (pendingSystemSeekTarget >= 0) {
+            cachedProgressPosition = pendingSystemSeekTarget;
+            return duration > 0
+                    ? Math.min(duration, pendingSystemSeekTarget)
+                    : pendingSystemSeekTarget;
+        }
         int position = cachedProgressPosition;
         if (position <= 0 && mControlWrapper != null) {
             position = safeTimeMs(mControlWrapper.getCurrentPosition());
@@ -1015,6 +1061,7 @@ public class VodController extends BaseController {
     protected void onPlayStateChanged(int playState) {
         super.onPlayStateChanged(playState);
         videoPlayState = playState;
+        updatePlaybackLoadingSpeedVisibility(playState);
         switch (playState) {
             case VideoView.STATE_IDLE:
                 break;
@@ -1040,7 +1087,6 @@ public class VodController extends BaseController {
                 listener.errReplay();
                 break;
             case VideoView.STATE_PREPARED:
-                mPlayLoadNetSpeed.setVisibility(GONE);
                 hideLiveAboutBtn();
                 listener.prepared();
                 if (!isPlayerFullScreen() && !isBottomVisible()) {
@@ -1049,7 +1095,6 @@ public class VodController extends BaseController {
                 }
                 break;
             case VideoView.STATE_BUFFERED:
-                mPlayLoadNetSpeed.setVisibility(GONE);
                 if (!isPlayerFullScreen() && !isBottomVisible()) {
                     updateBottomMenuFocusMode(false);
                     restorePlaybackFocus();
@@ -1057,12 +1102,26 @@ public class VodController extends BaseController {
                 break;
             case VideoView.STATE_PREPARING:
             case VideoView.STATE_BUFFERING:
-                if(mProgressRoot.getVisibility()==GONE)mPlayLoadNetSpeed.setVisibility(VISIBLE);
                 break;
             case VideoView.STATE_PLAYBACK_COMPLETED:
                 listener.playNext(true);
                 break;
         }
+    }
+
+    private void updatePlaybackLoadingSpeedVisibility(int playState) {
+        boolean seekOverlayVisible = mProgressRoot != null && mProgressRoot.getVisibility() != GONE;
+        if (mPlayLoadNetSpeed != null) {
+            mPlayLoadNetSpeed.setVisibility(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
+                    playState, seekOverlayVisible, embeddedPreviewMode) ? VISIBLE : GONE);
+        }
+        refreshLoadingIndicator(playState);
+    }
+
+    @Override
+    protected boolean shouldShowLoadingIndicator(int playState) {
+        return PlaybackLoadingOverlayPolicy.shouldShowControllerLoading(
+                playState, embeddedPreviewMode);
     }
 
     boolean isBottomVisible() {
@@ -1115,6 +1174,7 @@ public class VodController extends BaseController {
 
     private void applyEmbeddedPreviewMode() {
         boolean preview = embeddedPreviewMode || !isPlayerFullScreen();
+        updatePlaybackLoadingSpeedVisibility(videoPlayState);
         if (!preview) {
             setControllerTreeInteractive(true);
             return;
@@ -1314,6 +1374,7 @@ public class VodController extends BaseController {
         applyVisibleFocusState(mPlayerTimeSkipBtn, allowControls && isActuallyVisible(mPlayerTimeSkipBtn));
         applyVisibleFocusState(mPlayerTimeResetBtn, allowControls && isActuallyVisible(mPlayerTimeResetBtn));
         applyVisibleFocusState(mZimuBtn, allowControls && isActuallyVisible(mZimuBtn));
+        applyVisibleFocusState(mSubtitleToggleBtn, allowControls && isActuallyVisible(mSubtitleToggleBtn));
         applyVisibleFocusState(mAudioTrackBtn, allowControls && isActuallyVisible(mAudioTrackBtn));
         applyVisibleFocusState(mLandscapePortraitBtn, allowControls && isActuallyVisible(mLandscapePortraitBtn));
         applyVisibleFocusState(mScreenDisplay, allowControls && isActuallyVisible(mScreenDisplay));
@@ -1413,6 +1474,7 @@ public class VodController extends BaseController {
                 mPlayerTimeSkipBtn,
                 mPlayerTimeResetBtn,
                 mZimuBtn,
+                mSubtitleToggleBtn,
                 mAudioTrackBtn,
                 mLandscapePortraitBtn,
                 mScreenDisplay
@@ -1636,6 +1698,7 @@ public class VodController extends BaseController {
                 || view == mPlayerTimeSkipBtn
                 || view == mPlayerTimeResetBtn
                 || view == mZimuBtn
+                || view == mSubtitleToggleBtn
                 || view == mAudioTrackBtn
                 || view == mLandscapePortraitBtn
                 || view == mScreenDisplay
@@ -1942,6 +2005,7 @@ public class VodController extends BaseController {
 
     @Override
     protected void onGestureSeekCompleted(int seekPosition) {
+        cachedProgressPosition = Math.max(0, seekPosition);
         resumePlaybackAfterSeek("gesture");
     }
 
@@ -2082,6 +2146,24 @@ public class VodController extends BaseController {
         return true;
     }
 
+    private int resolveAndroidSystemSeekTarget() {
+        MyVideoView videoView = null;
+        if (mControlWrapper != null
+                && mControlWrapper.getPlayerControl() instanceof MyVideoView) {
+            videoView = (MyVideoView) mControlWrapper.getPlayerControl();
+        }
+        if (videoView == null) {
+            videoView = findVideoView(this);
+        }
+        if (videoView == null
+                || !(videoView.getMediaPlayer() instanceof xyz.doikki.videoplayer.player.AndroidMediaPlayer)) {
+            return -1;
+        }
+        xyz.doikki.videoplayer.player.AndroidMediaPlayer player =
+                (xyz.doikki.videoplayer.player.AndroidMediaPlayer) videoView.getMediaPlayer();
+        return player.isSeekInFlight() ? player.getPendingSeekPosition() : -1;
+    }
+
     private MyVideoView findVideoView(View view) {
         if (view instanceof MyVideoView) {
             return (MyVideoView) view;
@@ -2201,6 +2283,9 @@ public class VodController extends BaseController {
         mHandler.removeCallbacks(myRunnable2);
         mHandler.removeCallbacks(seekResumeCheckRunnable);
         mHandler.removeCallbacks(pendingRemoteSeekCommitRunnable);
+        pendingSeekReason = null;
+        pendingSeekPosition = -1;
+        pendingSeekRetryCount = 0;
     }
 
 

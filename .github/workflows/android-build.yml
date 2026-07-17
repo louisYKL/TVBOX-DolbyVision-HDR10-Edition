@@ -24,16 +24,14 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APKs
+      - name: Build Hisense APK
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:assembleNormalDebug :app:assembleJava64Debug :app:assembleHisenseDebug --stacktrace
+          ./gradlew :app:assembleDebug --stacktrace
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tvbox-apks
+          name: tvbox-hisense-apk
           path: |
-            app/build/outputs/apk/normal/debug/TVBox_debug-java32.apk
-            app/build/outputs/apk/java64/debug/TVBox_debug-java64.apk
-            app/build/outputs/apk/hisense/debug/TVBox_debug-hisense.apk
+            app/build/outputs/apk/debug/*.apk

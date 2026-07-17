@@ -2,10 +2,10 @@
 
 # TV BOX Hisense 32-bit Edition
 
-> A dedicated Hisense Android / Google TV branch synced to the `0.2.1` playback core.
+> A dedicated Hisense Android / Google TV branch synced to the `0.2.2` playback core.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.2"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.2-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Hisense%20Android%20TV-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
@@ -14,18 +14,20 @@
 ## Current build
 
 - Package name: `com.github.tvbox.osc.hisense`
-- Version: `0.2.1`
+- Version: `0.2.2` (`versionCode 2026`)
 - ABI: `armeabi-v7a`
-- Output APK: `TVBox_v0.2.1_hisense32.apk`
+- Output APK: `TVBox_v0.2.2_hisense32.apk`
 - Minimum Android: 4.4 / API 19
 
-## What was synced in 0.2.1
+## What was synced in 0.2.2
 
-- Pulled in the 32-bit playback fixes for HLS sources such as Wen Cai where playback could fall into black-screen-with-audio, fake first-frame success, endless prepare, or false playback errors.
-- Unified this branch on the `SurfaceView` and hardware-decode path only, removing the old software-decode fallback branch.
-- Streams that require unsupported `H.264 High10` hardware decode now fail clearly with the hardware-decode-not-supported message.
-- Reduced HLS prefetch, range-source cache, and runtime-log pressure to improve startup speed on low-end TVs.
-- Added lightweight Apple TV / iOS-style transitions for page entry, back, and exit.
+- Playback reads and prebuffers immediately, reveals video after the target buffer is ready, and reports real percentage plus network speed during prepare, rebuffer, and seek states.
+- Initial resume and normal scrubbing share one seek coordinator; rapid repeated input keeps only the latest target and avoids stale progress, false completion, episode skips, or post-seek stalls.
+- Fullscreen controls include a default-on subtitle toggle, while subtitle discovery waits for the first frame/playback-ready state to avoid missing, duplicated, or blocking tracks.
+- The detail page displays the active video filename as a continuous marquee and keeps it aligned with history restoration, episode changes, and source changes.
+- Passthrough validates stream codecs against HDMI / ARC / eARC / digital-output capabilities and decodes unsupported formats without rerouting audio away from the active external device.
+- Short cancellable probes, bounded warmup caches, and generation-isolated callbacks reduce stalls and dropped frames on lower-end Hisense hardware.
+- The dedicated `com.github.tvbox.osc.hisense` package, Android 4.4 minimum, and `armeabi-v7a` ABI remain unchanged for side-by-side installation.
 
 ## Build
 

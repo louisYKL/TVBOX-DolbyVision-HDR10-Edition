@@ -60,6 +60,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 真正承载播放器视图的容器
      */
     protected FrameLayout mPlayerContainer;
+    private View mPlaybackPrebufferCover;
 
     protected IRenderView mRenderView;
     protected RenderViewFactory mRenderViewFactory;
@@ -97,10 +98,13 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     protected AssetFileDescriptor mAssetFileDescriptor;//assets文件
 
     protected long mCurrentPosition;//最后一次确认的真实播放位置
+    protected long mLastConfirmedSeekPosition = -1L;
     protected long mResumePosition;//启动/重试时待恢复的目标位置
     protected long mLastKnownDuration;
     protected boolean mPendingResumeSeekAfterRender;
     protected boolean mResumeSeekAppliedAfterRender;
+    protected boolean mInitialResumeWarmupActive;
+    protected int mSourceRebuildAttempts;
 
     //播放器的各种状态
     public static final int STATE_ERROR = -1;
@@ -236,6 +240,12 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT);
         this.addView(mPlayerContainer, params);
+        mPlaybackPrebufferCover = new View(getContext());
+        mPlaybackPrebufferCover.setBackgroundColor(Color.BLACK);
+        mPlaybackPrebufferCover.setVisibility(View.GONE);
+        mPlayerContainer.addView(mPlaybackPrebufferCover, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     /**
@@ -276,12 +286,14 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         }
         //读取播放进度
         mCurrentPosition = 0L;
+        mLastConfirmedSeekPosition = -1L;
         if (mProgressManager != null && mResumePosition <= 0L) {
             mResumePosition = Math.max(0L,
                     mProgressManager.getSavedProgress(mProgressKey == null ? mUrl : mProgressKey));
         }
         mPendingResumeSeekAfterRender = false;
         mResumeSeekAppliedAfterRender = false;
+        resetInitialResumeWarmup();
         initPlayer();
         addDisplay();
         startPrepareWhenRenderReady(false, "start");
@@ -413,6 +425,11 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             mMediaPlayer.reset();
             //重新设置option，media player reset之后，option会失效
             setOptions();
+            if (mRenderView != null) {
+                // AndroidMediaPlayer.reset() detaches its native display target. Rebind the
+                // still-valid Surface before preparing the replacement source.
+                mRenderView.refreshSurface();
+            }
         }
         if (prepareDataSource()) {
             mMediaPlayer.prepareAsync();
@@ -442,7 +459,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     protected void startInPlaybackState() {
         mMediaPlayer.start();
-        setPlayState(STATE_PLAYING);
+        setPlayState(isMediaPlayerStartPending() ? STATE_BUFFERING : STATE_PLAYING);
         if (mAudioFocusHelper != null) {
             mAudioFocusHelper.requestFocus();
         }
@@ -457,6 +474,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         if (isInPlaybackState()
                 && mMediaPlayer.isPlaying()) {
             mMediaPlayer.pause();
+            resetInitialResumeWarmup();
+            setPlaybackPrebufferCoverVisible(false);
             setPlayState(STATE_PAUSED);
             if (mAudioFocusHelper != null) {
                 mAudioFocusHelper.abandonFocus();
@@ -519,7 +538,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
 
     private void resumePlay(){
         mMediaPlayer.start();
-        setPlayState(STATE_PLAYING);
+        setPlayState(isMediaPlayerStartPending() ? STATE_BUFFERING : STATE_PLAYING);
         if (mAudioFocusHelper != null) {
             mAudioFocusHelper.requestFocus();
         }
@@ -529,6 +548,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 释放播放器
      */
     public void release() {
+        resetInitialResumeWarmup();
+        setPlaybackPrebufferCoverVisible(false);
         if (mIsFullScreen) {
             stopFullScreen();
         }
@@ -536,6 +557,10 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mPendingPrepareResetAfterSurface = false;
         mPendingPrepareSurfaceAttempts = 0;
         if (!isInIdleState()) {
+            // Decide while the player still exists. In particular, an in-flight seek must
+            // remain a deliberate skip instead of being mistaken for the last cached position
+            // after mMediaPlayer has been cleared.
+            saveProgress();
             //释放播放器
             if (mMediaPlayer != null) {
                 mMediaPlayer.release();
@@ -563,10 +588,9 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             }
             //关闭屏幕常亮
             mPlayerContainer.setKeepScreenOn(false);
-            //保存播放进度
-            saveProgress();
             //重置播放进度
             mCurrentPosition = 0;
+            mLastConfirmedSeekPosition = -1L;
             //切换转态
             setPlayState(STATE_IDLE);
         }
@@ -593,31 +617,35 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * Resolve a progress value that is safe to persist as a resume point.
      */
     protected long resolvePersistableProgressPosition() {
-        if (mCurrentPlayState == STATE_PLAYBACK_COMPLETED) {
-            return 0L;
-        }
-        if (mCurrentPlayState == STATE_START_ABORT
-                || mCurrentPlayState == STATE_IDLE
-                || mCurrentPlayState == STATE_ERROR
-                || mCurrentPlayState == STATE_PREPARING
-                || mCurrentPlayState == STATE_BUFFERING) {
-            return PERSIST_PROGRESS_SKIP;
-        }
-        long position = Math.max(0L, mCurrentPosition);
-        if (position <= 0L) {
-            return PERSIST_PROGRESS_SKIP;
-        }
+        boolean stateAllowsPersistence = mCurrentPlayState != STATE_START_ABORT
+                && mCurrentPlayState != STATE_IDLE
+                && mCurrentPlayState != STATE_ERROR
+                && mCurrentPlayState != STATE_PREPARING;
+        boolean seekInFlight = false;
+        long pendingSeekPosition = -1L;
+        boolean positionQueryUnstable = false;
         if (mMediaPlayer instanceof AndroidMediaPlayer) {
             AndroidMediaPlayer player = (AndroidMediaPlayer) mMediaPlayer;
-            if (player.isPositionQueryUnstable() || player.isSeekInFlight()) {
-                return PERSIST_PROGRESS_SKIP;
-            }
+            seekInFlight = player.isSeekInFlight();
+            pendingSeekPosition = player.getPendingSeekPosition();
+            positionQueryUnstable = player.isPositionQueryUnstable();
         }
-        return position;
+        return PlaybackProgressPolicy.resolve(
+                mCurrentPlayState == STATE_PLAYBACK_COMPLETED,
+                stateAllowsPersistence,
+                seekInFlight,
+                pendingSeekPosition,
+                positionQueryUnstable,
+                mLastConfirmedSeekPosition,
+                mCurrentPosition);
     }
 
     protected long resolvePersistableDuration() {
         if (mMediaPlayer == null) {
+            return mLastKnownDuration;
+        }
+        if (mMediaPlayer instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) mMediaPlayer).isPositionQueryUnstable()) {
             return mLastKnownDuration;
         }
         try {
@@ -664,12 +692,15 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void replay(boolean resetPosition) {
+        mSourceRebuildAttempts = 0;
         long resumePosition = resetPosition ? 0L
                 : Math.max(0L, mCurrentPosition > 0L ? mCurrentPosition : mResumePosition);
         mCurrentPosition = 0L;
+        mLastConfirmedSeekPosition = -1L;
         mResumePosition = resumePosition;
         mPendingResumeSeekAfterRender = false;
         mResumeSeekAppliedAfterRender = false;
+        resetInitialResumeWarmup();
         addDisplay();
         startPrepareWhenRenderReady(true, "replay");
     }
@@ -680,6 +711,10 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     @Override
     public long getDuration() {
         if (isInPlaybackState()) {
+            if (mMediaPlayer instanceof AndroidMediaPlayer
+                    && ((AndroidMediaPlayer) mMediaPlayer).isPositionQueryUnstable()) {
+                return mLastKnownDuration;
+            }
             try {
                 long duration = mMediaPlayer.getDuration();
                 if (duration > 0L) {
@@ -707,6 +742,14 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
                 long position = mMediaPlayer.getCurrentPosition();
                 if (position > 0L) {
                     mCurrentPosition = position;
+                    mLastConfirmedSeekPosition = -1L;
+                    if (mSourceRebuildAttempts > 0
+                            && SourceRebuildPolicy.hasAdvancedBeyondResume(
+                            mResumePosition, position)) {
+                        Log.i(TAG, "echo-source-rebuild stable position=" + position
+                                + " resume=" + mResumePosition);
+                        mSourceRebuildAttempts = 0;
+                    }
                 }
                 return mCurrentPosition;
             } catch (Throwable ignored) {
@@ -722,6 +765,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     @Override
     public void seekTo(long pos) {
         if (isInPlaybackState()) {
+            mLastConfirmedSeekPosition = -1L;
             mMediaPlayer.seekTo(pos);
         }
     }
@@ -774,12 +818,74 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             mAudioFocusHelper.requestFocus();
         }
         if (resumePosition > 0L) {
-            if (shouldDelayInitialSeekUntilRenderingStart()) {
+            if (seekToInitialResumePositionBeforeStart(resumePosition)) {
+                mPendingResumeSeekAfterRender = false;
+                mResumeSeekAppliedAfterRender = false;
+            } else if (shouldDelayInitialSeekUntilRenderingStart()) {
                 mPendingResumeSeekAfterRender = true;
                 mResumeSeekAppliedAfterRender = false;
+                beginInitialResumeWarmup();
             } else {
                 seekTo(resumePosition);
             }
+        }
+    }
+
+    @Override
+    public void onSeekComplete(long position) {
+        mLastConfirmedSeekPosition = Math.max(0L, position);
+        mCurrentPosition = mLastConfirmedSeekPosition;
+    }
+
+    @Override
+    public void onSourceRebuildRequired(long resumePosition) {
+        long target = Math.max(0L, resumePosition);
+        boolean sourceAvailable = mAssetFileDescriptor != null || !TextUtils.isEmpty(mUrl);
+        if (!SourceRebuildPolicy.shouldRebuild(
+                sourceAvailable, mMediaPlayer != null, mSourceRebuildAttempts, target)) {
+            Log.e(TAG, "echo-source-rebuild rejected attempts=" + mSourceRebuildAttempts
+                    + " target=" + target + " source=" + sourceAvailable);
+            onError();
+            return;
+        }
+
+        mSourceRebuildAttempts++;
+        setPlayState(STATE_BUFFERING);
+        P retiredPlayer = mMediaPlayer;
+        mMediaPlayer = null;
+        try {
+            retiredPlayer.setPlayerEventListener(null);
+            retiredPlayer.release();
+
+            mCurrentPosition = target;
+            mLastConfirmedSeekPosition = target;
+            mResumePosition = target;
+            mPendingResumeSeekAfterRender = false;
+            mResumeSeekAppliedAfterRender = false;
+            resetInitialResumeWarmup();
+            setPlaybackPrebufferCoverVisible(false);
+
+            initPlayer();
+            if (mRenderView != null) {
+                mRenderView.attachToPlayer(mMediaPlayer);
+                mRenderView.refreshSurface();
+            } else {
+                addDisplay();
+            }
+            Log.i(TAG, "echo-source-rebuild start attempt=" + mSourceRebuildAttempts
+                    + " target=" + target);
+            startPrepareWhenRenderReady(false, "source-rebuild");
+        } catch (Throwable th) {
+            Log.e(TAG, "echo-source-rebuild failed target=" + target, th);
+            if (mMediaPlayer != null) {
+                try {
+                    mMediaPlayer.setPlayerEventListener(null);
+                    mMediaPlayer.release();
+                } catch (Throwable ignored) {
+                }
+                mMediaPlayer = null;
+            }
+            onError();
         }
     }
 
@@ -790,12 +896,41 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public void onInfo(int what, int extra) {
         switch (what) {
             case AbstractPlayer.MEDIA_INFO_BUFFERING_START:
+                if (extra == AbstractPlayer.MEDIA_INFO_EXTRA_PLAYBACK_PREBUFFER) {
+                    setPlaybackPrebufferCoverVisible(true);
+                }
                 setPlayState(STATE_BUFFERING);
                 break;
             case AbstractPlayer.MEDIA_INFO_BUFFERING_END:
+                if (mInitialResumeWarmupActive) {
+                    if (InitialResumeWarmupPolicy.isTargetBufferComplete(
+                            true,
+                            mResumeSeekAppliedAfterRender,
+                            extra == AbstractPlayer.MEDIA_INFO_EXTRA_PLAYBACK_PREBUFFER)) {
+                        mInitialResumeWarmupActive = false;
+                        setPlaybackPrebufferCoverVisible(false);
+                        setPlayState(STATE_PLAYING);
+                    } else {
+                        setPlaybackPrebufferCoverVisible(true);
+                        setPlayState(STATE_BUFFERING);
+                    }
+                    break;
+                }
+                if (extra == AbstractPlayer.MEDIA_INFO_EXTRA_PLAYBACK_PREBUFFER) {
+                    setPlaybackPrebufferCoverVisible(false);
+                }
                 setPlayState(STATE_BUFFERED);
                 break;
             case AbstractPlayer.MEDIA_INFO_RENDERING_START: // 视频/音频开始渲染
+                if (mInitialResumeWarmupActive) {
+                    setPlaybackPrebufferCoverVisible(true);
+                    setPlayState(STATE_BUFFERING);
+                    mPlayerContainer.setKeepScreenOn(true);
+                    if (mPendingResumeSeekAfterRender) {
+                        applyDeferredResumeSeekAfterRender();
+                    }
+                    break;
+                }
                 setPlayState(STATE_PLAYING);
                 mPlayerContainer.setKeepScreenOn(true);
                 applyDeferredResumeSeekAfterRender();
@@ -811,6 +946,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void onError() {
+        resetInitialResumeWarmup();
+        setPlaybackPrebufferCoverVisible(false);
         mPlayerContainer.setKeepScreenOn(false);
         setPlayState(STATE_ERROR);
     }
@@ -820,6 +957,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void onCompletion() {
+        resetInitialResumeWarmup();
+        setPlaybackPrebufferCoverVisible(false);
         if (mCurrentPlayState == STATE_IDLE
                 || mCurrentPlayState == STATE_START_ABORT
                 || mMediaPlayer == null) {
@@ -828,6 +967,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         }
         mPlayerContainer.setKeepScreenOn(false);
         mCurrentPosition = 0;
+        mLastConfirmedSeekPosition = -1L;
         mResumePosition = 0L;
         saveProgress(0L);
         setPlayState(STATE_PLAYBACK_COMPLETED);
@@ -887,10 +1027,13 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * @param headers 请求头
      */
     public void setUrl(String url, Map<String, String> headers) {
+        resetInitialResumeWarmup();
+        mSourceRebuildAttempts = 0;
         mAssetFileDescriptor = null;
         mUrl = url;
         mHeaders = headers;
         mCurrentPosition = 0L;
+        mLastConfirmedSeekPosition = -1L;
         mResumePosition = 0L;
         mLastKnownDuration = 0L;
     }
@@ -899,9 +1042,12 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 用于播放assets里面的视频文件
      */
     public void setAssetFileDescriptor(AssetFileDescriptor fd) {
+        resetInitialResumeWarmup();
+        mSourceRebuildAttempts = 0;
         mUrl = null;
         this.mAssetFileDescriptor = fd;
         mCurrentPosition = 0L;
+        mLastConfirmedSeekPosition = -1L;
         mResumePosition = 0L;
         mLastKnownDuration = 0L;
     }
@@ -915,6 +1061,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     public void skipPositionWhenPlay(int position) {
         mCurrentPosition = 0L;
+        mLastConfirmedSeekPosition = -1L;
         mResumePosition = Math.max(0L, position);
     }
 
@@ -942,6 +1089,17 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
                 && ((AndroidMediaPlayer) mMediaPlayer).shouldDelayResumeSeekUntilRenderingStart();
     }
 
+    private boolean seekToInitialResumePositionBeforeStart(long position) {
+        return mMediaPlayer instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) mMediaPlayer)
+                .seekToInitialResumePositionBeforeStart(position);
+    }
+
+    private boolean isMediaPlayerStartPending() {
+        return mMediaPlayer instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) mMediaPlayer).isStartPending();
+    }
+
     private void applyDeferredResumeSeekAfterRender() {
         if (!mPendingResumeSeekAfterRender
                 || mResumeSeekAppliedAfterRender
@@ -958,6 +1116,19 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             }
             seekTo(target);
         });
+    }
+
+    private void beginInitialResumeWarmup() {
+        mInitialResumeWarmupActive = true;
+        setPlaybackPrebufferCoverVisible(true);
+        setPlayState(STATE_BUFFERING);
+        if (mMediaPlayer instanceof AndroidMediaPlayer) {
+            ((AndroidMediaPlayer) mMediaPlayer).beginInitialResumeWarmup();
+        }
+    }
+
+    private void resetInitialResumeWarmup() {
+        mInitialResumeWarmupActive = false;
     }
 
     private long sanitizeResumePosition(long position) {
@@ -1192,11 +1363,15 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         while (current != null) {
             ViewParent parent = current.getParent();
             boolean isGroup = current instanceof ViewGroup;
+            boolean clipToPadding = isGroup;
+            if (isGroup && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                clipToPadding = ((ViewGroup) current).getClipToPadding();
+            }
             mFullScreenLayoutStates.add(new FullScreenLayoutState(
                     current,
                     copyLayoutParams(current.getLayoutParams()),
                     isGroup && ((ViewGroup) current).getClipChildren(),
-                    isGroup && ((ViewGroup) current).getClipToPadding()));
+                    clipToPadding));
 
             if (current instanceof ViewGroup) {
                 ViewGroup group = (ViewGroup) current;
@@ -1535,6 +1710,19 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             mVideoController.setPlayState(playState);
         }
         notifyPlayStateChanged(playState);
+    }
+
+    private void setPlaybackPrebufferCoverVisible(boolean visible) {
+        if (mPlaybackPrebufferCover == null) {
+            return;
+        }
+        mPlaybackPrebufferCover.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (visible) {
+            mPlaybackPrebufferCover.bringToFront();
+            if (mVideoController != null) {
+                mVideoController.bringToFront();
+            }
+        }
     }
 
     private void notifyPlayStateChanged(int playState) {

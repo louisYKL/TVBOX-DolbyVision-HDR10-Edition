@@ -83,7 +83,9 @@ public class LiquidGlassTextView extends AppCompatTextView {
     public void setGlassRadius(float radius) {
         cornerRadius = radius;
         glassHelper = new LiquidGlassBackgroundHelper(getResources(), radius);
-        invalidateOutline();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            invalidateOutline();
+        }
         invalidate();
     }
 
