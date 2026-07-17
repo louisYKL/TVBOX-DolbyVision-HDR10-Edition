@@ -8,29 +8,24 @@ import static org.junit.Assert.assertTrue;
 
 public class SeekCoordinatorTest {
     @Test
-    public void hundredThousandRequestsStayBoundedAndFinishAtNewestTarget() {
+    public void millionRequestsSupersedeInPlaceAndFinishAtNewestTarget() {
         SeekCoordinator coordinator = new SeekCoordinator();
 
         SeekCoordinator.Request first = coordinator.request(0, true);
         assertTrue(first.shouldDispatch);
         assertTrue(first.dispatchId != SeekCoordinator.NO_DISPATCH_ID);
-        for (int target = 1; target < 100_000; target++) {
-            SeekCoordinator.Request queued = coordinator.request(target, true);
-            assertFalse(queued.shouldDispatch);
-            assertEquals(0, coordinator.getActiveTarget());
-            assertEquals(target, coordinator.getQueuedTarget());
+        long previousDispatchId = first.dispatchId;
+        for (int target = 1; target < 1_000_000; target++) {
+            SeekCoordinator.Request replacement = coordinator.request(target, true);
+            assertTrue(replacement.shouldDispatch);
+            assertTrue(replacement.dispatchId != previousDispatchId);
+            previousDispatchId = replacement.dispatchId;
+            assertEquals(target, coordinator.getActiveTarget());
         }
-
-        SeekCoordinator.Completion firstCompletion = coordinator.complete();
-        assertTrue(firstCompletion.shouldDispatch);
-        assertEquals(99_999, firstCompletion.target);
-        assertTrue(firstCompletion.dispatchId != first.dispatchId);
-        assertEquals(99_999, coordinator.getActiveTarget());
-        assertEquals(SeekCoordinator.NO_TARGET, coordinator.getQueuedTarget());
 
         SeekCoordinator.Completion finalCompletion = coordinator.complete();
         assertTrue(finalCompletion.accepted);
-        assertFalse(finalCompletion.shouldDispatch);
+        assertEquals(999_999, finalCompletion.completedTarget);
         assertTrue(finalCompletion.shouldResume);
         assertFalse(coordinator.isInFlight());
     }
@@ -40,18 +35,10 @@ public class SeekCoordinatorTest {
         SeekCoordinator coordinator = new SeekCoordinator();
 
         assertTrue(coordinator.request(1_000, true).shouldDispatch);
-        assertFalse(coordinator.request(90_000, true).shouldDispatch);
-        assertFalse(coordinator.request(500, true).shouldDispatch);
-        assertEquals(500, coordinator.complete().target);
-
-        assertFalse(coordinator.request(120_000, true).shouldDispatch);
-        assertFalse(coordinator.request(250, true).shouldDispatch);
-        SeekCoordinator.Completion next = coordinator.complete();
-        assertTrue(next.shouldDispatch);
-        assertEquals(250, next.target);
-
+        assertTrue(coordinator.request(90_000, true).shouldDispatch);
+        assertTrue(coordinator.request(500, true).shouldDispatch);
         SeekCoordinator.Completion done = coordinator.complete();
-        assertFalse(done.shouldDispatch);
+        assertEquals(500, done.completedTarget);
         assertTrue(done.shouldResume);
     }
 
@@ -63,7 +50,6 @@ public class SeekCoordinatorTest {
         coordinator.request(2_000, true);
         coordinator.cancelResume();
 
-        assertTrue(coordinator.complete().shouldDispatch);
         SeekCoordinator.Completion done = coordinator.complete();
         assertFalse(done.shouldResume);
         assertFalse(coordinator.isInFlight());
@@ -82,17 +68,14 @@ public class SeekCoordinatorTest {
     }
 
     @Test
-    public void newestRequestCanReturnToActiveTarget() {
+    public void duplicateNewestTargetDoesNotDispatchTwice() {
         SeekCoordinator coordinator = new SeekCoordinator();
 
         coordinator.request(10_000, true);
-        coordinator.request(20_000, true);
         SeekCoordinator.Request newest = coordinator.request(10_000, true);
 
         assertFalse(newest.shouldDispatch);
-        assertEquals(SeekCoordinator.NO_TARGET, coordinator.getQueuedTarget());
         SeekCoordinator.Completion done = coordinator.complete();
-        assertFalse(done.shouldDispatch);
         assertEquals(10_000, done.completedTarget);
     }
 
@@ -111,12 +94,10 @@ public class SeekCoordinatorTest {
             previousDispatchId = dispatch.dispatchId;
             SeekCoordinator.Completion completion = coordinator.complete();
             assertTrue(completion.accepted);
-            assertFalse(completion.shouldDispatch);
             assertEquals(target, completion.completedTarget);
             assertTrue(completion.shouldResume);
             assertFalse(coordinator.isInFlight());
             assertEquals(SeekCoordinator.NO_TARGET, coordinator.getActiveTarget());
-            assertEquals(SeekCoordinator.NO_TARGET, coordinator.getQueuedTarget());
         }
     }
 

@@ -15,18 +15,6 @@ public class BufferingProgressPolicyTest {
     }
 
     @Test
-    public void appPrebufferReportsProgressAgainstItsRealTarget() {
-        assertEquals(0, BufferingProgressPolicy.resolveDisplayedPercent(
-                true, 0L, 64L * 1024L * 1024L, 75));
-        assertEquals(50, BufferingProgressPolicy.resolveDisplayedPercent(
-                true, 32L * 1024L * 1024L, 64L * 1024L * 1024L, 75));
-        assertEquals(100, BufferingProgressPolicy.resolveDisplayedPercent(
-                true, 80L * 1024L * 1024L, 64L * 1024L * 1024L, 75));
-        assertEquals(75, BufferingProgressPolicy.resolveDisplayedPercent(
-                false, 0L, 0L, 75));
-    }
-
-    @Test
     public void directUriProgressUsesRealReceivedBytesAndStaysBelowComplete() {
         long mb = 1024L * 1024L;
         assertEquals(0, BufferingProgressPolicy.resolveDirectUriDisplayedPercent(
@@ -48,11 +36,9 @@ public class BufferingProgressPolicyTest {
     }
 
     @Test
-    public void seekCompletionCannotEndAStillActiveNativeBuffer() {
-        assertTrue(BufferingProgressPolicy.shouldHoldBufferingEnd(true, false, false));
-        assertTrue(BufferingProgressPolicy.shouldHoldBufferingEnd(false, true, false));
-        assertTrue(BufferingProgressPolicy.shouldHoldBufferingEnd(false, false, true));
-        assertFalse(BufferingProgressPolicy.shouldHoldBufferingEnd(false, false, false));
+    public void nativeBufferIsTheOnlyReasonToHoldBufferingEnd() {
+        assertTrue(BufferingProgressPolicy.shouldHoldBufferingEnd(true));
+        assertFalse(BufferingProgressPolicy.shouldHoldBufferingEnd(false));
     }
 
     @Test

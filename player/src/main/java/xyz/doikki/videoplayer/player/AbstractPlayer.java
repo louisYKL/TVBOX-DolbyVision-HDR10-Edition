@@ -28,11 +28,6 @@ public abstract class AbstractPlayer {
     public static final int MEDIA_INFO_BUFFERING_END = 702;
 
     /**
-     * Marks buffering events emitted by the explicit playback prebuffer gate.
-     */
-    public static final int MEDIA_INFO_EXTRA_PLAYBACK_PREBUFFER = 1;
-
-    /**
      * 视频旋转信息
      */
     public static final int MEDIA_INFO_VIDEO_ROTATION_CHANGED = 10001;
@@ -175,14 +170,6 @@ public abstract class AbstractPlayer {
         void onVideoSizeChanged(int width, int height);
 
         default void onSeekComplete(long position) {
-        }
-
-        /**
-         * The native extractor reached an invalid early EOF and the current player instance
-         * must be replaced before the same source can be resumed safely.
-         */
-        default void onSourceRebuildRequired(long resumePosition) {
-            onError();
         }
 
     }

@@ -1,7 +1,6 @@
 package xyz.doikki.videoplayer.player;
 
 final class PlaybackCompletionPolicy {
-    static final int MAX_POST_SEEK_RECOVERY_ATTEMPTS = 2;
     private static final long POST_SEEK_FALSE_COMPLETION_WINDOW_MS = 5_000L;
     private static final long ZERO_POSITION_TOLERANCE_MS = 1_000L;
     private static final long END_POSITION_GUARD_MS = 5_000L;
@@ -42,24 +41,11 @@ final class PlaybackCompletionPolicy {
                 && completedSeekTargetMs < Math.max(0L, durationMs - END_POSITION_GUARD_MS);
     }
 
-    static boolean canAttemptPostSeekRecovery(int completedAttempts) {
-        return completedAttempts >= 0
-                && completedAttempts < MAX_POST_SEEK_RECOVERY_ATTEMPTS;
-    }
-
-    static int resolvePostSeekRecoveryTarget(int requestedTargetMs, int completedAttempts) {
-        long rewindMs = completedAttempts <= 0 ? 2_000L : 5_000L;
-        long target = Math.max(1L, (long) requestedTargetMs - rewindMs);
-        return (int) Math.min(Integer.MAX_VALUE, target);
-    }
-
-    static int resolveRecoveryTarget(int queuedTarget,
-                                     int activeTarget,
+    static int resolveRecoveryTarget(int activeTarget,
                                      int lastRequestedTarget,
                                      long positionMs,
                                      long durationMs) {
-        long target = queuedTarget >= 0 ? queuedTarget
-                : activeTarget >= 0 ? activeTarget
+        long target = activeTarget >= 0 ? activeTarget
                 : lastRequestedTarget >= 0 ? lastRequestedTarget
                 : Math.max(0L, positionMs);
         if (durationMs > 0L) {
