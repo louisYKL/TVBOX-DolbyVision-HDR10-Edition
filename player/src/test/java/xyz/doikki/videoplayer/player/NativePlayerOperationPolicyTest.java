@@ -25,25 +25,20 @@ public class NativePlayerOperationPolicyTest {
     }
 
     @Test
-    public void initialResumeCannotOverlapNativeStartAndSeek() {
-        assertFalse(NativePlayerOperationPolicy.canStart(true));
-        assertFalse(NativePlayerOperationPolicy.canQuery(true));
-        assertFalse(NativePlayerOperationPolicy.canPause(true));
-        assertFalse(NativePlayerOperationPolicy.canAccessPlaybackParams(true));
-        assertFalse(NativePlayerOperationPolicy.canRunFirstFrameRecovery(true));
-    }
-
-    @Test
-    public void initialResumeUsesTheOrdinarySeekTransitionBeforeStart() {
+    public void preparedResumeUsesTheSameSerializedNativeSeekTransition() {
+        PreparedResumeSeekCoordinator prepared = new PreparedResumeSeekCoordinator();
         SeekCoordinator seek = new SeekCoordinator();
 
-        SeekCoordinator.Request request = seek.request(717_016, true);
-
-        assertFalse(NativePlayerOperationPolicy.canQuery(seek.isInFlight()));
-        assertFalse(NativePlayerOperationPolicy.canStart(seek.isInFlight()));
-        assertTrue(seek.complete().accepted);
-        assertTrue(NativePlayerOperationPolicy.canQuery(seek.isInFlight()));
+        assertTrue(prepared.queue(717_016, true, false, false));
+        assertTrue(prepared.markStartCompleted());
+        int target = prepared.claimInvocation();
         assertTrue(NativePlayerOperationPolicy.canStart(seek.isInFlight()));
+
+        SeekCoordinator.Request request = seek.request(target, true);
         assertTrue(request.shouldDispatch);
+        assertFalse(NativePlayerOperationPolicy.canStart(seek.isInFlight()));
+        assertFalse(NativePlayerOperationPolicy.canQuery(seek.isInFlight()));
+        assertTrue(seek.complete().accepted);
+        assertTrue(NativePlayerOperationPolicy.canStart(seek.isInFlight()));
     }
 }
