@@ -1,19 +1,21 @@
 package com.github.tvbox.osc.util;
 
+import android.animation.TimeInterpolator;
 import android.os.Build;
 import android.view.View;
 
 import android.view.animation.PathInterpolator;
+import android.view.animation.DecelerateInterpolator;
 
 public class FocusAnim {
-    private static final PathInterpolator INTERPOLATOR =
+    private static final TimeInterpolator INTERPOLATOR =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
                     ? new PathInterpolator(0.22f, 1f, 0.36f, 1f)
-                    : null;
-    private static final PathInterpolator RELEASE_INTERPOLATOR =
+                    : new DecelerateInterpolator(1.35f);
+    private static final TimeInterpolator RELEASE_INTERPOLATOR =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
                     ? new PathInterpolator(0.18f, 0.84f, 0.22f, 1f)
-                    : null;
+                    : new DecelerateInterpolator(1.15f);
 
     public static void apply(View view, boolean focused, float scale) {
         if (view == null) {

@@ -24,6 +24,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -41,6 +42,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 import xyz.doikki.videoplayer.player.HttpRangeMediaDataSource;
+import xyz.doikki.videoplayer.player.PlaybackWarmupCache;
 
 public final class VideoStreamProbe {
     private static final byte[] MATROSKA_TRACKS_ID_BYTES = new byte[]{0x16, 0x54, (byte) 0xAE, 0x6B};
@@ -48,6 +50,9 @@ public final class VideoStreamProbe {
     private static final ConcurrentHashMap<String, String> SUBTITLE_FILE_CACHE = new ConcurrentHashMap<>();
     private static final int PROBE_BYTES = 1024 * 1024;
     private static final int LOCAL_PROXY_PROBE_BYTES = 8 * 1024 * 1024;
+    // This is only a warm-up read for the direct TV32 system-player path. It must not
+    // hold playback behind a multi-megabyte container scan on a slow local proxy.
+    private static final int TV32_LOCAL_PROXY_STARTUP_PROBE_BYTES = 512 * 1024;
     private static final int JAVA64_LOCAL_PROXY_FAST_PROBE_BYTES = 512 * 1024;
     private static final int TV32_LOCAL_PROXY_DEEP_PROBE_BYTES = 24 * 1024 * 1024;
     private static final int MAX_CONTAINER_PROBE_BYTES = TV32_LOCAL_PROXY_DEEP_PROBE_BYTES;
@@ -69,6 +74,13 @@ public final class VideoStreamProbe {
     private static final OkHttpClient FAST_LOCAL_CLIENT = new OkHttpClient.Builder()
             .connectTimeout(1200, TimeUnit.MILLISECONDS)
             .readTimeout(3000, TimeUnit.MILLISECONDS)
+            .callTimeout(3200, TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(false)
+            .build();
+    private static final OkHttpClient FAST_HLS_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(1200, TimeUnit.MILLISECONDS)
+            .readTimeout(1800, TimeUnit.MILLISECONDS)
+            .callTimeout(2200, TimeUnit.MILLISECONDS)
             .retryOnConnectionFailure(false)
             .build();
 
@@ -127,12 +139,10 @@ public final class VideoStreamProbe {
             return result;
         } catch (Throwable th) {
             future.cancel(true);
-            Result fallback = probeTimeoutFallbackOffMain(probeUrl, headers,
-                    isLocalProxyVideoUrl(probeUrl)
-                            ? "timeout-fallback-local-proxy-byte"
-                            : "timeout-fallback-byte",
-                    isLocalProxyVideoUrl(probeUrl) ? LOCAL_PROXY_PROBE_BYTES : PROBE_BYTES,
-                    isLocalProxyVideoUrl(probeUrl) ? false : true);
+            Result fallback = isLocalProxyVideoUrl(probeUrl)
+                    ? probeTimeoutFallbackOffMain(probeUrl, headers,
+                    "timeout-fallback-local-proxy-byte", JAVA64_LOCAL_PROXY_FAST_PROBE_BYTES, false)
+                    : null;
             Result result;
             if (fallback != null && fallback.probed) {
                 result = copyResult(fallback,
@@ -159,10 +169,15 @@ public final class VideoStreamProbe {
         }
         if (shouldUseTv32LocalProxyMatroskaFastProbe(context, url)) {
             Result fastPreflight = probeTv32LocalProxyMatroskaPlaybackPreflight(url, headers);
-            if (fastPreflight != null && fastPreflight.probed) {
-                cacheProbeResult(context, url, cacheKey, fastPreflight);
-                return fastPreflight;
+            if (fastPreflight == null) {
+                fastPreflight = Result.unknownContainer("tv32-startup-direct:null", true);
             }
+            if (fastPreflight.probed) {
+                cacheProbeResult(context, url, cacheKey, fastPreflight);
+            }
+            // Do not continue into probeWithTimeout(): that path invokes the expensive
+            // TV32 safe probe (8 MB plus MediaExtractor) before native playback starts.
+            return fastPreflight;
         }
         return probeWithTimeout(context, url, headers, timeoutMs);
     }
@@ -185,6 +200,19 @@ public final class VideoStreamProbe {
             Result result = Result.unknown("hls-avc-profile-error:" + th.getClass().getSimpleName());
             CACHE.put(cacheKey, result);
             return result;
+        }
+    }
+
+    public static Result probeHlsAvcProfileWithTimeout(Context context,
+                                                        String url,
+                                                        Map<String, String> headers,
+                                                        long timeoutMs) {
+        Future<Result> future = PROBE_EXECUTOR.submit(() -> probeHlsAvcProfile(context, url, headers));
+        try {
+            return future.get(Math.max(500L, timeoutMs), TimeUnit.MILLISECONDS);
+        } catch (Throwable th) {
+            future.cancel(true);
+            return Result.unknown("hls-avc-profile-timeout-" + th.getClass().getSimpleName());
         }
     }
 
@@ -211,9 +239,15 @@ public final class VideoStreamProbe {
         if (!ScreenUtils.isTv32Device(context) || !isLocalProxyVideoUrl(url)) {
             return null;
         }
-        Result byteResult = probeContainerBytes(url, headers, "tv32-preflight-byte", LOCAL_PROXY_PROBE_BYTES, false);
+        Result byteResult = probeContainerBytes(url, headers, "tv32-preflight-byte",
+                TV32_LOCAL_PROXY_STARTUP_PROBE_BYTES, false, false);
         if (byteResult == null || !byteResult.probed) {
-            return byteResult;
+            // Native MediaPlayer owns real prebuffering for this route. If the tiny
+            // warm-up cannot finish, begin direct playback instead of replacing it with
+            // the old 8 MB byte scan and extractor pass.
+            String detail = byteResult == null ? "no-byte-result" : byteResult.summary;
+            return Result.unknownContainer("tv32-startup-direct:" + detail,
+                    containsMatroskaMarkerInUrl(url));
         }
         return copyResult(byteResult,
                 true,
@@ -275,7 +309,8 @@ public final class VideoStreamProbe {
         HttpRangeMediaDataSource rangeDataSource = null;
         MediaExtractor extractor = new MediaExtractor();
         try {
-            if (shouldUseRangeBackedExtractor(context, url)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                    && shouldUseRangeBackedExtractor(context, url)) {
                 rangeDataSource = new HttpRangeMediaDataSource(url, headers);
                 extractor.setDataSource(rangeDataSource);
                 Log.i("TVBox-runtime", "echo-probe-extractor datasource=range url=" + shrink(url));
@@ -500,7 +535,8 @@ public final class VideoStreamProbe {
     @Nullable
     private static Result probeTv32LocalProxyMatroskaPlaybackPreflight(String url,
                                                                        Map<String, String> headers) {
-        Result byteResult = probeContainerBytes(url, headers, "tv32-preflight-byte", LOCAL_PROXY_PROBE_BYTES, false);
+        Result byteResult = probeContainerBytes(url, headers, "tv32-preflight-byte",
+                TV32_LOCAL_PROXY_STARTUP_PROBE_BYTES, false, false);
         if (byteResult == null || !byteResult.probed) {
             return byteResult;
         }
@@ -637,6 +673,15 @@ public final class VideoStreamProbe {
     }
 
     private static Result probeContainerBytes(String url, Map<String, String> headers, String prefix, int probeBytes, boolean readTail) {
+        return probeContainerBytes(url, headers, prefix, probeBytes, readTail, true);
+    }
+
+    private static Result probeContainerBytes(String url,
+                                              Map<String, String> headers,
+                                              String prefix,
+                                              int probeBytes,
+                                              boolean readTail,
+                                              boolean allowTargetedMatroskaTracks) {
         if (TextUtils.isEmpty(url) || (!url.startsWith("http://") && !url.startsWith("https://"))) {
             return null;
         }
@@ -645,6 +690,10 @@ public final class VideoStreamProbe {
         }
         try {
             int safeProbeBytes = Math.max(32 * 1024, Math.min(MAX_CONTAINER_PROBE_BYTES, probeBytes));
+            if (!allowTargetedMatroskaTracks) {
+                Log.i("TVBox-runtime", "echo-probe-startup begin prefix=" + prefix
+                        + " bytes=" + safeProbeBytes);
+            }
             ProbeChunk first = readRange(url, headers, 0L, safeProbeBytes - 1L, safeProbeBytes);
             List<SubtitleTrackMetadata> firstSubtitleTracks = parseMatroskaSubtitleTracks(first.data);
             MatroskaTrackSummary firstTrackSummary = parseMatroskaTrackSummary(first.data);
@@ -654,9 +703,16 @@ public final class VideoStreamProbe {
             boolean localProxyUrl = isLocalProxyVideoUrl(url);
             boolean weakInitialSubtitleProbe = firstSubtitleTracks.size() <= 1;
             boolean weakInitialTrackSummary = !hasUsefulMatroskaTrackSummary(firstTrackSummary);
-            MatroskaTracksChunk targetedTracks = maybeReadTargetedMatroskaTracksChunk(
+            MatroskaTracksChunk targetedTracks = allowTargetedMatroskaTracks
+                    ? maybeReadTargetedMatroskaTracksChunk(
                     url, headers, first.data, total, safeProbeBytes, localProxyUrl,
-                    weakInitialSubtitleProbe, weakInitialTrackSummary);
+                    weakInitialSubtitleProbe, weakInitialTrackSummary)
+                    : null;
+            if (!allowTargetedMatroskaTracks) {
+                Log.i("TVBox-runtime", "echo-probe-startup targeted-skip prefix=" + prefix
+                        + " subtitles=" + firstSubtitleTracks.size()
+                        + " weakTracks=" + weakInitialTrackSummary);
+            }
             if (targetedTracks != null) {
                 firstSubtitleTracks = mergeSubtitleTracks(firstSubtitleTracks, targetedTracks.subtitleTracks);
                 firstTrackSummary = mergeMatroskaTrackSummary(firstTrackSummary, targetedTracks.trackSummary);
@@ -666,16 +722,23 @@ public final class VideoStreamProbe {
                         + " bytes=" + targetedTracks.length
                         + " prefix=" + prefix);
             }
-            boolean firstHasDvText = containsDolbyVisionMarker(first.data);
-            boolean firstHasDvRpu = containsHevcRpuNal(first.data, first.data.length);
-            boolean firstHasHevcContext = containsHevcCodecMarker(first.data);
+            byte[] markerData = first.data;
+            if (!allowTargetedMatroskaTracks) {
+                Log.i("TVBox-runtime", "echo-probe-startup marker-scan prefix=" + prefix
+                        + " bytes=" + markerData.length);
+            }
+            boolean firstHasDvText = containsDolbyVisionMarker(markerData);
+            boolean firstHasDvRpu = containsHevcRpuNal(markerData, markerData.length);
+            boolean firstHasHevcContext = containsHevcCodecMarker(markerData);
             if (firstHasDvText || firstHasDvRpu) {
-                int dvProfile = extractDolbyVisionProfile(first.data);
+                int dvProfile = extractDolbyVisionProfile(markerData);
                 boolean dvConfirmed = isConfirmedDolbyVisionByteProbe(firstHasDvText, firstHasDvRpu,
                         firstHasHevcContext, dvProfile, localProxyUrl);
-                boolean hdr10BaseLayer = containsHdr10Marker(first.data) || isDolbyVisionProfileWithHdr10BaseLayer(dvProfile);
+                boolean hdr10BaseLayer = containsHdr10Marker(markerData) || isDolbyVisionProfileWithHdr10BaseLayer(dvProfile);
                 if (dvConfirmed) {
-                    return new Result(true, true, hdr10BaseLayer, containsHdr10PlusMarker(first.data),
+                    Log.i("TVBox-runtime", "echo-probe-startup complete prefix=" + prefix
+                            + " result=header-dovi subtitles=" + firstSubtitleTracks.size());
+                    return new Result(true, true, hdr10BaseLayer, containsHdr10PlusMarker(markerData),
                         containsMatroskaMarker(first.data), dvProfile, hdr10BaseLayer,
                         firstTrackSummary.primaryVideoMime, firstTrackSummary.primaryAudioMime,
                         firstTrackSummary.hasAvcVideo, firstTrackSummary.hasHevcVideo,
@@ -686,8 +749,10 @@ public final class VideoStreamProbe {
                         prefix + ":header-dovi" + profileSuffix(dvProfile, hdr10BaseLayer));
                 }
             }
-            if (containsHdr10PlusMarker(first.data) || containsHdr10Marker(first.data)) {
-                return new Result(true, false, true, containsHdr10PlusMarker(first.data), containsMatroskaMarker(first.data),
+            if (containsHdr10PlusMarker(markerData) || containsHdr10Marker(markerData)) {
+                Log.i("TVBox-runtime", "echo-probe-startup complete prefix=" + prefix
+                        + " result=header-hdr subtitles=" + firstSubtitleTracks.size());
+                return new Result(true, false, true, containsHdr10PlusMarker(markerData), containsMatroskaMarker(first.data),
                         -1, false,
                         firstTrackSummary.primaryVideoMime, firstTrackSummary.primaryAudioMime,
                         firstTrackSummary.hasAvcVideo, firstTrackSummary.hasHevcVideo,
@@ -738,6 +803,10 @@ public final class VideoStreamProbe {
                 }
                 firstSubtitleTracks = mergedSubtitleTracks;
                 firstTrackSummary = mergedTrackSummary;
+            }
+            if (!allowTargetedMatroskaTracks) {
+                Log.i("TVBox-runtime", "echo-probe-startup complete prefix=" + prefix
+                        + " result=byte-probe subtitles=" + firstSubtitleTracks.size());
             }
             return new Result(true, false, false, false, firstLooksMatroska, -1, false,
                     firstTrackSummary.primaryVideoMime, firstTrackSummary.primaryAudioMime,
@@ -1056,15 +1125,11 @@ public final class VideoStreamProbe {
             try {
                 TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
                 if (tm != null && tm.getPhoneType() != TelephonyManager.PHONE_TYPE_NONE) {
-                    return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                            ? android.os.Process.is64Bit()
-                            : Build.SUPPORTED_64_BIT_ABIS != null && Build.SUPPORTED_64_BIT_ABIS.length > 0;
+                    return is64BitProcessCompat();
                 }
             } catch (Throwable ignored) {
             }
-            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
-                    ? android.os.Process.is64Bit()
-                    : Build.SUPPORTED_64_BIT_ABIS != null && Build.SUPPORTED_64_BIT_ABIS.length > 0;
+            return is64BitProcessCompat();
         } catch (Throwable ignored) {
             return false;
         }
@@ -1099,16 +1164,25 @@ public final class VideoStreamProbe {
         return readRange(url, headers, start, end, PROBE_BYTES);
     }
 
+    private static boolean is64BitProcessCompat() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            return android.os.Process.is64Bit();
+        }
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
+                && Build.SUPPORTED_64_BIT_ABIS != null
+                && Build.SUPPORTED_64_BIT_ABIS.length > 0;
+    }
+
     private static Result probeHlsAvcProfileInternal(String url,
                                                      Map<String, String> headers,
                                                      int depth) throws Exception {
         byte[] playlistBytes = readUrlLimited(url, headers, HLS_PLAYLIST_PROBE_BYTES);
         String playlist = new String(playlistBytes, StandardCharsets.UTF_8);
         String variantUrl = findFirstHlsVariantUrl(url, playlist);
-        if (!TextUtils.isEmpty(variantUrl) && depth < 2) {
+        if (!TextUtils.isEmpty(variantUrl) && depth < 1) {
             return probeHlsAvcProfileInternal(variantUrl, headers, depth + 1);
         }
-        List<String> segments = findFirstHlsSegmentUrls(url, playlist, 3);
+        List<String> segments = findFirstHlsSegmentUrls(url, playlist, 1);
         if (segments.isEmpty()) {
             return Result.unknown("hls-avc-profile-no-segment");
         }
@@ -1143,7 +1217,7 @@ public final class VideoStreamProbe {
                 }
             }
         }
-        Response response = CLIENT.newCall(builder.build()).execute();
+        Response response = FAST_HLS_CLIENT.newCall(builder.build()).execute();
         try {
             if (!response.isSuccessful() || response.body() == null) {
                 throw new IllegalStateException("HTTP " + response.code());
@@ -1367,6 +1441,9 @@ public final class VideoStreamProbe {
                 long length = response.body().contentLength();
                 total = length > 0L ? length : -1L;
             }
+            if (localProxy && start == 0L && data.length > 0) {
+                PlaybackWarmupCache.offer(url, cleanHeaders, data, total);
+            }
             return new ProbeChunk(data, total);
         } finally {
             response.close();
@@ -1498,7 +1575,7 @@ public final class VideoStreamProbe {
         }
         String lower = text.toLowerCase(Locale.US);
         return lower.contains("video/dolby-vision")
-                || text.contains("dovi configuration")
+                || lower.contains("dovi configuration")
                 || lower.contains("杜比视界")
                 || lower.contains("杜比世界")
                 || lower.contains("杜比视觉")
@@ -2972,7 +3049,8 @@ public final class VideoStreamProbe {
         MediaExtractor extractor = new MediaExtractor();
         HttpRangeMediaDataSource rangeDataSource = null;
         try {
-            if (shouldUseRangeBackedExtractor(context, normalizedUrl)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                    && shouldUseRangeBackedExtractor(context, normalizedUrl)) {
                 rangeDataSource = new HttpRangeMediaDataSource(normalizedUrl,
                         headers == null ? Collections.emptyMap() : headers);
                 extractor.setDataSource(rangeDataSource);
@@ -3410,8 +3488,8 @@ public final class VideoStreamProbe {
                 || lower.contains("v_mpeg4/iso/avc");
     }
 
-    private static boolean containsAc3AudioMarker(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static boolean containsAc3AudioMarker(String text) {
+        if (text == null || text.isEmpty()) {
             return false;
         }
         String lower = text.toLowerCase(Locale.US);
@@ -3420,12 +3498,13 @@ public final class VideoStreamProbe {
         }
         return lower.contains("audio/ac3")
                 || lower.contains("ac-3")
+                || lower.contains("a_ac3")
                 || lower.contains(" ac3")
                 || lower.startsWith("ac3");
     }
 
-    private static boolean containsEac3AudioMarker(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static boolean containsEac3AudioMarker(String text) {
+        if (text == null || text.isEmpty()) {
             return false;
         }
         String lower = text.toLowerCase(Locale.US);
@@ -3437,20 +3516,21 @@ public final class VideoStreamProbe {
                 || lower.contains("ddp");
     }
 
-    private static boolean containsDtsAudioMarker(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static boolean containsDtsAudioMarker(String text) {
+        if (text == null || text.isEmpty()) {
             return false;
         }
         String lower = text.toLowerCase(Locale.US);
         return lower.contains("audio/vnd.dts")
                 || lower.contains("audio/dts")
+                || lower.contains("a_dts")
                 || lower.contains("dts-hd")
                 || lower.contains("dtshd")
                 || lower.contains(" dts");
     }
 
-    private static boolean containsTrueHdAudioMarker(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static boolean containsTrueHdAudioMarker(String text) {
+        if (text == null || text.isEmpty()) {
             return false;
         }
         String lower = text.toLowerCase(Locale.US);
@@ -3462,8 +3542,8 @@ public final class VideoStreamProbe {
                 || lower.contains("mlp");
     }
 
-    private static boolean containsAtmosAudioMarker(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static boolean containsAtmosAudioMarker(String text) {
+        if (text == null || text.isEmpty()) {
             return false;
         }
         String lower = text.toLowerCase(Locale.US);

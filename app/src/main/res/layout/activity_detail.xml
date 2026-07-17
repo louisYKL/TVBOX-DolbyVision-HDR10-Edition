@@ -187,6 +187,17 @@
                     android:textSize="@dimen/ts_20" />
 
                 <TextView
+                    android:id="@+id/tvPlayingFileName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/vs_6"
+                    android:ellipsize="marquee"
+                    android:marqueeRepeatLimit="marquee_forever"
+                    android:singleLine="true"
+                    android:textColor="@color/apple_tv_text_secondary"
+                    android:textSize="@dimen/ts_18" />
+
+                <TextView
                     android:id="@+id/tvPlayUrl"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

@@ -22,7 +22,7 @@ final class AudioFocusHelper implements AudioManager.OnAudioFocusChangeListener 
 
     private boolean mStartRequested = false;
     private boolean mPausedForLoss = false;
-    private int mCurrentFocus = 0;
+    private volatile int mCurrentFocus = 0;
     AudioFocusHelper(@NonNull VideoView videoView) {
         mWeakVideoView = new WeakReference<>(videoView);
         mAudioManager = (AudioManager) videoView.getContext().getApplicationContext().getSystemService(Context.AUDIO_SERVICE);
@@ -88,6 +88,8 @@ final class AudioFocusHelper implements AudioManager.OnAudioFocusChangeListener 
         int status = mAudioManager.requestAudioFocus(this, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
         if (AudioManager.AUDIOFOCUS_REQUEST_GRANTED == status) {
             mCurrentFocus = AudioManager.AUDIOFOCUS_GAIN;
+            mStartRequested = false;
+            mPausedForLoss = false;
             return;
         }
 
@@ -98,12 +100,12 @@ final class AudioFocusHelper implements AudioManager.OnAudioFocusChangeListener 
      * Requests the system to drop the audio focus
      */
     void abandonFocus() {
-
-        if (mAudioManager == null) {
-            return;
-        }
-
         mStartRequested = false;
-        mAudioManager.abandonAudioFocus(this);
+        if (mAudioManager != null) {
+            mAudioManager.abandonAudioFocus(this);
+        }
+        // abandonAudioFocus() does not necessarily deliver a callback. Clear the cached
+        // grant so an explicit resume always requests focus again instead of playing silently.
+        mCurrentFocus = 0;
     }
 }

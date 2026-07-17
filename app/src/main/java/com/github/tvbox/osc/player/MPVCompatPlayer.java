@@ -177,8 +177,12 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
         PlaybackUrlNormalizer.UrlWithHeaders parsed = PlaybackUrlNormalizer.splitUrlAndHeaders(path, headers);
         dataSource = PlaybackUrlNormalizer.normalizeHttpUrl(parsed.url);
         requestHeaders = parsed.headers == null ? new HashMap<String, String>() : new HashMap<>(parsed.headers);
-        MPVCompatManager.setCurrentFileForcesTv32LocalProxyPcm(isTv32LocalProxyPlayback(dataSource));
-        MPVCompatManager.setCurrentFileAllowsPassthrough(isAudioPassthroughAllowedForCurrentFile(requestHeaders));
+        boolean passthroughAllowed = isAudioPassthroughAllowedForCurrentFile(requestHeaders);
+        boolean tv32LocalProxy = isTv32LocalProxyPlayback(dataSource);
+        MPVCompatManager.setCurrentFileAudioRoute(
+                AudioOutputRoutePolicy.shouldForceTv32LocalProxyPcm(
+                        tv32LocalProxy, passthroughAllowed),
+                passthroughAllowed);
         fileLoadRequested = false;
         prepared = false;
         completed = false;
@@ -206,17 +210,18 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
     }
 
     private boolean isAudioPassthroughAllowedForCurrentFile(@Nullable Map<String, String> headers) {
-        if (isTv32LocalProxyPlayback(dataSource)) {
-            logInfo("echo-mpv-audio force-pcm tv32-local-proxy url=" + safeUrlForLog(dataSource));
-            return false;
-        }
         if (headers == null || headers.isEmpty()) {
             return false;
         }
         String passthrough = getHeaderValue(headers, "X-TVBox-Probe-AudioPassthrough");
         String allowed = getHeaderValue(headers, "X-TVBox-Probe-AudioPassthroughAllowed");
         if ("1".equals(passthrough)) {
-            return "1".equals(allowed);
+            boolean fileAllowed = "1".equals(allowed);
+            if (isTv32LocalProxyPlayback(dataSource) && !fileAllowed) {
+                logInfo("echo-mpv-audio force-pcm unsupported tv32-local-proxy url="
+                        + safeUrlForLog(dataSource));
+            }
+            return fileAllowed;
         }
         return false;
     }

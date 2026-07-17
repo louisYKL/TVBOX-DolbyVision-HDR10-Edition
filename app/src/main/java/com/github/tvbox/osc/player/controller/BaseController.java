@@ -100,7 +100,7 @@ public abstract class BaseController extends BaseVideoController implements Gest
     }
 
     private TextView mSlideInfo;
-    private ProgressBar mLoading;
+    protected ProgressBar mLoading;
     private ViewGroup mPauseRoot;
     private TextView mPauseTime;
 
@@ -164,12 +164,12 @@ public abstract class BaseController extends BaseVideoController implements Gest
                 break;
             case VideoView.STATE_PREPARING:
                 if (mLoading != null) {
-                    mLoading.setVisibility(VISIBLE);
+                    mLoading.setVisibility(shouldShowLoadingIndicator(playState) ? VISIBLE : GONE);
                 }
                 break;
             case VideoView.STATE_BUFFERING:
                 if (mLoading != null) {
-                    mLoading.setVisibility(mHasRenderedFirstFrame ? GONE : VISIBLE);
+                    mLoading.setVisibility(shouldShowLoadingIndicator(playState) ? VISIBLE : GONE);
                 }
                 break;
             case VideoView.STATE_PLAYBACK_COMPLETED:
@@ -181,6 +181,20 @@ public abstract class BaseController extends BaseVideoController implements Gest
                 }
                 break;
         }
+    }
+
+    protected boolean shouldShowLoadingIndicator(int playState) {
+        return true;
+    }
+
+    protected void refreshLoadingIndicator(int playState) {
+        if (mLoading == null) {
+            return;
+        }
+        boolean loadingState = playState == VideoView.STATE_PREPARING
+                || playState == VideoView.STATE_BUFFERING;
+        mLoading.setVisibility(loadingState && shouldShowLoadingIndicator(playState)
+                ? VISIBLE : GONE);
     }
 
     /**

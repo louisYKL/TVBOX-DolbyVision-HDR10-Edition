@@ -108,6 +108,7 @@ public class DetailActivity extends BaseActivity {
     private TextView tvActor;
     private TextView tvDirector;
     private TextView tvPlayUrl;
+    private TextView tvPlayingFileName;
     private TextView tvDes;
     private TextView tvPlay;
 //    private TextView tvSort;
@@ -183,6 +184,7 @@ public class DetailActivity extends BaseActivity {
         tvActor = findViewById(R.id.tvActor);
         tvDirector = findViewById(R.id.tvDirector);
         tvPlayUrl = findViewById(R.id.tvPlayUrl);
+        tvPlayingFileName = findViewById(R.id.tvPlayingFileName);
         tvDes = findViewById(R.id.tvDes);
         tvPlay = findViewById(R.id.tvPlay);
 //        tvSort = findViewById(R.id.tvSort);
@@ -521,7 +523,7 @@ public class DetailActivity extends BaseActivity {
     private void playCurrentSelection(boolean usePreviewPlayer, boolean openPlayerActivity) {
         if (vodInfo != null && vodInfo.seriesMap.get(vodInfo.playFlag).size() > 0) {
             preFlag = vodInfo.playFlag;
-            setTextShow(tvPlayUrl, "播放地址：", vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex).url);
+            setCurrentPlayingSeries(vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex));
             Bundle bundle = new Bundle();
             String activeSourceKey = TextUtils.isEmpty(sourceKey) ? firstsourceKey : sourceKey;
             vodInfo.sourceKey = activeSourceKey;
@@ -794,8 +796,11 @@ public class DetailActivity extends BaseActivity {
                             } else
                                 flag.selected = false;
                         }
-                        //设置播放地址
-                        setTextShow(tvPlayUrl, "播放地址：", vodInfo.seriesMap.get(vodInfo.playFlag).get(0).url);
+                        // Keep the displayed file name/address aligned with the restored episode.
+                        List<VodInfo.VodSeries> activeSeries = vodInfo.seriesMap.get(vodInfo.playFlag);
+                        int activeIndex = Math.max(0, Math.min(vodInfo.playIndex, activeSeries.size() - 1));
+                        vodInfo.playIndex = activeIndex;
+                        setCurrentPlayingSeries(activeSeries.get(activeIndex));
                         seriesFlagAdapter.setNewData(vodInfo.seriesFlags);
                         mGridViewFlag.scrollToPosition(flagScrollTo);
 
@@ -946,6 +951,7 @@ public class DetailActivity extends BaseActivity {
                     seriesAdapter.notifyItemChanged(index);
                     if(!isFirstLoad)mGridView.setSelection(index);
                     vodInfo.playIndex = index;
+                    setCurrentPlayingSeries(vodInfo.seriesMap.get(vodInfo.playFlag).get(index));
                     //保存历史
                     insertVod(vodInfo.sourceKey, vodInfo);
                     isFirstLoad = false;
@@ -1122,7 +1128,7 @@ public class DetailActivity extends BaseActivity {
 
         seriesFlagAdapter.notifyDataSetChanged();
         refreshList();
-        setTvPlayUrl(newSeriesList.get(newIndex).url);
+        setCurrentPlayingSeries(newSeriesList.get(newIndex));
 
         int flagIndex = -1;
         for (int i = 0; i < vodInfo.seriesFlags.size(); i++) {
@@ -1417,6 +1423,18 @@ public class DetailActivity extends BaseActivity {
     private void setTvPlayUrl(String url)
     {
         setTextShow(tvPlayUrl, "播放地址：", url);
+    }
+
+    private void setCurrentPlayingSeries(VodInfo.VodSeries series) {
+        if (series == null) {
+            tvPlayingFileName.setVisibility(View.GONE);
+            return;
+        }
+        setTextShow(tvPlayingFileName, "正在播放：", series.name);
+        if (tvPlayingFileName.getVisibility() == View.VISIBLE) {
+            tvPlayingFileName.setSelected(true);
+        }
+        setTvPlayUrl(series.url);
     }
 
     private void bindButtonFocus(TextView view) {

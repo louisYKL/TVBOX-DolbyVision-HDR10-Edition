@@ -14,6 +14,17 @@ import java.util.List;
 public final class StorageBudgetManager {
     public static final long MAX_LOG_BYTES = 10L * 1024L * 1024L;
     public static final long MAX_CACHE_BYTES = 100L * 1024L * 1024L;
+    private static final Comparator<File> OLDEST_FIRST = new Comparator<File>() {
+        @Override
+        public int compare(File left, File right) {
+            long leftModified = safeLastModified(left);
+            long rightModified = safeLastModified(right);
+            if (leftModified == rightModified) {
+                return 0;
+            }
+            return leftModified < rightModified ? -1 : 1;
+        }
+    };
 
     private StorageBudgetManager() {
     }
@@ -79,7 +90,7 @@ public final class StorageBudgetManager {
         if (totalBytes <= maxBytes) {
             return;
         }
-        Collections.sort(allEntries, Comparator.comparingLong(StorageBudgetManager::safeLastModified));
+        Collections.sort(allEntries, OLDEST_FIRST);
         for (File entry : allEntries) {
             if (totalBytes <= maxBytes) {
                 break;
@@ -106,8 +117,8 @@ public final class StorageBudgetManager {
         if (totalBytes <= maxBytes) {
             return;
         }
-        Collections.sort(entries, Comparator.comparingLong(StorageBudgetManager::safeLastModified));
-        File newest = keepNewestFile ? Collections.max(entries, Comparator.comparingLong(StorageBudgetManager::safeLastModified)) : null;
+        Collections.sort(entries, OLDEST_FIRST);
+        File newest = keepNewestFile ? Collections.max(entries, OLDEST_FIRST) : null;
         for (File file : entries) {
             if (totalBytes <= maxBytes) {
                 break;

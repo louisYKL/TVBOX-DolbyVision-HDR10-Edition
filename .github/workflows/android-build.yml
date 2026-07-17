@@ -34,6 +34,6 @@ jobs:
         with:
           name: tvbox-apks
           path: |
-            app/build/outputs/apk/normal/debug/TVBox_debug-java32.apk
-            app/build/outputs/apk/java64/debug/TVBox_debug-java64.apk
-            app/build/outputs/apk/hisense/debug/TVBox_debug-hisense.apk
+            app/build/outputs/apk/normal/debug/*.apk
+            app/build/outputs/apk/java64/debug/*.apk
+            app/build/outputs/apk/hisense/debug/*.apk

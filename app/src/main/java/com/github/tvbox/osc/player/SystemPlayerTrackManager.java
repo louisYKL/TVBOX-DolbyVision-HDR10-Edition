@@ -186,10 +186,9 @@ public final class SystemPlayerTrackManager {
         if (mediaPlayer == null || track == null) {
             return;
         }
-        if (track.renderId == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE
-                || track.renderId == MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT) {
-            clearSubtitleSelections(mediaPlayer, track);
-        }
+        // MediaPlayer replaces the selected track within the same type. Clearing every
+        // subtitle first multiplies synchronous vendor calls and can block completion/seek
+        // callbacks exactly while the decoder is transitioning.
         mediaPlayer.selectTrack(track.trackId);
     }
 
@@ -231,6 +230,13 @@ public final class SystemPlayerTrackManager {
         if (mediaPlayer == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) {
             return;
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            deselectSelectedSubtitleType(mediaPlayer,
+                    MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_SUBTITLE, exceptTrack);
+            deselectSelectedSubtitleType(mediaPlayer,
+                    MediaPlayer.TrackInfo.MEDIA_TRACK_TYPE_TIMEDTEXT, exceptTrack);
+            return;
+        }
         MediaPlayer.TrackInfo[] trackInfos = mediaPlayer.getTrackInfo();
         if (trackInfos == null) {
             return;
@@ -257,6 +263,15 @@ public final class SystemPlayerTrackManager {
                 mediaPlayer.deselectTrack(i);
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    private static void deselectSelectedSubtitleType(AndroidMediaPlayer mediaPlayer,
+                                                     int trackType,
+                                                     @Nullable TrackInfoBean exceptTrack) {
+        int selected = mediaPlayer.getSelectedTrack(trackType);
+        if (selected >= 0 && (exceptTrack == null || exceptTrack.trackId != selected)) {
+            mediaPlayer.deselectTrack(selected);
         }
     }
 
