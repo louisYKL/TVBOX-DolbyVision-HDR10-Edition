@@ -1,17 +1,16 @@
 package xyz.doikki.videoplayer.player;
 
 /**
- * Native MediaPlayer calls are serialized around asynchronous seeks. Several TV firmwares
- * block getTrackInfo/isPlaying/position calls, or emit a false EOF, when queried before the
- * matching seek completion callback. Initial resume starts the decoder before it enters the
- * same serialized native seek transition.
+ * Native queries and pause operations are serialized around asynchronous seeks. Starting is
+ * intentionally allowed: the released v0.2.1 sequence starts immediately after prepared even
+ * when its resume seek is still completing.
  */
 final class NativePlayerOperationPolicy {
     private NativePlayerOperationPolicy() {
     }
 
     static boolean canStart(boolean seekTransitionActive) {
-        return !seekTransitionActive;
+        return true;
     }
 
     static boolean canQuery(boolean seekTransitionActive) {

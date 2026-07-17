@@ -4,9 +4,9 @@
 
 ### 中文
 
-- 重构系统播放器的启动与预缓冲流程：打开视频后立即开始读取，使用连续 Range 窗口和后台预取积累播放缓存；达到目标缓存后才开始出画面，同时设置最低缓存和超时兜底，避免无限停在“正在准备播放”或无缓存起播。
-- 初始历史进度恢复与普通拖动统一交给单一 `SeekCoordinator`：同一时刻只向系统播放器提交一个 seek，快速连续拖动只保留最新目标，最终 seek 完成后再恢复播放，避免并发 seek、错误回调和播放器卡死。
-- 修复 seek 后的进度保存和假播放完成：seek 进行中优先保存目标位置，忽略旧位置回灌；对拖动后几秒内出现的厂商播放器错误完成回调做原地恢复，不再误跳下一集、显示“最后一集”或黑屏。
+- 重构系统播放器的启动与预读取流程：打开视频后立即开始读取，使用连续 Range 窗口和后台预取持续维持大缓存；预读取不再作为阻塞播放的门，也不会因自身超时进入错误状态，播放时机只由系统播放器真实的 prepared、缓冲和首帧事件决定。
+- 初始历史进度恢复与普通拖动统一交给单一 `SeekCoordinator`：快速连续拖动时新目标立即覆盖旧目标，不再排队播放中间位置；prepared 阶段提交恢复进度后可以立即启动，暂停期间拖动仍保持暂停，避免多层 seek 状态机互相等待。
+- 修复 seek 后的进度保存和假播放完成：seek 进行中优先保存最新目标位置，忽略旧位置回灌；对拖动后几秒内出现的厂商播放器错误完成回调直接忽略，不再重复 seek、重建数据源、误跳下一集、显示“最后一集”或黑屏。
 - 新增准备/缓冲/拖动时的百分比和实时网速显示；百分比按当前读取窗口重新计算并限制在真实完成前不显示 100%，播放、暂停、完成或详情页小窗稳定后立即移除加载层，修复 0%/99% 假卡住和画面上残留网速的问题。
 - 全屏底部菜单新增独立“字幕 开/关”按钮，字幕默认开启；关闭时只取消当前系统字幕、TimedText 或兼容播放器字幕轨道，不销毁字幕视图，重新开启或手动选字幕可以可靠恢复。
 - 字幕初始化改为首帧/播放就绪后执行，系统轨道只允许一次补查，并避免逐轨取消后再选择；修复字幕时有时无、重复双层字幕以及轨道查询阻塞主线程的问题。
@@ -18,9 +18,9 @@
 
 ### English
 
-- Rebuilt native-player startup and prebuffering so reads begin immediately, continuous range windows and background prefetch build a healthy buffer, and video starts only after the target is reached, with minimum-buffer and timeout fallbacks to prevent endless preparation.
-- Unified initial resume and normal timeline seeks under a single `SeekCoordinator`. Only one native seek is in flight; rapid repeated scrubbing coalesces to the latest target and playback resumes only after the final seek completes.
-- Fixed progress persistence and false completion after seeking. In-flight targets take precedence over stale native positions, while vendor completion callbacks shortly after a seek are recovered in place instead of advancing to the next episode or showing a black screen.
+- Rebuilt native-player startup and read-ahead so reads begin immediately while continuous range windows and background prefetch maintain a large forward buffer. Read-ahead no longer gates playback or raises its own timeout error; real prepared, buffering, and first-frame callbacks control playback state.
+- Unified initial resume and normal timeline seeks under a single `SeekCoordinator`. A new scrub target immediately supersedes the previous target instead of queueing intermediate positions, prepared playback can start while its resume seek completes, and seeking while paused stays paused.
+- Fixed progress persistence and false completion after seeking. The newest in-flight target takes precedence over stale native positions, while spurious vendor completion callbacks shortly after a seek are ignored without another seek or source rebuild.
 - Added real buffering percentage plus network speed for prepare, rebuffer, and seek states. Progress is reset per range window, capped below 100 until actually complete, and removed immediately after stable playback, pause, completion, or embedded-preview recovery.
 - Added a dedicated fullscreen subtitle on/off control, enabled by default. Disabling subtitles clears only the active native TimedText/subtitle or compatibility-player track and keeps the subtitle view reusable.
 - Deferred subtitle discovery until the first frame or playback-ready state, limited native track discovery to one retry, and removed deselect-every-track behavior to prevent missing, duplicated, or main-thread-blocking subtitle initialization.
