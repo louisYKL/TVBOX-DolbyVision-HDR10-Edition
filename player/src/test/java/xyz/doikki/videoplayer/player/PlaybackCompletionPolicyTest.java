@@ -46,28 +46,20 @@ public class PlaybackCompletionPolicyTest {
     }
 
     @Test
-    public void falseCompletionRecoveryWindowIsNarrowAndBounded() {
+    public void falseCompletionIgnoreWindowIsNarrow() {
         assertFalse(PlaybackCompletionPolicy.isLikelyPostSeekFalseCompletion(
                 true, 717_016, 10_000L, 15_001L, 0L, 6_473_156L));
         assertFalse(PlaybackCompletionPolicy.isLikelyPostSeekFalseCompletion(
                 true, 6_470_000, 10_000L, 10_450L, 0L, 6_473_156L));
-        assertTrue(PlaybackCompletionPolicy.canAttemptPostSeekRecovery(0));
-        assertTrue(PlaybackCompletionPolicy.canAttemptPostSeekRecovery(1));
-        assertFalse(PlaybackCompletionPolicy.canAttemptPostSeekRecovery(2));
-        assertEquals(715_016,
-                PlaybackCompletionPolicy.resolvePostSeekRecoveryTarget(717_016, 0));
-        assertEquals(712_016,
-                PlaybackCompletionPolicy.resolvePostSeekRecoveryTarget(717_016, 1));
     }
 
     @Test
     public void recoveryUsesNewestSeekTargetInsteadOfRestartingAtZero() {
         assertEquals(900_000, PlaybackCompletionPolicy.resolveRecoveryTarget(
-                900_000, 600_000, 497_223, 0L, 6_473_156L));
+                900_000, 497_223, 0L, 6_473_156L));
         assertEquals(600_000, PlaybackCompletionPolicy.resolveRecoveryTarget(
-                SeekCoordinator.NO_TARGET, 600_000, 497_223, 0L, 6_473_156L));
+                600_000, 497_223, 0L, 6_473_156L));
         assertEquals(497_223, PlaybackCompletionPolicy.resolveRecoveryTarget(
-                SeekCoordinator.NO_TARGET, SeekCoordinator.NO_TARGET,
-                497_223, 0L, 6_473_156L));
+                SeekCoordinator.NO_TARGET, 497_223, 0L, 6_473_156L));
     }
 }

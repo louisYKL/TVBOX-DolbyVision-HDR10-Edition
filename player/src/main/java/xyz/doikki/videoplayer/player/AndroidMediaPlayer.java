@@ -76,27 +76,12 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private SurfaceHolder mLastDisplayHolder;
     private boolean mHasVideoOutputTarget;
     private boolean mPendingStartAfterDisplayReady;
-    private boolean mPlaybackPrebufferGateActive;
-    private boolean mPlaybackPrebufferInfoDispatched;
     private boolean mPlaybackHasStarted;
-    private int mPlaybackPrebufferGeneration;
-    private long mPlaybackPrebufferStartedAtMs;
-    private long mLastPrebufferLogAtMs;
-    private long mLastPrebufferLogBytes = -1L;
-    private long mLastPrebufferProgressBytes = -1L;
-    private boolean mInitialResumeWarmupActive;
-    private boolean mInitialResumeTargetDispatched;
     private volatile boolean mIsBuffering;
     private volatile boolean mNativeBuffering;
-    private boolean mPreparedResumeBufferingInfoDispatched;
     private boolean mBufferingInfoVisible;
     private volatile long mAvoidPositionQueryUntilMs;
     private final SeekCoordinator mSeekCoordinator = new SeekCoordinator();
-    private final PreparedResumeSeekCoordinator mPreparedResumeSeekCoordinator =
-            new PreparedResumeSeekCoordinator();
-    private boolean mPreparedSeekCompletionDeferred;
-    private boolean mPreparedSeekCompletionDispatchPending;
-    private int mDeferredPreparedSeekCompletionTarget = SeekCoordinator.NO_TARGET;
     private MediaPlayer mNativeSeekTimeoutOwner;
     private int mNativeSeekTimeoutTarget = SeekCoordinator.NO_TARGET;
     private long mNativeSeekTimeoutDispatchId = SeekCoordinator.NO_DISPATCH_ID;
@@ -117,17 +102,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private int mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
     private long mLastCompletedSeekAtMs;
     private int mLastCompletedSeekTarget = SeekCoordinator.NO_TARGET;
-    private int mPostSeekCompletionRecoveryAttempts;
-    private int mPostSeekCompletionRecoveryTarget = SeekCoordinator.NO_TARGET;
-    private boolean mPostSeekCompletionRecoveryPending;
-    private boolean mDispatchingPostSeekCompletionRecovery;
-    private MediaPlayer mPostSeekCompletionRecoveryOwner;
-    private final Runnable mPostSeekCompletionRecoveryRunnable = new Runnable() {
-        @Override
-        public void run() {
-            runPostSeekCompletionRecovery();
-        }
-    };
     private boolean mDirectUriProgressActive;
     private long mDirectUriProgressStartRxBytes = TrafficStats.UNSUPPORTED;
     private int mDirectUriProgressPercent;
@@ -172,13 +146,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private static final int MEDIA_INFO_VIDEO_NOT_PLAYING = 805;
     private static final long VIDEO_RENDER_START_TIMEOUT_MS = 5500L;
     private static final long TV32_DIRECT_HDR_MATROSKA_RENDER_START_TIMEOUT_MS = 30_000L;
-    private static final long PLAYBACK_PREBUFFER_POLL_MS = 120L;
-    private static final long PLAYBACK_PREBUFFER_MIN_FALLBACK_BYTES = 8L * 1024L * 1024L;
-    private static final long PLAYBACK_PREBUFFER_FALLBACK_AFTER_MS = 20_000L;
-    private static final long PLAYBACK_PREBUFFER_HARD_TIMEOUT_MS = 45_000L;
     private static final long DIRECT_URI_PROGRESS_TARGET_BYTES = 24L * 1024L * 1024L;
-    private static final long POST_SEEK_COMPLETION_RECOVERY_DELAY_MS = 180L;
-    private static final long PREPARED_RESUME_SEEK_AFTER_START_DELAY_MS = 120L;
     private static final long NATIVE_SEEK_TIMEOUT_MS = 35_000L;
     private static final String HEADER_PROBE_CONTAINER = "X-TVBox-Probe-Container";
     private static final String HEADER_PROBE_DOLBY_VISION = "X-TVBox-Probe-DolbyVision";
@@ -200,19 +168,17 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
 
     @Override
     public void initPlayer() {
-        cancelPlaybackPositionRecovery("init");
-        resetPostSeekCompletionRecoveryState("init");
+        resetPostSeekCompletionGuardState();
         mMediaPlayer = new MediaPlayer();
         mState = STATE_IDLE;
         mHasVideoOutputTarget = false;
         mIsBuffering = false;
         mNativeBuffering = false;
-        mPreparedResumeBufferingInfoDispatched = false;
         mBufferingInfoVisible = false;
         mAvoidPositionQueryUntilMs = 0L;
         mPlaybackHasStarted = false;
         resetDirectUriProgress();
-        resetPreparedResumeState();
+        mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
         resetSystemTrackState();
         setOptions();
         applyAudioOutputConfiguration();
@@ -240,7 +206,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     @Override
     public void setDataSource(String path, Map<String, String> headers) {
         try {
-            cancelPlaybackPositionRecovery("set-data-source");
             PlaybackUrlNormalizer.UrlWithHeaders parsed = PlaybackUrlNormalizer.splitUrlAndHeaders(path, headers);
             String resolvedUrl = parsed.url;
             String playbackUrl = resolvedUrl;
@@ -274,14 +239,13 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mJava64MissingAudioRecoveryAttempted = false;
             mIsBuffering = false;
             mNativeBuffering = false;
-            mPreparedResumeBufferingInfoDispatched = false;
             mBufferingInfoVisible = false;
             mBufferedPercent = 0;
             mAvoidPositionQueryUntilMs = 0L;
             mPlaybackHasStarted = false;
             resetDirectUriProgress();
-            resetPreparedResumeState();
-            resetPostSeekCompletionRecoveryState("set-data-source");
+            mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
+            resetPostSeekCompletionGuardState();
             clearSeekState();
             setDataSourceInternal(playbackUrl, parsed.headers);
             mState = STATE_INITIALIZED;
@@ -333,8 +297,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             closeCustomDataSourceQuietly();
             mPlaybackHasStarted = false;
             resetDirectUriProgress();
-            resetPreparedResumeState();
-            resetPostSeekCompletionRecoveryState("set-asset-data-source");
+            mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
+            resetPostSeekCompletionGuardState();
             mMediaPlayer.setDataSource(fd.getFileDescriptor(), fd.getStartOffset(), fd.getLength());
             mState = STATE_INITIALIZED;
             mLastDataSourceSucceeded = true;
@@ -354,13 +318,11 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return;
         }
         if (!NativePlayerOperationPolicy.canStart(isNativeSeekTransitionActive())) {
-            mSeekCoordinator.requestResume();
-            logInfo("echo-system-start-gate wait-seek target=" + mSeekCoordinator.getActiveTarget());
             return;
         }
-        if (shouldWaitForPlaybackPrebuffer()) {
-            startWhenPlaybackPrebufferReady("start");
-            return;
+        mSeekCoordinator.requestResume();
+        if (!mPlaybackHasStarted || isNativeSeekTransitionActive()) {
+            requestPlaybackPrebuffer();
         }
         startNow();
     }
@@ -369,39 +331,16 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (mMediaPlayer == null) {
             return;
         }
-        if (!NativePlayerOperationPolicy.canStart(isNativeSeekTransitionActive())) {
-            mSeekCoordinator.requestResume();
-            logInfo("echo-system-start-gate block-native-start-until-seek-complete target="
-                    + mSeekCoordinator.getActiveTarget());
-            return;
-        }
-        if (mState == STATE_STARTED) {
-            logInfo("echo-system-start skip-already-started");
-            finishPlaybackPrebufferGate(true);
-            return;
-        }
         try {
-            if (mInitialResumeWarmupActive && mInitialResumeTargetDispatched) {
-                mInitialResumeWarmupActive = false;
-                mInitialResumeTargetDispatched = false;
-                logInfo("echo-system-audio warmup finish reason=target-buffer-ready");
-            }
             restoreRequestedVolume();
             mMediaPlayer.start();
             restoreRequestedVolume();
             logRoutedAudioOutput("started");
             mState = STATE_STARTED;
             mPlaybackHasStarted = true;
-            finishPlaybackPrebufferGate(true);
             scheduleVideoRenderWatchdogIfNeeded("start");
-            schedulePreparedResumeSeekAfterStart();
-            if (mNativeBuffering) {
-                startPlaybackPositionRecovery("start-native-buffering");
-            }
         } catch (IllegalStateException e) {
             Log.e(TAG, "start failed in state=" + mState, e);
-            cancelPlaybackPrebufferGate("start-error");
-            clearInitialResumeWarmup("start-error");
             mState = STATE_ERROR;
             mPlayerEventListener.onError();
         }
@@ -412,19 +351,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (mMediaPlayer == null) {
             return;
         }
-        cancelPlaybackPositionRecovery("pause");
-        if (mPlaybackPrebufferGateActive) {
-            cancelPlaybackPrebufferGate("pause");
-            clearInitialResumeWarmup("pause");
-            mState = STATE_PAUSED;
-            if (mSeekCoordinator.isInFlight()) {
-                mSeekCoordinator.cancelResume();
-            }
-            return;
-        }
         if (!NativePlayerOperationPolicy.canPause(isNativeSeekTransitionActive())) {
             mSeekCoordinator.cancelResume();
-            clearInitialResumeWarmup("pause-during-seek");
             mPendingStartAfterDisplayReady = false;
             mState = STATE_PAUSED;
             logInfo("echo-system-pause defer-native-until-seek-complete target="
@@ -438,7 +366,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             }
             mMediaPlayer.pause();
             mState = STATE_PAUSED;
-            clearInitialResumeWarmup("pause");
             if (mSeekCoordinator.isInFlight()) {
                 mSeekCoordinator.cancelResume();
             }
@@ -459,16 +386,13 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 Log.w(TAG, "stop ignored in state=" + mState);
                 return;
             }
-            cancelPlaybackPrebufferGate("stop");
-            cancelPlaybackPositionRecovery("stop");
-            clearInitialResumeWarmup("stop");
-            resetPostSeekCompletionRecoveryState("stop");
+            finishPlaybackPrebuffer();
+            resetPostSeekCompletionGuardState();
             clearSeekState();
-            resetPreparedResumeState();
+            mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
             mPendingStartAfterDisplayReady = false;
             mIsBuffering = false;
             mNativeBuffering = false;
-            mPreparedResumeBufferingInfoDispatched = false;
             mBufferingInfoVisible = false;
             mAvoidPositionQueryUntilMs = 0L;
             mPlaybackHasStarted = false;
@@ -509,12 +433,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return;
         }
         try {
-            cancelPlaybackPrebufferGate("reset");
-            cancelPlaybackPositionRecovery("reset");
-            clearInitialResumeWarmup("reset");
-            resetPostSeekCompletionRecoveryState("reset");
+            finishPlaybackPrebuffer();
+            resetPostSeekCompletionGuardState();
             clearSeekState();
-            resetPreparedResumeState();
+            mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
             // Cancel custom range reads first so vendor reset never waits for an obsolete
             // MediaDataSource/AppFuse callback on the activity thread.
             closeCustomDataSourceQuietly();
@@ -543,12 +465,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mPendingStartAfterDisplayReady = false;
             mIsBuffering = false;
             mNativeBuffering = false;
-            mPreparedResumeBufferingInfoDispatched = false;
             mBufferingInfoVisible = false;
             mAvoidPositionQueryUntilMs = 0L;
             mPlaybackHasStarted = false;
             resetDirectUriProgress();
-            mPlaybackPrebufferStartedAtMs = 0L;
             mLastDispatchedSubtitleText = null;
             mSubtitleDispatchGeneration++;
             mLastVolumeStateLogAtMs = 0L;
@@ -566,12 +486,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (mMediaPlayer == null) {
             return false;
         }
-        boolean playWhenReady = PlaybackPrebufferPolicy.shouldPlayWhenReady(
-                mState == STATE_STARTED,
-                mState == STATE_PREPARED,
-                mPlaybackPrebufferGateActive,
-                mPendingStartAfterDisplayReady,
-                mSeekCoordinator.shouldResumeAfterFinalSeek());
+        boolean playWhenReady = mState == STATE_STARTED
+                || mPendingStartAfterDisplayReady
+                || mSeekCoordinator.shouldResumeAfterFinalSeek();
         if (isLikely32BitTvDevice()) {
             if (playWhenReady) {
                 return true;
@@ -602,37 +519,23 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             int target = PlayerUtils.safeTimeMs(time);
-            mPreparedResumeSeekCoordinator.reset();
-            if (!mDispatchingPostSeekCompletionRecovery) {
-                cancelPendingPostSeekCompletionRecovery("new-seek");
-                mPostSeekCompletionRecoveryAttempts = 0;
-                mPostSeekCompletionRecoveryTarget = SeekCoordinator.NO_TARGET;
-            }
+            resetPostSeekCompletionGuardState();
             mLastRequestedSeekTarget = target;
-            boolean shouldResume = PlaybackPrebufferPolicy.shouldPlayWhenReady(
-                    mState == STATE_STARTED,
-                    mState == STATE_PREPARED,
-                    mPlaybackPrebufferGateActive,
-                    mPendingStartAfterDisplayReady,
-                    mSeekCoordinator.shouldResumeAfterFinalSeek());
+            boolean shouldResume = mState == STATE_STARTED
+                    || mState == STATE_PREPARED
+                    || mPendingStartAfterDisplayReady
+                    || mSeekCoordinator.shouldResumeAfterFinalSeek();
             SeekCoordinator.Request request = mSeekCoordinator.request(target, shouldResume);
             if (!request.shouldDispatch) {
                 logInfo("echo-system-seek " + request.reason
                         + " target=" + target
                         + " active=" + mSeekCoordinator.getActiveTarget()
-                        + " queued=" + mSeekCoordinator.getQueuedTarget()
                         + " resume=" + mSeekCoordinator.shouldResumeAfterFinalSeek());
                 return;
-            }
-            if (mInitialResumeWarmupActive) {
-                mInitialResumeTargetDispatched = true;
-                logInfo("echo-system-audio warmup target-dispatch=" + request.target);
             }
             dispatchSeek(request.target, request.dispatchId, "request");
         } catch (IllegalStateException e) {
             Log.e(TAG, "seekTo failed in state=" + mState, e);
-            cancelPlaybackPrebufferGate("seek-error");
-            clearInitialResumeWarmup("seek-error");
             clearSeekState();
             mState = STATE_ERROR;
             mPlayerEventListener.onError();
@@ -645,11 +548,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mState = STATE_RELEASED;
             return;
         }
-        cancelPlaybackPrebufferGate("release");
-        cancelPlaybackPositionRecovery("release");
-        clearInitialResumeWarmup("release");
-        resetPostSeekCompletionRecoveryState("release");
-        resetPreparedResumeState();
+        finishPlaybackPrebuffer();
+        resetPostSeekCompletionGuardState();
+        mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
         clearSeekState();
         mMediaPlayer.setOnErrorListener(null);
         mMediaPlayer.setOnCompletionListener(null);
@@ -677,7 +578,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mPendingStartAfterDisplayReady = false;
         mIsBuffering = false;
         mNativeBuffering = false;
-        mPreparedResumeBufferingInfoDispatched = false;
         mBufferingInfoVisible = false;
         mAvoidPositionQueryUntilMs = 0L;
         mPlaybackHasStarted = false;
@@ -706,7 +606,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             long position = mMediaPlayer.getCurrentPosition();
-            clearPostSeekCompletionRecoveryAfterStableAdvance(position);
+            clearPostSeekCompletionGuardAfterStableAdvance(position);
             return position;
         } catch (IllegalStateException e) {
             Log.w(TAG, "getCurrentPosition failed in state=" + mState, e);
@@ -732,14 +632,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
 
     @Override
     public int getBufferedPercentage() {
-        int prebufferPercent = BufferingProgressPolicy.resolveDisplayedPercent(
-                mPlaybackPrebufferGateActive,
-                getPlaybackBufferedAheadBytes(),
-                getPlaybackStartBufferTargetBytes(),
-                mBufferedPercent);
-        if (mPlaybackPrebufferGateActive) {
-            return prebufferPercent;
-        }
         mDirectUriProgressPercent = BufferingProgressPolicy.resolveDirectUriDisplayedPercent(
                 mDirectUriProgressActive,
                 mDirectUriProgressStartRxBytes,
@@ -912,15 +804,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return true;
         }
         Log.e(TAG, "onError what=" + what + " extra=" + extra);
-        cancelPlaybackPrebufferGate("media-error");
-        cancelPlaybackPositionRecovery("media-error");
-        clearInitialResumeWarmup("media-error");
-        cancelPendingPostSeekCompletionRecovery("media-error");
-        resetPreparedResumeState();
+        finishPlaybackPrebuffer();
         clearSeekState();
         mIsBuffering = false;
         mNativeBuffering = false;
-        mPreparedResumeBufferingInfoDispatched = false;
         mBufferingInfoVisible = false;
         mAvoidPositionQueryUntilMs = 0L;
         mState = STATE_ERROR;
@@ -934,7 +821,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (ignoreStaleNativeCallback(mp, "completion")) {
             return;
         }
-        cancelPlaybackPositionRecovery("completion");
         boolean seekInFlight = isNativeSeekTransitionActive();
         if (!NativePlayerOperationPolicy.canQuery(seekInFlight)) {
             logInfo("echo-system-completion ignored-during-seek target="
@@ -963,11 +849,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 duration);
         if (!expectedCompletion) {
             boolean playbackRequested = mState == STATE_STARTED
-                    || mPlaybackPrebufferGateActive
                     || mPendingStartAfterDisplayReady
                     || mSeekCoordinator.shouldResumeAfterFinalSeek();
             int recoveryTarget = PlaybackCompletionPolicy.resolveRecoveryTarget(
-                    mSeekCoordinator.getQueuedTarget(),
                     mSeekCoordinator.getActiveTarget(),
                     mLastRequestedSeekTarget,
                     position,
@@ -987,18 +871,18 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                     System.currentTimeMillis(),
                     position,
                     duration);
-            if (likelyPostSeekFalseCompletion
-                    && schedulePostSeekCompletionRecovery(mp, recoveryTarget, position, duration)) {
+            if (likelyPostSeekFalseCompletion) {
+                logInfo("echo-system-completion ignored-post-seek-vendor-callback target="
+                        + recoveryTarget
+                        + " position=" + position
+                        + " duration=" + duration
+                        + " action=no-reseek");
                 return;
             }
-            cancelPlaybackPrebufferGate("unexpected-completion");
-            clearInitialResumeWarmup("unexpected-completion");
-            cancelPendingPostSeekCompletionRecovery("unexpected-completion");
-            resetPreparedResumeState();
+            finishPlaybackPrebuffer();
             clearSeekState();
             mIsBuffering = false;
             mNativeBuffering = false;
-            mPreparedResumeBufferingInfoDispatched = false;
             mBufferingInfoVisible = false;
             mAvoidPositionQueryUntilMs = 0L;
             mState = STATE_ERROR;
@@ -1010,115 +894,30 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         logInfo("echo-system-completion accepted position=" + position
                 + " duration=" + duration);
-        cancelPlaybackPrebufferGate("completion");
-        clearInitialResumeWarmup("completion");
-        resetPostSeekCompletionRecoveryState("completion");
-        resetPreparedResumeState();
+        finishPlaybackPrebuffer();
+        resetPostSeekCompletionGuardState();
         clearSeekState();
         mIsBuffering = false;
         mNativeBuffering = false;
-        mPreparedResumeBufferingInfoDispatched = false;
         mBufferingInfoVisible = false;
         mAvoidPositionQueryUntilMs = 0L;
         mState = STATE_COMPLETED;
         mPlayerEventListener.onCompletion();
     }
 
-    private boolean schedulePostSeekCompletionRecovery(MediaPlayer owner,
-                                                        int recoveryTarget,
-                                                        long position,
-                                                        long duration) {
-        if (mPostSeekCompletionRecoveryPending) {
-            logInfo("echo-system-completion recovery-already-pending target="
-                    + mPostSeekCompletionRecoveryTarget);
-            return true;
-        }
-        if (owner == null
-                || owner != mMediaPlayer
-                || recoveryTarget <= 0
-                || !PlaybackCompletionPolicy.canAttemptPostSeekRecovery(
-                mPostSeekCompletionRecoveryAttempts)) {
-            logInfo("echo-system-completion recovery-exhausted target=" + recoveryTarget
-                    + " attempts=" + mPostSeekCompletionRecoveryAttempts);
-            return false;
-        }
-
-        int adjustedTarget = PlaybackCompletionPolicy.resolvePostSeekRecoveryTarget(
-                recoveryTarget, mPostSeekCompletionRecoveryAttempts);
-        mPostSeekCompletionRecoveryAttempts++;
-        mPostSeekCompletionRecoveryTarget = adjustedTarget;
-        mPostSeekCompletionRecoveryOwner = owner;
-        mPostSeekCompletionRecoveryPending = true;
-        mNativeBuffering = false;
-        mPreparedResumeBufferingInfoDispatched = false;
-        mAvoidPositionQueryUntilMs = System.currentTimeMillis() + 3_000L;
-        dispatchBufferingStart(0, "post-seek-completion-recovery");
-        logInfo("echo-system-completion recover-in-place target=" + recoveryTarget
-                + " adjusted=" + adjustedTarget
-                + " position=" + position
-                + " duration=" + duration
-                + " attempt=" + mPostSeekCompletionRecoveryAttempts);
-        mMainHandler.removeCallbacks(mPostSeekCompletionRecoveryRunnable);
-        mMainHandler.postDelayed(
-                mPostSeekCompletionRecoveryRunnable,
-                POST_SEEK_COMPLETION_RECOVERY_DELAY_MS);
-        return true;
-    }
-
-    private void runPostSeekCompletionRecovery() {
-        MediaPlayer owner = mPostSeekCompletionRecoveryOwner;
-        int target = mPostSeekCompletionRecoveryTarget;
-        mPostSeekCompletionRecoveryOwner = null;
-        mPostSeekCompletionRecoveryPending = false;
-        if (owner == null
-                || owner != mMediaPlayer
-                || target == SeekCoordinator.NO_TARGET
-                || mState == STATE_ERROR
-                || mState == STATE_RELEASED
-                || mState == STATE_STOPPED) {
-            logInfo("echo-system-completion skip-stale-recovery target=" + target);
-            return;
-        }
-        logInfo("echo-system-completion dispatch-recovery-seek target=" + target
-                + " attempt=" + mPostSeekCompletionRecoveryAttempts);
-        mDispatchingPostSeekCompletionRecovery = true;
-        try {
-            seekTo(target);
-        } finally {
-            mDispatchingPostSeekCompletionRecovery = false;
-        }
-    }
-
-    private void cancelPendingPostSeekCompletionRecovery(String reason) {
-        mMainHandler.removeCallbacks(mPostSeekCompletionRecoveryRunnable);
-        if (mPostSeekCompletionRecoveryPending) {
-            logInfo("echo-system-completion cancel-pending-recovery reason=" + reason
-                    + " target=" + mPostSeekCompletionRecoveryTarget);
-        }
-        mPostSeekCompletionRecoveryOwner = null;
-        mPostSeekCompletionRecoveryPending = false;
-        mDispatchingPostSeekCompletionRecovery = false;
-    }
-
-    private void resetPostSeekCompletionRecoveryState(String reason) {
-        cancelPendingPostSeekCompletionRecovery(reason);
+    private void resetPostSeekCompletionGuardState() {
         mLastCompletedSeekAtMs = 0L;
         mLastCompletedSeekTarget = SeekCoordinator.NO_TARGET;
-        mPostSeekCompletionRecoveryAttempts = 0;
-        mPostSeekCompletionRecoveryTarget = SeekCoordinator.NO_TARGET;
     }
 
-    private void clearPostSeekCompletionRecoveryAfterStableAdvance(long position) {
-        if (mPostSeekCompletionRecoveryTarget == SeekCoordinator.NO_TARGET
-                || position <= (long) mPostSeekCompletionRecoveryTarget + 1_000L) {
+    private void clearPostSeekCompletionGuardAfterStableAdvance(long position) {
+        if (mLastCompletedSeekTarget == SeekCoordinator.NO_TARGET
+                || position <= (long) mLastCompletedSeekTarget + 1_000L) {
             return;
         }
-        logInfo("echo-system-completion recovery-stable target="
-                + mPostSeekCompletionRecoveryTarget + " position=" + position);
-        mLastCompletedSeekAtMs = 0L;
-        mLastCompletedSeekTarget = SeekCoordinator.NO_TARGET;
-        mPostSeekCompletionRecoveryAttempts = 0;
-        mPostSeekCompletionRecoveryTarget = SeekCoordinator.NO_TARGET;
+        logInfo("echo-system-completion post-seek-stable target="
+                + mLastCompletedSeekTarget + " position=" + position);
+        resetPostSeekCompletionGuardState();
     }
 
     @Override
@@ -1130,15 +929,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (what == AbstractPlayer.MEDIA_INFO_BUFFERING_START) {
             mNativeBuffering = true;
             dispatchBufferingStart(extra, "native");
-            startPlaybackPositionRecovery("native-buffering-start");
             return true;
         }
         if (what == AbstractPlayer.MEDIA_INFO_BUFFERING_END) {
             mNativeBuffering = false;
-            cancelPlaybackPositionRecovery("native-buffering-end");
-            if (!mSeekCoordinator.isInFlight()) {
-                mPreparedResumeBufferingInfoDispatched = false;
-            }
             mAvoidPositionQueryUntilMs = 0L;
             restartVideoRenderWatchdogAfterBuffering("native-buffering-end");
             dispatchBufferingEndIfIdle(extra, "native");
@@ -1146,7 +940,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         //解决MEDIA_INFO_VIDEO_RENDERING_START多次回调问题
         if (what == AbstractPlayer.MEDIA_INFO_RENDERING_START) {
-            cancelPlaybackPositionRecovery("render-start");
             mVideoRenderStartSeen = true;
             mWaitForRealVideoFrame = false;
             cancelVideoRenderWatchdog();
@@ -1154,9 +947,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             // A rendered frame is definitive proof that startup buffering is no longer blocking
             // the decoder. Some TV firmwares omit BUFFERING_END after a long seek.
             mNativeBuffering = false;
-            if (!mSeekCoordinator.isInFlight()) {
-                mPreparedResumeBufferingInfoDispatched = false;
-            }
+            finishPlaybackPrebuffer();
             finishDirectUriProgress();
             dispatchBufferingEndIfIdle(0, "render-start");
             if (mIsPreparing) {
@@ -1185,7 +976,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         int normalized = BufferingProgressPolicy.clampPercent(percent);
         int previous = mBufferedPercent;
         mBufferedPercent = normalized;
-        if (normalized != previous && (mNativeBuffering || mPlaybackPrebufferGateActive)) {
+        if (normalized != previous && mNativeBuffering) {
             logInfo("echo-system-buffer progress=" + normalized
                     + "% previous=" + previous
                     + "% native=" + mNativeBuffering);
@@ -1204,19 +995,14 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private void dispatchBufferingEndIfIdle(int extra, String reason) {
-        boolean hold = BufferingProgressPolicy.shouldHoldBufferingEnd(
-                mNativeBuffering,
-                mPlaybackPrebufferInfoDispatched,
-                mPreparedResumeBufferingInfoDispatched);
-        mIsBuffering = hold;
-        if (hold) {
+        if (BufferingProgressPolicy.shouldHoldBufferingEnd(mNativeBuffering)) {
+            mIsBuffering = true;
             logInfo("echo-system-buffer hold-end reason=" + reason
                     + " native=" + mNativeBuffering
-                    + " prebuffer=" + mPlaybackPrebufferInfoDispatched
-                    + " preparedSeek=" + mPreparedResumeBufferingInfoDispatched
                     + " percent=" + getBufferedPercentage() + "%");
             return;
         }
+        mIsBuffering = false;
         if (!mBufferingInfoVisible) {
             return;
         }
@@ -1242,50 +1028,16 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         cancelNativeSeekTimeout();
         logInfo("echo-system-seek complete target=" + completion.completedTarget
                 + " id=" + completion.completedDispatchId
-                + " next=" + completion.target
                 + " resume=" + completion.shouldResume);
-        mLastRequestedSeekTarget = completion.shouldDispatch
-                ? completion.target
-                : completion.completedTarget;
+        mLastRequestedSeekTarget = completion.completedTarget;
         finishPlaybackSeek();
         mAvoidPositionQueryUntilMs = System.currentTimeMillis() + 1500L;
-        if (!completion.shouldDispatch) {
-            // The prepared-resume marker belongs to the seek, not to the subsequent native
-            // buffering interval. Keeping it set here permanently suppresses BUFFERING_END.
-            mPreparedResumeBufferingInfoDispatched = false;
-        }
-        if (completion.shouldDispatch) {
-            try {
-                dispatchSeek(completion.target, completion.dispatchId, "queued-latest");
-            } catch (IllegalStateException e) {
-                Log.e(TAG, "queued seek failed in state=" + mState, e);
-                cancelPlaybackPrebufferGate("queued-seek-error");
-                cancelPlaybackPositionRecovery("queued-seek-error");
-                clearInitialResumeWarmup("queued-seek-error");
-                clearSeekState();
-                mIsBuffering = false;
-                mNativeBuffering = false;
-                mPreparedResumeBufferingInfoDispatched = false;
-                mBufferingInfoVisible = false;
-                mAvoidPositionQueryUntilMs = 0L;
-                mState = STATE_ERROR;
-                mPlayerEventListener.onError();
-            }
-            return;
-        }
         mLastCompletedSeekAtMs = System.currentTimeMillis();
         mLastCompletedSeekTarget = completion.completedTarget;
         // The native seek is already complete even when a fullscreen transition has
         // temporarily detached the Surface. Publish the real position before gating start so
         // progress persistence never falls back to the pre-seek value.
         mPlayerEventListener.onSeekComplete(completion.completedTarget);
-        if (mPreparedResumeSeekCoordinator.isInvocationPending()) {
-            mPreparedSeekCompletionDeferred = completion.shouldResume;
-            mDeferredPreparedSeekCompletionTarget = completion.completedTarget;
-            logInfo("echo-system-start-gate defer-synchronous-seek-complete target="
-                    + completion.completedTarget);
-            return;
-        }
         finishAfterFinalSeek(completion.completedTarget, completion.shouldResume);
     }
 
@@ -1300,53 +1052,38 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                     logInfo("echo-system-start-gate seek-wait-display target=" + completedTarget);
                     return;
                 }
-                if (mState == STATE_STARTED) {
-                    // Preserve the released v0.2.1 contract after the real native callback:
-                    // restore volume and restart only when the vendor player did not auto-resume.
-                    restoreRequestedVolume();
-                    boolean nativePlaying = mMediaPlayer != null && mMediaPlayer.isPlaying();
-                    if (nativePlaying) {
-                        logInfo("echo-system-start keep-seek-complete-playing target="
-                                + completedTarget);
-                    } else {
-                        logInfo("echo-system-start resume-after-seek-complete target="
-                                + completedTarget);
-                        mMediaPlayer.start();
-                        restoreRequestedVolume();
-                    }
-                    scheduleVideoRenderWatchdogIfNeeded("seek-complete-resume");
-                    dispatchBufferingEndIfIdle(0, "seek-complete-started");
-                    if (mNativeBuffering) {
-                        startPlaybackPositionRecovery("seek-complete-native-buffering");
-                    }
-                } else {
-                    if (audioOnly) {
-                        clearVideoRenderGate("audio-only-seek-complete");
-                    } else {
-                        armVideoRenderGate("seek-complete");
-                    }
-                    startWhenPlaybackPrebufferReady("seek-complete");
-                    dispatchBufferingEndIfIdle(0, "seek-complete-start");
-                    if (audioOnly && mPlayerEventListener != null) {
-                        mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_RENDERING_START, 0);
-                    }
+                if (audioOnly) {
+                    clearVideoRenderGate("audio-only-seek-complete");
+                }
+                requestPlaybackPrebuffer();
+                restoreRequestedVolume();
+                mMediaPlayer.start();
+                restoreRequestedVolume();
+                mState = STATE_STARTED;
+                mPlaybackHasStarted = true;
+                scheduleVideoRenderWatchdogIfNeeded("seek-complete-resume");
+                dispatchBufferingEndIfIdle(0, "seek-complete-resume");
+                if (audioOnly && mPlayerEventListener != null) {
+                    mNativeBuffering = false;
+                    finishPlaybackPrebuffer();
+                    dispatchBufferingEndIfIdle(0, "audio-only-seek-complete");
+                    mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_RENDERING_START, 0);
                 }
             } else {
+                finishPlaybackPrebuffer();
                 if (mPlaybackHasStarted && mMediaPlayer != null) {
                     mMediaPlayer.pause();
                 }
                 mState = STATE_PAUSED;
-                mPreparedResumeBufferingInfoDispatched = false;
+                mNativeBuffering = false;
                 dispatchBufferingEndIfIdle(0, "seek-complete-paused");
             }
         } catch (IllegalStateException e) {
             Log.e(TAG, "onSeekComplete failed in state=" + mState, e);
-            cancelPlaybackPrebufferGate("seek-complete-error");
-            clearInitialResumeWarmup("seek-complete-error");
+            finishPlaybackPrebuffer();
             clearSeekState();
             mIsBuffering = false;
             mNativeBuffering = false;
-            mPreparedResumeBufferingInfoDispatched = false;
             mBufferingInfoVisible = false;
             mAvoidPositionQueryUntilMs = 0L;
             mState = STATE_ERROR;
@@ -1360,7 +1097,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 || !mSeekCoordinator.isActiveDispatch(dispatchId, target)) {
             return;
         }
-        cancelPlaybackPrebufferGate("seek-" + reason);
+        finishPlaybackPrebuffer();
         logInfo("echo-system-seek dispatch=" + reason
                 + " target=" + target
                 + " id=" + dispatchId
@@ -1425,30 +1162,13 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
     }
 
-    private void resetPreparedResumeState() {
-        mPreparedResumeSeekCoordinator.reset();
-        mPreparedResumeBufferingInfoDispatched = false;
-        mPreparedSeekCompletionDeferred = false;
-        mPreparedSeekCompletionDispatchPending = false;
-        mDeferredPreparedSeekCompletionTarget = SeekCoordinator.NO_TARGET;
-        mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
-    }
-
     private void dispatchNativeSeekOnPlayerThread(final MediaPlayer owner,
                                                   final int target,
                                                   final long dispatchId,
                                                   final String reason) {
-        dispatchNativeSeekOnPlayerThread(owner, target, dispatchId, reason, false);
-    }
-
-    private void dispatchNativeSeekOnPlayerThread(final MediaPlayer owner,
-                                                  final int target,
-                                                  final long dispatchId,
-                                                  final String reason,
-                                                  final boolean preparedResume) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mMainHandler.post(() -> dispatchNativeSeekOnPlayerThread(
-                    owner, target, dispatchId, reason, preparedResume));
+                    owner, target, dispatchId, reason));
             return;
         }
         boolean invoked = false;
@@ -1456,9 +1176,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         long startedAtMs = System.currentTimeMillis();
         try {
             boolean current = owner == mMediaPlayer
-                    && mSeekCoordinator.isActiveDispatch(dispatchId, target)
-                    && (!preparedResume
-                    || mPreparedResumeSeekCoordinator.isInvocationPending());
+                    && mSeekCoordinator.isActiveDispatch(dispatchId, target);
             if (current) {
                 invoked = true;
                 owner.seekTo(target);
@@ -1471,7 +1189,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 target,
                 dispatchId,
                 reason,
-                preparedResume,
                 invoked,
                 failure,
                 Math.max(0L, System.currentTimeMillis() - startedAtMs));
@@ -1481,18 +1198,12 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                                                  int target,
                                                  long dispatchId,
                                                  String reason,
-                                                 boolean preparedResume,
                                                  boolean invoked,
                                                  Throwable failure,
                                                  long elapsedMs) {
         if (!invoked) {
             logInfo("echo-system-seek skip-stale-call reason=" + reason
                     + " target=" + target + " id=" + dispatchId);
-            return;
-        }
-        if (preparedResume) {
-            onPreparedResumeSeekInvocationFinished(
-                    owner, target, dispatchId, failure, elapsedMs);
             return;
         }
         if (failure == null) {
@@ -1510,65 +1221,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         Log.e(TAG, "native seek failed target=" + target + " id=" + dispatchId, failure);
         handleNativeSeekFailure("seek-call-error");
-    }
-
-    private void onPreparedResumeSeekInvocationFinished(final MediaPlayer owner,
-                                                         final int target,
-                                                         long dispatchId,
-                                                         Throwable failure,
-                                                         long elapsedMs) {
-        if (owner != mMediaPlayer
-                || !mPreparedResumeSeekCoordinator.completeInvocation(target)) {
-            return;
-        }
-        if (failure != null) {
-            if (!mSeekCoordinator.fail(dispatchId, target)) {
-                logInfo("echo-system-seek ignore-stale-prepared-failure target="
-                        + target + " id=" + dispatchId);
-                return;
-            }
-            Log.e(TAG, "prepared resume seek failed target=" + target, failure);
-            handleNativeSeekFailure("prepared-seek-call-error");
-            return;
-        }
-        logInfo("echo-system-seek prepared-call-returned target=" + target
-                + " id=" + dispatchId
-                + " elapsedMs=" + elapsedMs
-                + " state=" + mState);
-        scheduleNativeSeekTimeout(owner, target, dispatchId);
-        if (mState == STATE_ERROR
-                || mState == STATE_RELEASED
-                || mState == STATE_STOPPED
-                || mState == STATE_PAUSED) {
-            mPreparedResumeBufferingInfoDispatched = false;
-            dispatchBufferingEndIfIdle(0, "prepared-call-returned-no-start");
-            return;
-        }
-        if (mPreparedSeekCompletionDeferred
-                && mDeferredPreparedSeekCompletionTarget == target) {
-            mPreparedSeekCompletionDeferred = false;
-            mPreparedSeekCompletionDispatchPending = true;
-            mMainHandler.post(() -> finishDeferredPreparedSeekCompletion(target, owner));
-            return;
-        }
-        logInfo("echo-system-start-gate prepared-seek-call-returned-wait-onSeekComplete target="
-                + target);
-    }
-
-    private void finishDeferredPreparedSeekCompletion(int target, MediaPlayer owner) {
-        if (!mPreparedSeekCompletionDispatchPending
-                || mDeferredPreparedSeekCompletionTarget != target) {
-            return;
-        }
-        mPreparedSeekCompletionDispatchPending = false;
-        mDeferredPreparedSeekCompletionTarget = SeekCoordinator.NO_TARGET;
-        if (owner != mMediaPlayer
-                || mState == STATE_ERROR
-                || mState == STATE_RELEASED
-                || mState == STATE_STOPPED) {
-            return;
-        }
-        finishAfterFinalSeek(target, mState != STATE_PAUSED);
     }
 
     private void scheduleNativeSeekTimeout(MediaPlayer owner, int target, long dispatchId) {
@@ -1601,38 +1253,48 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 || mState == STATE_RELEASED) {
             return;
         }
-        int recoveryTarget = resolvePendingSeekTarget();
+        boolean shouldResume = mSeekCoordinator.shouldResumeAfterFinalSeek();
         if (!mSeekCoordinator.fail(dispatchId, target)) {
             return;
         }
-        recoveryTarget = Math.max(0, recoveryTarget);
         logInfo("echo-system-seek timeout target=" + target
-                + " latest=" + recoveryTarget
-                + " id=" + dispatchId);
-        cancelPlaybackPrebufferGate("seek-timeout");
-        cancelPlaybackPositionRecovery("seek-timeout");
-        clearInitialResumeWarmup("seek-timeout");
-        resetPreparedResumeState();
+                + " id=" + dispatchId
+                + " action=clear-stale-state-no-rebuild");
         finishPlaybackSeek();
-        resetDirectUriProgress();
-        mPreparedResumeBufferingInfoDispatched = false;
-        mBufferingInfoVisible = false;
-        mIsBuffering = false;
         mNativeBuffering = false;
         mAvoidPositionQueryUntilMs = 0L;
-        mState = STATE_ERROR;
-        mIsPreparing = false;
+        mLastCompletedSeekAtMs = System.currentTimeMillis();
+        mLastCompletedSeekTarget = target;
         if (mPlayerEventListener != null) {
-            mPlayerEventListener.onSourceRebuildRequired(recoveryTarget);
+            mPlayerEventListener.onSeekComplete(target);
+        }
+        try {
+            if (shouldResume && mState != STATE_PAUSED) {
+                restoreRequestedVolume();
+                owner.start();
+                restoreRequestedVolume();
+                mState = STATE_STARTED;
+                mPlaybackHasStarted = true;
+                scheduleVideoRenderWatchdogIfNeeded("seek-timeout-resume");
+            } else {
+                if (mPlaybackHasStarted) {
+                    owner.pause();
+                }
+                mState = STATE_PAUSED;
+            }
+            dispatchBufferingEndIfIdle(0, "seek-timeout-fallback");
+        } catch (IllegalStateException error) {
+            Log.e(TAG, "seek timeout fallback failed target=" + target, error);
+            mState = STATE_ERROR;
+            if (mPlayerEventListener != null) {
+                mPlayerEventListener.onError();
+            }
         }
     }
 
     private void handleNativeSeekFailure(String reason) {
-        cancelPlaybackPrebufferGate(reason);
-        cancelPlaybackPositionRecovery(reason);
-        clearInitialResumeWarmup(reason);
+        finishPlaybackPrebuffer();
         clearSeekState();
-        mPreparedResumeBufferingInfoDispatched = false;
         mBufferingInfoVisible = false;
         mIsBuffering = false;
         mNativeBuffering = false;
@@ -1644,7 +1306,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private void beginPlaybackSeek() {
-        cancelPlaybackPositionRecovery("seek-start");
         dispatchTimedText("", "seek-start");
         if (mCurrentProxyFdDataSource != null) {
             mCurrentProxyFdDataSource.onPlaybackSeekStarted();
@@ -1677,196 +1338,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
     }
 
-    private long getPlaybackBufferedAheadBytes() {
-        if (mCurrentProxyFdDataSource != null) {
-            return mCurrentProxyFdDataSource.getBufferedAheadBytes();
-        }
-        if (mCurrentMediaDataSource instanceof HttpRangeMediaDataSource) {
-            return ((HttpRangeMediaDataSource) mCurrentMediaDataSource).getBufferedAheadBytes();
-        }
-        return 0L;
-    }
-
-    private long getPlaybackStartBufferTargetBytes() {
-        if (mCurrentProxyFdDataSource != null) {
-            return mCurrentProxyFdDataSource.getPlaybackStartBufferTargetBytes();
-        }
-        if (mCurrentMediaDataSource instanceof HttpRangeMediaDataSource) {
-            return ((HttpRangeMediaDataSource) mCurrentMediaDataSource).getPlaybackStartBufferTargetBytes();
-        }
-        return 0L;
-    }
-
-    private long getPlaybackCachedBytes() {
-        if (mCurrentProxyFdDataSource != null) {
-            return mCurrentProxyFdDataSource.getCachedBytes();
-        }
-        if (mCurrentMediaDataSource instanceof HttpRangeMediaDataSource) {
-            return ((HttpRangeMediaDataSource) mCurrentMediaDataSource).getCachedBytes();
-        }
-        return 0L;
-    }
-
-    private boolean hasRangeBackedPlaybackSource() {
-        return mCurrentProxyFdDataSource != null
-                || mCurrentMediaDataSource instanceof HttpRangeMediaDataSource;
-    }
-
-    private boolean shouldWaitForPlaybackPrebuffer() {
-        if (!hasRangeBackedPlaybackSource()
-                || mPlaybackHasStarted
-                || mState == STATE_STARTED
-                || mState == STATE_ERROR
-                || mState == STATE_RELEASED) {
-            return false;
-        }
-        long target = getPlaybackStartBufferTargetBytes();
-        return target > 0L
-                && !PlaybackPrebufferPolicy.isReady(getPlaybackBufferedAheadBytes(), target);
-    }
-
-    private void startWhenPlaybackPrebufferReady(String reason) {
-        if (mMediaPlayer == null) {
-            return;
-        }
-        if (mSeekCoordinator.isInFlight()) {
-            logInfo("echo-system-prebuffer wait-seek reason=" + reason
-                    + " target=" + mSeekCoordinator.getActiveTarget());
-            return;
-        }
-        requestPlaybackPrebuffer();
-        long target = getPlaybackStartBufferTargetBytes();
-        long buffered = getPlaybackBufferedAheadBytes();
-        boolean sourceReady = !hasRangeBackedPlaybackSource()
-                || PlaybackPrebufferPolicy.isReady(buffered, target);
-        if (sourceReady || mPlaybackHasStarted) {
-            logInfo("echo-system-prebuffer ready reason=" + reason
-                    + " ahead=" + formatMegabytes(buffered)
-                    + " target=" + formatMegabytes(target)
-                    + " cache=" + formatMegabytes(getPlaybackCachedBytes()));
-            startNow();
-            return;
-        }
-        beginPlaybackPrebufferGate(reason, buffered, target);
-    }
-
-    private void beginPlaybackPrebufferGate(String reason, long buffered, long target) {
-        if (mPlaybackPrebufferGateActive) {
-            return;
-        }
-        mPlaybackPrebufferGateActive = true;
-        mPlaybackPrebufferGeneration++;
-        mPlaybackPrebufferStartedAtMs = System.currentTimeMillis();
-        mLastPrebufferLogAtMs = 0L;
-        mLastPrebufferLogBytes = -1L;
-        mLastPrebufferProgressBytes = Math.max(0L, buffered);
-        mPlaybackPrebufferInfoDispatched = true;
-        dispatchBufferingStart(AbstractPlayer.MEDIA_INFO_EXTRA_PLAYBACK_PREBUFFER,
-                "prebuffer-begin");
-        logInfo("echo-system-prebuffer begin reason=" + reason
-                + " ahead=" + formatMegabytes(buffered)
-                + " target=" + formatMegabytes(target)
-                + " cache=" + formatMegabytes(getPlaybackCachedBytes()));
-        final int generation = mPlaybackPrebufferGeneration;
-        mMainHandler.postDelayed(() -> pollPlaybackPrebuffer(generation), PLAYBACK_PREBUFFER_POLL_MS);
-    }
-
-    private void pollPlaybackPrebuffer(int generation) {
-        if (!mPlaybackPrebufferGateActive
-                || generation != mPlaybackPrebufferGeneration
-                || mMediaPlayer == null) {
-            return;
-        }
-        if (mSeekCoordinator.isInFlight()) {
-            mMainHandler.postDelayed(() -> pollPlaybackPrebuffer(generation), PLAYBACK_PREBUFFER_POLL_MS);
-            return;
-        }
-        requestPlaybackPrebuffer();
-        long target = getPlaybackStartBufferTargetBytes();
-        long buffered = getPlaybackBufferedAheadBytes();
-        long now = System.currentTimeMillis();
-        long elapsed = Math.max(0L, now - mPlaybackPrebufferStartedAtMs);
-        if (PlaybackPrebufferPolicy.isInitialStartReady(
-                buffered,
-                target,
-                elapsed,
-                PLAYBACK_PREBUFFER_MIN_FALLBACK_BYTES,
-                PLAYBACK_PREBUFFER_FALLBACK_AFTER_MS)) {
-            boolean fullTarget = PlaybackPrebufferPolicy.isReady(buffered, target);
-            logInfo("echo-system-prebuffer complete mode=" + (fullTarget ? "target" : "bounded-fallback")
-                    + " elapsedMs=" + elapsed
-                    + " ahead=" + formatMegabytes(buffered)
-                    + " target=" + formatMegabytes(target)
-                    + " cache=" + formatMegabytes(getPlaybackCachedBytes()));
-            startNow();
-            return;
-        }
-        if (PlaybackPrebufferPolicy.isHardStalled(
-                buffered,
-                target,
-                elapsed,
-                PLAYBACK_PREBUFFER_MIN_FALLBACK_BYTES,
-                PLAYBACK_PREBUFFER_HARD_TIMEOUT_MS)) {
-            logInfo("echo-system-prebuffer hard-timeout elapsedMs=" + elapsed
-                    + " ahead=" + formatMegabytes(buffered)
-                    + " target=" + formatMegabytes(target)
-                    + " cache=" + formatMegabytes(getPlaybackCachedBytes()));
-            cancelPlaybackPrebufferGate("hard-timeout");
-            mState = STATE_ERROR;
-            mIsPreparing = false;
-            if (mPlayerEventListener != null) {
-                mPlayerEventListener.onError();
-            }
-            return;
-        }
-        if (PlaybackPrebufferPolicy.hasForwardProgress(
-                mLastPrebufferProgressBytes, buffered)) {
-            mLastPrebufferProgressBytes = buffered;
-            // STATE_BUFFERING is intentionally repeated only when bytes advance. The app
-            // treats its 45-second timer as a no-progress watchdog, so a slow but healthy
-            // source cannot be mislabeled as a playback timeout.
-            dispatchBufferingStart(AbstractPlayer.MEDIA_INFO_EXTRA_PLAYBACK_PREBUFFER,
-                    "prebuffer-progress");
-        }
-        if (mLastPrebufferLogAtMs == 0L
-                || now - mLastPrebufferLogAtMs >= 1000L
-                || buffered - mLastPrebufferLogBytes >= 4L * 1024L * 1024L) {
-            mLastPrebufferLogAtMs = now;
-            mLastPrebufferLogBytes = buffered;
-            logInfo("echo-system-prebuffer filling ahead=" + formatMegabytes(buffered)
-                    + " target=" + formatMegabytes(target)
-                    + " cache=" + formatMegabytes(getPlaybackCachedBytes()));
-        }
-        mMainHandler.postDelayed(() -> pollPlaybackPrebuffer(generation), PLAYBACK_PREBUFFER_POLL_MS);
-    }
-
-    private void finishPlaybackPrebufferGate(boolean notifyBuffered) {
-        boolean dispatched = mPlaybackPrebufferInfoDispatched;
-        mPlaybackPrebufferGateActive = false;
-        mPlaybackPrebufferInfoDispatched = false;
-        mPlaybackPrebufferGeneration++;
-        mPlaybackPrebufferStartedAtMs = 0L;
-        mLastPrebufferProgressBytes = -1L;
-        finishPlaybackPrebuffer();
-        if (notifyBuffered && dispatched) {
-            dispatchBufferingEndIfIdle(
-                    AbstractPlayer.MEDIA_INFO_EXTRA_PLAYBACK_PREBUFFER,
-                    "prebuffer-complete");
-        }
-    }
-
-    private void cancelPlaybackPrebufferGate(String reason) {
-        if (!mPlaybackPrebufferGateActive && !mPlaybackPrebufferInfoDispatched) {
-            return;
-        }
-        logInfo("echo-system-prebuffer cancel reason=" + reason);
-        finishPlaybackPrebufferGate(false);
-        mIsBuffering = BufferingProgressPolicy.shouldHoldBufferingEnd(
-                mNativeBuffering,
-                false,
-                mPreparedResumeBufferingInfoDispatched);
-    }
-
     private String formatMegabytes(long bytes) {
         return String.format(Locale.US, "%.1fMB", Math.max(0L, bytes) / (1024d * 1024d));
     }
@@ -1876,12 +1347,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (ignoreStaleNativeCallback(mp, "prepared")) {
             return;
         }
-        cancelPlaybackPositionRecovery("prepared");
         Log.i(TAG, "onPrepared");
         mState = STATE_PREPARED;
         mIsBuffering = false;
         mNativeBuffering = false;
-        mPreparedResumeBufferingInfoDispatched = false;
         mBufferingInfoVisible = false;
         mAvoidPositionQueryUntilMs = 0L;
         applyVideoScalingMode(mp);
@@ -1898,15 +1367,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (mp != mMediaPlayer || mState != STATE_PREPARED) {
             return;
         }
-        if (isNativeSeekTransitionActive()) {
-            mSeekCoordinator.requestResume();
-            logInfo("echo-system-start-gate prepared-return-wait-onSeekComplete target="
-                    + resolvePendingSeekTarget());
-            return;
-        }
         if (isAudioOnlyTrackList()) {
             clearVideoRenderGate("audio-only");
             start();
+            finishPlaybackPrebuffer();
             mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_RENDERING_START, 0);
             return;
         }
@@ -1915,7 +1379,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 + " matroska=" + mCurrentDataSourceMatroskaLike
                 + " hdrLike=" + isCurrentHdrLikeDataSource());
         if (hasVideoOutputTarget()) {
-            startWhenPlaybackPrebufferReady("prepared");
+            start();
         } else {
             mPendingStartAfterDisplayReady = true;
             Log.i(TAG, "delay start until display target ready");
@@ -2280,40 +1744,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (mMediaPlayer == null) {
             return;
         }
-        // Huawei's vendor MediaPlayer can latch a silent AudioTrack when it is first created at
-        // zero volume. Keep the native volume at the requested level while the black cover hides
-        // the opening frame and the decoder primes around the resume seek.
-        mMediaPlayer.setVolume(
-                InitialResumeWarmupPolicy.nativeTrackVolume(
-                        mInitialResumeWarmupActive, mRequestedLeftVolume),
-                InitialResumeWarmupPolicy.nativeTrackVolume(
-                        mInitialResumeWarmupActive, mRequestedRightVolume));
-    }
-
-    public void beginInitialResumeWarmup() {
-        if (mMediaPlayer == null || !shouldDelayResumeSeekUntilRenderingStart()) {
-            return;
-        }
-        mInitialResumeWarmupActive = true;
-        mInitialResumeTargetDispatched = false;
-        applyRequestedVolume();
-        logInfo("echo-system-audio warmup begin source="
-                + dataSourceModeName(mResolvedDataSourceMode)
-                + " volume=100");
-    }
-
-    private boolean isInitialResumeWarmupPrime() {
-        return InitialResumeWarmupPolicy.isPrimeStart(
-                mInitialResumeWarmupActive, mInitialResumeTargetDispatched);
-    }
-
-    private void clearInitialResumeWarmup(String reason) {
-        if (!mInitialResumeWarmupActive && !mInitialResumeTargetDispatched) {
-            return;
-        }
-        mInitialResumeWarmupActive = false;
-        mInitialResumeTargetDispatched = false;
-        logInfo("echo-system-audio warmup clear reason=" + reason);
+        mMediaPlayer.setVolume(mRequestedLeftVolume, mRequestedRightVolume);
     }
 
     private boolean canAccessPlaybackParams() {
@@ -2373,15 +1804,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         logInfo("echo-system-start-gate display-ready matroska=" + mCurrentDataSourceMatroskaLike
                 + " hdrLike=" + isCurrentHdrLikeDataSource());
         mPendingStartAfterDisplayReady = false;
-        startWhenPlaybackPrebufferReady("display-ready");
-    }
-
-    private void startPlaybackPositionRecovery(String reason) {
-        // Native buffering and rendering callbacks are the only safe source of truth here.
-        // Querying this MediaPlayer from a worker thread races seek/start on Huawei firmware.
-    }
-
-    private void cancelPlaybackPositionRecovery(String reason) {
+        start();
     }
 
     private void armVideoRenderGate(String reason) {
@@ -2521,9 +1944,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                     + " target=" + resolvePendingSeekTarget());
             return;
         }
-        cancelPlaybackPrebufferGate("first-frame-failure");
-        cancelPlaybackPositionRecovery("first-frame-failure");
-        clearInitialResumeWarmup("first-frame-failure");
+        finishPlaybackPrebuffer();
         clearSeekState();
         logInfo("echo-system-video first-frame-recover reason=" + reason
                 + " state=" + mState
@@ -2534,7 +1955,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mPendingStartAfterDisplayReady = false;
         mIsBuffering = false;
         mNativeBuffering = false;
-        mPreparedResumeBufferingInfoDispatched = false;
         mBufferingInfoVisible = false;
         mAvoidPositionQueryUntilMs = 0L;
         mWaitForRealVideoFrame = false;
@@ -2551,85 +1971,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
     }
 
-    public boolean shouldDelayResumeSeekUntilRenderingStart() {
-        if (!isLikely32BitTvDevice()
-                || !mCurrentDataSourceMatroskaLike
-                || !isCurrentHdrLikeDataSource()) {
-            return false;
-        }
-        return Tv32MatroskaRoutePolicy.shouldDelayResumeSeekUntilRenderingStart(
-                hasRangeBackedPlaybackSource(),
-                mResolvedDataSourceMode == DATA_SOURCE_URI);
-    }
-
-    public boolean seekToInitialResumePositionBeforeStart(long time) {
-        if (mMediaPlayer == null || mState != STATE_PREPARED) {
-            return false;
-        }
-        int target = PlayerUtils.safeTimeMs(time);
-        boolean queued = mPreparedResumeSeekCoordinator.queue(
-                target,
-                mResolvedDataSourceMode == DATA_SOURCE_URI,
-                hasRangeBackedPlaybackSource(),
-                mPlaybackHasStarted || mState == STATE_STARTED);
-        if (!queued) {
-            return false;
-        }
-        mLastRequestedSeekTarget = target;
-        logInfo("echo-system-seek queued-until-start target=" + target
-                + " source=" + dataSourceModeName(mResolvedDataSourceMode));
-        return true;
-    }
-
-    private void schedulePreparedResumeSeekAfterStart() {
-        if (!mPreparedResumeSeekCoordinator.markStartCompleted()) {
-            return;
-        }
-        int target = mPreparedResumeSeekCoordinator.getPendingTarget();
-        if (target == PreparedResumeSeekCoordinator.NO_TARGET) {
-            return;
-        }
-        final MediaPlayer owner = mMediaPlayer;
-        logInfo("echo-system-seek schedule-after-start target=" + target);
-        mMainHandler.postDelayed(
-                () -> dispatchPreparedResumeSeekAfterStart(owner),
-                PREPARED_RESUME_SEEK_AFTER_START_DELAY_MS);
-    }
-
-    private void dispatchPreparedResumeSeekAfterStart(MediaPlayer owner) {
-        if (owner == null
-                || owner != mMediaPlayer
-                || mState != STATE_STARTED
-                || !mPlaybackHasStarted) {
-            return;
-        }
-        int target = mPreparedResumeSeekCoordinator.claimInvocation();
-        if (target == PreparedResumeSeekCoordinator.NO_TARGET) {
-            return;
-        }
-        SeekCoordinator.Request request = mSeekCoordinator.request(target, true);
-        if (!request.shouldDispatch) {
-            mPreparedResumeSeekCoordinator.reset();
-            logInfo("echo-system-seek skip-after-start target=" + target
-                    + " reason=" + request.reason);
-            return;
-        }
-        mLastRequestedSeekTarget = target;
-        mAvoidPositionQueryUntilMs = System.currentTimeMillis() + 3_000L;
-        beginDirectUriProgress("prepared-resume-seek", true);
-        beginPlaybackSeek();
-        mPreparedResumeBufferingInfoDispatched = true;
-        dispatchBufferingStart(0, "prepared-resume-seek");
-        logInfo("echo-system-seek dispatch-after-start target=" + target
-                + " id=" + request.dispatchId);
-        dispatchNativeSeekOnPlayerThread(
-                owner,
-                target,
-                request.dispatchId,
-                "prepared-resume-after-start",
-                true);
-    }
-
     public boolean isPositionQueryUnstable() {
         return shouldAvoidBlockingPositionQuery();
     }
@@ -2639,12 +1980,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return false;
         }
         return mState != STATE_STARTED
-                && PlaybackPrebufferPolicy.shouldPlayWhenReady(
-                false,
-                mState == STATE_PREPARED,
-                mPlaybackPrebufferGateActive,
-                mPendingStartAfterDisplayReady,
-                mSeekCoordinator.shouldResumeAfterFinalSeek());
+                && (mState == STATE_PREPARED
+                || mPendingStartAfterDisplayReady
+                || mSeekCoordinator.shouldResumeAfterFinalSeek());
     }
 
     public boolean isReadyForSubtitleSelection() {
@@ -2655,21 +1993,15 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     public boolean isSeekInFlight() {
-        return mSeekCoordinator.isInFlight()
-                || mPreparedResumeSeekCoordinator.getPendingTarget()
-                != PreparedResumeSeekCoordinator.NO_TARGET;
+        return mSeekCoordinator.isInFlight();
     }
 
     public int getPendingSeekPosition() {
-        int queuedTarget = mSeekCoordinator.getQueuedTarget();
-        if (queuedTarget != SeekCoordinator.NO_TARGET) {
-            return queuedTarget;
-        }
         int activeTarget = mSeekCoordinator.getActiveTarget();
         if (activeTarget != SeekCoordinator.NO_TARGET) {
             return activeTarget;
         }
-        return mPreparedResumeSeekCoordinator.getPendingTarget();
+        return SeekCoordinator.NO_TARGET;
     }
 
     private boolean isCurrentHdrLikeDataSource() {
@@ -2820,10 +2152,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         return mState == STATE_PREPARING
                 || mState == STATE_PREPARED
                 || mIsBuffering
-                || mInitialResumeWarmupActive
                 || System.currentTimeMillis() < mAvoidPositionQueryUntilMs
                 || isSeekInFlight()
-                || mPlaybackPrebufferGateActive
                 || mPendingStartAfterDisplayReady;
     }
 
@@ -2832,10 +2162,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private int resolvePendingSeekTarget() {
-        int queued = mSeekCoordinator.getQueuedTarget();
-        if (queued != SeekCoordinator.NO_TARGET) {
-            return queued;
-        }
         int active = mSeekCoordinator.getActiveTarget();
         if (active != SeekCoordinator.NO_TARGET) {
             return active;
