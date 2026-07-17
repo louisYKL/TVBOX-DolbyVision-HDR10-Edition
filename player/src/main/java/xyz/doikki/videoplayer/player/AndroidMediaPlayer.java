@@ -92,6 +92,11 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private boolean mBufferingInfoVisible;
     private volatile long mAvoidPositionQueryUntilMs;
     private final SeekCoordinator mSeekCoordinator = new SeekCoordinator();
+    private final PreparedResumeSeekCoordinator mPreparedResumeSeekCoordinator =
+            new PreparedResumeSeekCoordinator();
+    private boolean mPreparedSeekCompletionDeferred;
+    private boolean mPreparedSeekCompletionDispatchPending;
+    private int mDeferredPreparedSeekCompletionTarget = SeekCoordinator.NO_TARGET;
     private MediaPlayer mNativeSeekTimeoutOwner;
     private int mNativeSeekTimeoutTarget = SeekCoordinator.NO_TARGET;
     private long mNativeSeekTimeoutDispatchId = SeekCoordinator.NO_DISPATCH_ID;
@@ -173,6 +178,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private static final long PLAYBACK_PREBUFFER_HARD_TIMEOUT_MS = 45_000L;
     private static final long DIRECT_URI_PROGRESS_TARGET_BYTES = 24L * 1024L * 1024L;
     private static final long POST_SEEK_COMPLETION_RECOVERY_DELAY_MS = 180L;
+    private static final long PREPARED_RESUME_SEEK_AFTER_START_DELAY_MS = 120L;
     private static final long NATIVE_SEEK_TIMEOUT_MS = 35_000L;
     private static final String HEADER_PROBE_CONTAINER = "X-TVBox-Probe-Container";
     private static final String HEADER_PROBE_DOLBY_VISION = "X-TVBox-Probe-DolbyVision";
@@ -388,6 +394,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mPlaybackHasStarted = true;
             finishPlaybackPrebufferGate(true);
             scheduleVideoRenderWatchdogIfNeeded("start");
+            schedulePreparedResumeSeekAfterStart();
             if (mNativeBuffering) {
                 startPlaybackPositionRecovery("start-native-buffering");
             }
@@ -595,6 +602,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             int target = PlayerUtils.safeTimeMs(time);
+            mPreparedResumeSeekCoordinator.reset();
             if (!mDispatchingPostSeekCompletionRecovery) {
                 cancelPendingPostSeekCompletionRecovery("new-seek");
                 mPostSeekCompletionRecoveryAttempts = 0;
@@ -1271,6 +1279,13 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         // temporarily detached the Surface. Publish the real position before gating start so
         // progress persistence never falls back to the pre-seek value.
         mPlayerEventListener.onSeekComplete(completion.completedTarget);
+        if (mPreparedResumeSeekCoordinator.isInvocationPending()) {
+            mPreparedSeekCompletionDeferred = completion.shouldResume;
+            mDeferredPreparedSeekCompletionTarget = completion.completedTarget;
+            logInfo("echo-system-start-gate defer-synchronous-seek-complete target="
+                    + completion.completedTarget);
+            return;
+        }
         finishAfterFinalSeek(completion.completedTarget, completion.shouldResume);
     }
 
@@ -1411,7 +1426,11 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private void resetPreparedResumeState() {
+        mPreparedResumeSeekCoordinator.reset();
         mPreparedResumeBufferingInfoDispatched = false;
+        mPreparedSeekCompletionDeferred = false;
+        mPreparedSeekCompletionDispatchPending = false;
+        mDeferredPreparedSeekCompletionTarget = SeekCoordinator.NO_TARGET;
         mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
     }
 
@@ -1419,9 +1438,17 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                                                   final int target,
                                                   final long dispatchId,
                                                   final String reason) {
+        dispatchNativeSeekOnPlayerThread(owner, target, dispatchId, reason, false);
+    }
+
+    private void dispatchNativeSeekOnPlayerThread(final MediaPlayer owner,
+                                                  final int target,
+                                                  final long dispatchId,
+                                                  final String reason,
+                                                  final boolean preparedResume) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mMainHandler.post(() -> dispatchNativeSeekOnPlayerThread(
-                    owner, target, dispatchId, reason));
+                    owner, target, dispatchId, reason, preparedResume));
             return;
         }
         boolean invoked = false;
@@ -1429,7 +1456,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         long startedAtMs = System.currentTimeMillis();
         try {
             boolean current = owner == mMediaPlayer
-                    && mSeekCoordinator.isActiveDispatch(dispatchId, target);
+                    && mSeekCoordinator.isActiveDispatch(dispatchId, target)
+                    && (!preparedResume
+                    || mPreparedResumeSeekCoordinator.isInvocationPending());
             if (current) {
                 invoked = true;
                 owner.seekTo(target);
@@ -1442,6 +1471,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 target,
                 dispatchId,
                 reason,
+                preparedResume,
                 invoked,
                 failure,
                 Math.max(0L, System.currentTimeMillis() - startedAtMs));
@@ -1451,12 +1481,18 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                                                  int target,
                                                  long dispatchId,
                                                  String reason,
+                                                 boolean preparedResume,
                                                  boolean invoked,
                                                  Throwable failure,
                                                  long elapsedMs) {
         if (!invoked) {
             logInfo("echo-system-seek skip-stale-call reason=" + reason
                     + " target=" + target + " id=" + dispatchId);
+            return;
+        }
+        if (preparedResume) {
+            onPreparedResumeSeekInvocationFinished(
+                    owner, target, dispatchId, failure, elapsedMs);
             return;
         }
         if (failure == null) {
@@ -1474,6 +1510,65 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         Log.e(TAG, "native seek failed target=" + target + " id=" + dispatchId, failure);
         handleNativeSeekFailure("seek-call-error");
+    }
+
+    private void onPreparedResumeSeekInvocationFinished(final MediaPlayer owner,
+                                                         final int target,
+                                                         long dispatchId,
+                                                         Throwable failure,
+                                                         long elapsedMs) {
+        if (owner != mMediaPlayer
+                || !mPreparedResumeSeekCoordinator.completeInvocation(target)) {
+            return;
+        }
+        if (failure != null) {
+            if (!mSeekCoordinator.fail(dispatchId, target)) {
+                logInfo("echo-system-seek ignore-stale-prepared-failure target="
+                        + target + " id=" + dispatchId);
+                return;
+            }
+            Log.e(TAG, "prepared resume seek failed target=" + target, failure);
+            handleNativeSeekFailure("prepared-seek-call-error");
+            return;
+        }
+        logInfo("echo-system-seek prepared-call-returned target=" + target
+                + " id=" + dispatchId
+                + " elapsedMs=" + elapsedMs
+                + " state=" + mState);
+        scheduleNativeSeekTimeout(owner, target, dispatchId);
+        if (mState == STATE_ERROR
+                || mState == STATE_RELEASED
+                || mState == STATE_STOPPED
+                || mState == STATE_PAUSED) {
+            mPreparedResumeBufferingInfoDispatched = false;
+            dispatchBufferingEndIfIdle(0, "prepared-call-returned-no-start");
+            return;
+        }
+        if (mPreparedSeekCompletionDeferred
+                && mDeferredPreparedSeekCompletionTarget == target) {
+            mPreparedSeekCompletionDeferred = false;
+            mPreparedSeekCompletionDispatchPending = true;
+            mMainHandler.post(() -> finishDeferredPreparedSeekCompletion(target, owner));
+            return;
+        }
+        logInfo("echo-system-start-gate prepared-seek-call-returned-wait-onSeekComplete target="
+                + target);
+    }
+
+    private void finishDeferredPreparedSeekCompletion(int target, MediaPlayer owner) {
+        if (!mPreparedSeekCompletionDispatchPending
+                || mDeferredPreparedSeekCompletionTarget != target) {
+            return;
+        }
+        mPreparedSeekCompletionDispatchPending = false;
+        mDeferredPreparedSeekCompletionTarget = SeekCoordinator.NO_TARGET;
+        if (owner != mMediaPlayer
+                || mState == STATE_ERROR
+                || mState == STATE_RELEASED
+                || mState == STATE_STOPPED) {
+            return;
+        }
+        finishAfterFinalSeek(target, mState != STATE_PAUSED);
     }
 
     private void scheduleNativeSeekTimeout(MediaPlayer owner, int target, long dispatchId) {
@@ -2472,27 +2567,67 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return false;
         }
         int target = PlayerUtils.safeTimeMs(time);
-        if (target <= 0) {
+        boolean queued = mPreparedResumeSeekCoordinator.queue(
+                target,
+                mResolvedDataSourceMode == DATA_SOURCE_URI,
+                hasRangeBackedPlaybackSource(),
+                mPlaybackHasStarted || mState == STATE_STARTED);
+        if (!queued) {
             return false;
+        }
+        mLastRequestedSeekTarget = target;
+        logInfo("echo-system-seek queued-until-start target=" + target
+                + " source=" + dataSourceModeName(mResolvedDataSourceMode));
+        return true;
+    }
+
+    private void schedulePreparedResumeSeekAfterStart() {
+        if (!mPreparedResumeSeekCoordinator.markStartCompleted()) {
+            return;
+        }
+        int target = mPreparedResumeSeekCoordinator.getPendingTarget();
+        if (target == PreparedResumeSeekCoordinator.NO_TARGET) {
+            return;
+        }
+        final MediaPlayer owner = mMediaPlayer;
+        logInfo("echo-system-seek schedule-after-start target=" + target);
+        mMainHandler.postDelayed(
+                () -> dispatchPreparedResumeSeekAfterStart(owner),
+                PREPARED_RESUME_SEEK_AFTER_START_DELAY_MS);
+    }
+
+    private void dispatchPreparedResumeSeekAfterStart(MediaPlayer owner) {
+        if (owner == null
+                || owner != mMediaPlayer
+                || mState != STATE_STARTED
+                || !mPlaybackHasStarted) {
+            return;
+        }
+        int target = mPreparedResumeSeekCoordinator.claimInvocation();
+        if (target == PreparedResumeSeekCoordinator.NO_TARGET) {
+            return;
         }
         SeekCoordinator.Request request = mSeekCoordinator.request(target, true);
         if (!request.shouldDispatch) {
-            return mSeekCoordinator.getActiveTarget() == target;
+            mPreparedResumeSeekCoordinator.reset();
+            logInfo("echo-system-seek skip-after-start target=" + target
+                    + " reason=" + request.reason);
+            return;
         }
         mLastRequestedSeekTarget = target;
         mAvoidPositionQueryUntilMs = System.currentTimeMillis() + 3_000L;
-        beginDirectUriProgress("initial-resume-seek", false);
+        beginDirectUriProgress("prepared-resume-seek", true);
         beginPlaybackSeek();
         mPreparedResumeBufferingInfoDispatched = true;
-        dispatchBufferingStart(0, "initial-resume-seek");
-        logInfo("echo-system-seek dispatch-before-start target=" + target
+        dispatchBufferingStart(0, "prepared-resume-seek");
+        logInfo("echo-system-seek dispatch-after-start target=" + target
                 + " id=" + request.dispatchId);
         dispatchNativeSeekOnPlayerThread(
-                mMediaPlayer,
+                owner,
                 target,
                 request.dispatchId,
-                "initial-resume-before-start");
-        return true;
+                "prepared-resume-after-start",
+                true);
     }
 
     public boolean isPositionQueryUnstable() {
@@ -2516,11 +2651,13 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         return mMediaPlayer != null
                 && mState == STATE_STARTED
                 && mVideoRenderStartSeen
-                && !mSeekCoordinator.isInFlight();
+                && !isSeekInFlight();
     }
 
     public boolean isSeekInFlight() {
-        return mSeekCoordinator.isInFlight();
+        return mSeekCoordinator.isInFlight()
+                || mPreparedResumeSeekCoordinator.getPendingTarget()
+                != PreparedResumeSeekCoordinator.NO_TARGET;
     }
 
     public int getPendingSeekPosition() {
@@ -2529,7 +2666,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return queuedTarget;
         }
         int activeTarget = mSeekCoordinator.getActiveTarget();
-        return activeTarget;
+        if (activeTarget != SeekCoordinator.NO_TARGET) {
+            return activeTarget;
+        }
+        return mPreparedResumeSeekCoordinator.getPendingTarget();
     }
 
     private boolean isCurrentHdrLikeDataSource() {
