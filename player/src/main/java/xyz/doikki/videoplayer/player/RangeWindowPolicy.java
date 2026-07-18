@@ -17,6 +17,20 @@ final class RangeWindowPolicy {
         return new Window(start, size);
     }
 
+    static boolean shouldCancelPrefetchForMissingPosition(long scheduledStart,
+                                                           long prefetchWindowSize,
+                                                           boolean prefetchActive,
+                                                           long position) {
+        if (!prefetchActive || scheduledStart < 0L) {
+            return false;
+        }
+        long safeWindowSize = Math.max(1L, prefetchWindowSize);
+        long endExclusive = scheduledStart > Long.MAX_VALUE - safeWindowSize
+                ? Long.MAX_VALUE
+                : scheduledStart + safeWindowSize;
+        return position < scheduledStart || position >= endExclusive;
+    }
+
     static final class Window {
         final long start;
         final long size;

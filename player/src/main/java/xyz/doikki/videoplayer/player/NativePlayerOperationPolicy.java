@@ -28,4 +28,9 @@ final class NativePlayerOperationPolicy {
     static boolean canRunFirstFrameRecovery(boolean seekTransitionActive) {
         return !seekTransitionActive;
     }
+
+    static boolean shouldStartAfterSeekCompletion(boolean logicallyStarted,
+                                                  boolean nativePlayerIsPlaying) {
+        return !logicallyStarted && !nativePlayerIsPlaying;
+    }
 }

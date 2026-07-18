@@ -66,6 +66,7 @@ The core principle is simple:
 
 ## What 0.2.2 focused on
 
+- The final hotfix fixes playback freezing after the first frame: transient empty `206` responses and prematurely-ended bodies at cache boundaries are reopened instead of becoming false EOF. The 32-bit path uses 4 MB chunks with a 24 MB startup target and 32 MB forward target, and runtime file logging is disabled.
 - Playback now begins reading immediately, builds the configured prebuffer before revealing video, and reports real buffering percentage plus network speed without leaving stale loading overlays on stable playback.
 - Initial resume and normal scrubbing share one seek state machine. Rapid repeated seeks coalesce to the latest target, playback resumes only after the final completion, and stale positions or false completion callbacks can no longer advance the episode or produce a black screen.
 - Fullscreen controls now include a subtitle toggle enabled by default. Subtitle discovery waits for the first frame/playback-ready state to prevent missing, duplicated, or blocking track initialization.

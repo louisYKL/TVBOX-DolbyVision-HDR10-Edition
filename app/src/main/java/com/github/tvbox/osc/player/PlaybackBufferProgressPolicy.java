@@ -16,6 +16,12 @@ public final class PlaybackBufferProgressPolicy {
                 || playState == VideoView.STATE_BUFFERING;
     }
 
+    public static boolean shouldShowDetailLoadingOverlay(int playState,
+                                                         boolean renderedFirstFrame,
+                                                         boolean fullScreen) {
+        return !renderedFirstFrame && !fullScreen && isLoadingState(playState);
+    }
+
     public static boolean hasForwardProgress(int previousHighWaterPercent,
                                              int currentPercent) {
         return previousHighWaterPercent < 0

@@ -3,7 +3,6 @@ package xyz.doikki.videoplayer.player;
 import android.annotation.SuppressLint;
 import android.media.MediaDataSource;
 import android.os.Build;
-import android.text.TextUtils;
 import android.util.Log;
 
 import java.io.IOException;
@@ -42,7 +41,6 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private static final long STREAMING_BACK_BUFFER_SIZE = resolveStreamingBackBufferSize();
     private static final long PROBE_WINDOW_SIZE = 256L * 1024L;
     private static final int MAX_RETRIES = 3;
-    private static final int MAX_EMPTY_PAYLOAD_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 150L;
     private static final String HEADER_PROBE_CONTAINER = "x-tvbox-probe-container";
     private static final String HEADER_PROBE_DOLBY_VISION = "x-tvbox-probe-dolbyvision";
@@ -559,11 +557,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     }
 
     private void cancelInflightPrefetchForPositionLocked(long position) {
-        if (scheduledPrefetchStart < 0L
-                || position < scheduledPrefetchStart
-                || position >= scheduledPrefetchStart + prefetchWindowSize
-                || prefetchFuture == null
-                || prefetchFuture.isDone()) {
+        boolean prefetchActive = prefetchFuture != null && !prefetchFuture.isDone();
+        if (!RangeWindowPolicy.shouldCancelPrefetchForMissingPosition(
+                scheduledPrefetchStart, prefetchWindowSize, prefetchActive, position)) {
             return;
         }
         cancelActivePrefetchLocked();
@@ -770,7 +766,10 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         if (knownTotalSize >= 0L) {
             desiredEnd = desiredEnd >= 0L ? Math.min(desiredEnd, knownTotalSize - 1L) : knownTotalSize - 1L;
         }
-        for (int payloadAttempt = 1; payloadAttempt <= MAX_EMPTY_PAYLOAD_RETRIES; payloadAttempt++) {
+        final boolean prefetch = prefetchId >= 0L;
+        final long recoveryStartedAtNanos = System.nanoTime();
+        IOException lastPayloadFailure = null;
+        for (int payloadAttempt = 1; ; payloadAttempt++) {
             if (isForegroundReadSuperseded(prefetchId)) {
                 throw new IOException("Playback range read superseded by seek");
             }
@@ -824,35 +823,55 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 long bytesToRead = targetLength > 0L ? Math.min(targetLength, availableAfterSkip) : availableAfterSkip;
 
                 InputStream stream = response.body().byteStream();
-                discardFully(stream, skipBytes);
-                byte[] data = readUpTo(stream, bytesToRead);
-                if (data.length == 0 && resolvedTotalSize >= 0L && start < resolvedTotalSize) {
-                    if (payloadAttempt >= MAX_EMPTY_PAYLOAD_RETRIES) {
-                        throw new IOException("Empty range payload before EOF at " + start + "/" + resolvedTotalSize);
-                    }
-                    logInfo("echo-range-source empty-payload retry " + payloadAttempt + "/"
-                            + MAX_EMPTY_PAYLOAD_RETRIES + " start=" + start
-                            + " end=" + desiredEnd + " total=" + resolvedTotalSize);
-                    waitForPayloadRetry(payloadAttempt);
-                    continue;
+                byte[] data;
+                try {
+                    discardFully(stream, skipBytes);
+                    data = readUpTo(stream, bytesToRead);
+                } catch (IOException bodyFailure) {
+                    lastPayloadFailure = new IOException(
+                            "Range payload ended early at " + start + "-" + desiredEnd,
+                            bodyFailure);
+                    data = null;
                 }
-                long resolvedEnd = data.length > 0 ? start + data.length - 1L : start - 1L;
-                return new WindowData(start, resolvedEnd, data, resolvedTotalSize,
-                        payloadStart, payloadEnd, desiredEnd, response.code());
+                if (data != null && data.length > 0) {
+                    long resolvedEnd = start + data.length - 1L;
+                    return new WindowData(start, resolvedEnd, data, resolvedTotalSize,
+                            payloadStart, payloadEnd, desiredEnd, response.code());
+                }
+                if (data != null) {
+                    lastPayloadFailure = new IOException(
+                            "Empty range payload before EOF at " + start + "/" + resolvedTotalSize);
+                }
             } finally {
                 response.close();
                 clearRangeCall(prefetchId);
             }
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - recoveryStartedAtNanos);
+            if (!RangePayloadRetryPolicy.shouldRetry(payloadAttempt, elapsedMs, prefetch)) {
+                throw lastPayloadFailure == null
+                        ? new IOException("Unable to recover range payload at " + start)
+                        : lastPayloadFailure;
+            }
+            logInfo("echo-range-source payload-retry attempt=" + payloadAttempt
+                    + " start=" + start + " end=" + desiredEnd
+                    + " total=" + knownTotalSize + " prefetch=" + prefetch);
+            waitForPayloadRetry(payloadAttempt, prefetchId);
         }
-        throw new IOException("Unable to recover empty range payload at " + start);
     }
 
-    private void waitForPayloadRetry(int attempt) throws IOException {
+    private void waitForPayloadRetry(int attempt, long prefetchId) throws IOException {
         if (closed || Thread.currentThread().isInterrupted()) {
             throw new IOException("Range request cancelled before empty-payload retry");
         }
+        if (prefetchId >= 0L && !isPrefetchActive(prefetchId)) {
+            throw new IOException("Prefetch request cancelled before payload retry");
+        }
+        if (isForegroundReadSuperseded(prefetchId)) {
+            throw new IOException("Playback range read superseded before payload retry");
+        }
         try {
-            Thread.sleep(RETRY_DELAY_MS * attempt);
+            Thread.sleep(RangePayloadRetryPolicy.retryDelayMs(attempt));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Range request interrupted before empty-payload retry", e);
@@ -878,7 +897,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                         .header("Accept-Encoding", "identity");
                 builder.header("Range", end >= start ? "bytes=" + start + "-" + end : "bytes=" + start + "-");
                 for (Map.Entry<String, String> entry : headers.entrySet()) {
-                    if (!TextUtils.isEmpty(entry.getKey())
+                    if (!isNullOrEmpty(entry.getKey())
                             && entry.getValue() != null
                             && !isManagedRequestHeader(entry.getKey())) {
                         builder.header(entry.getKey(), entry.getValue());
@@ -1004,7 +1023,11 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     }
 
     private static void logInfo(String message) {
-        Log.i(TAG, message);
+        try {
+            Log.i(TAG, message);
+        } catch (Throwable ignored) {
+            // android.jar logging methods are stubs in local JVM regression tests.
+        }
         writeRuntimeLog(message);
     }
 
@@ -1061,7 +1084,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
 
     private static long resolveStreamingPrefetchWindowSize() {
         if (is32BitProcess()) {
-            return 8L * 1024L * 1024L;
+            return 4L * 1024L * 1024L;
         }
         long maxMemory = Runtime.getRuntime().maxMemory();
         return maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L
@@ -1092,7 +1115,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
 
     private static long resolveStreamingMaxCacheSize() {
         if (is32BitProcess()) {
-            return 48L * 1024L * 1024L;
+            return 40L * 1024L * 1024L;
         }
         long maxMemory = Runtime.getRuntime().maxMemory();
         if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
@@ -1164,7 +1187,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     }
 
     private static boolean isManagedRequestHeader(String key) {
-        if (TextUtils.isEmpty(key)) {
+        if (isNullOrEmpty(key)) {
             return true;
         }
         String lower = key.trim().toLowerCase();
@@ -1179,6 +1202,10 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 || HEADER_PROBE_DOLBY_VISION.equals(lower);
     }
 
+    private static boolean isNullOrEmpty(String value) {
+        return value == null || value.isEmpty();
+    }
+
     private static final class ContentRangeInfo {
         private final long start;
         private final long end;
@@ -1191,7 +1218,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         }
 
         private static ContentRangeInfo parse(String headerValue) {
-            if (TextUtils.isEmpty(headerValue)) {
+            if (isNullOrEmpty(headerValue)) {
                 return null;
             }
             try {
@@ -1220,7 +1247,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         }
 
         private static long parseUnsatisfiedTotal(String headerValue) {
-            if (TextUtils.isEmpty(headerValue)) {
+            if (isNullOrEmpty(headerValue)) {
                 return -1L;
             }
             try {

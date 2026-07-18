@@ -37,7 +37,12 @@ final class BufferingProgressPolicy {
 
     static boolean shouldDeferFirstFrameFailure(boolean nativeBuffering,
                                                 int armedPercent,
-                                                int currentPercent) {
+                                                int currentPercent,
+                                                long nowMs,
+                                                long absoluteDeadlineMs) {
+        if (absoluteDeadlineMs <= 0L || nowMs >= absoluteDeadlineMs) {
+            return false;
+        }
         return nativeBuffering || clampPercent(currentPercent) > clampPercent(armedPercent);
     }
 }
