@@ -150,9 +150,10 @@ public class PlayActivity extends BaseActivity {
     private VodController mController;
     private SourceViewModel sourceViewModel;
     private Handler mHandler;
+    // A cancelled network probe may need time to unwind. Keep one replacement slot while
+    // playback generation checks guarantee that stale work can never start a second player.
     private final ExecutorService playbackProbeExecutor = Executors.newFixedThreadPool(2);
     private volatile Future<?> activePlaybackProbeTask;
-    private final ExecutorService subtitleWorkExecutor = Executors.newSingleThreadExecutor();
     private final AtomicInteger playbackRequestSeq = new AtomicInteger(0);
     private final AtomicInteger playGeneration = new AtomicInteger(0);
     private final AtomicInteger subtitleInitSeq = new AtomicInteger(0);
@@ -854,45 +855,13 @@ public class PlayActivity extends BaseActivity {
     }
 
     private void applyMappedSubtitleTrackAsync(@Nullable TrackInfoBean track, boolean showFailureToast) {
-        if (track == null || TextUtils.isEmpty(currentPlaybackUrl)) {
+        if (track == null || TextUtils.isEmpty(track.mappedSubtitlePath)) {
             if (showFailureToast) {
                 Toast.makeText(this, "当前内置字幕轨暂无法映射", Toast.LENGTH_SHORT).show();
             }
             return;
         }
-        final int generation = currentPlayGeneration();
-        final String playbackUrl = currentPlaybackUrl;
-        final HashMap<String, String> playbackHeaders = currentPlaybackHeaders == null
-                ? null : new HashMap<>(currentPlaybackHeaders);
-        subtitleWorkExecutor.execute(() -> {
-            String mappedPath = VideoStreamProbe.resolveMappedSubtitlePath(
-                    PlayActivity.this,
-                    playbackUrl,
-                    playbackHeaders,
-                    track);
-            if (mHandler == null) {
-                return;
-            }
-            mHandler.post(() -> {
-                if (!isCurrentPlayGeneration(generation)) {
-                    logStalePlayback("mapped-subtitle", generation);
-                    return;
-                }
-                if (!TextUtils.isEmpty(mappedPath)) {
-                    track.mappedSubtitlePath = mappedPath;
-                    LOG.i("echo-subtitle apply mapped activity track=" + track.trackId
-                            + " extractor=" + track.extractorTrackIndex
-                            + " path=" + mappedPath);
-                    applyExternalSubtitle(mappedPath);
-                } else if (showFailureToast) {
-                    Toast.makeText(PlayActivity.this,
-                            SystemPlayerTrackManager.isBitmapSubtitleTrack(track)
-                                    ? "当前图形内置字幕轨暂不支持系统映射"
-                                    : "当前内置字幕轨暂无法映射",
-                            Toast.LENGTH_SHORT).show();
-                }
-            });
-        });
+        applyExternalSubtitle(track.mappedSubtitlePath);
     }
 
     @Nullable
@@ -1391,9 +1360,17 @@ public class PlayActivity extends BaseActivity {
     }
 
     void setTip(String msg, boolean loading, boolean err) {
+        final int generation = currentPlayGeneration();
         runOnUiThread(new Runnable() {//影魔 解决解析偶发闪退
             @Override
             public void run() {
+                if (generation != currentPlayGeneration()) {
+                    return;
+                }
+                if (loading && playbackRenderedFirstFrame) {
+                    hideTip();
+                    return;
+                }
                 mPlayLoadTip.setText(msg);
                 mPlayLoadTip.setVisibility(View.VISIBLE);
                 mPlayLoading.setVisibility(loading ? View.VISIBLE : View.GONE);
@@ -3022,7 +2999,6 @@ public class PlayActivity extends BaseActivity {
         playbackRequestSeq.incrementAndGet();
         cancelActivePlaybackProbe();
         playbackProbeExecutor.shutdownNow();
-        subtitleWorkExecutor.shutdownNow();
         stopBufferingProgressMonitor();
         cancelPlayTimeout();
         if (mVideoView != null) {

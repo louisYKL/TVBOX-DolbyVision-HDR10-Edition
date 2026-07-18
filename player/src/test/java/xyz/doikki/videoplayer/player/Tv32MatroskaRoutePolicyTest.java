@@ -12,8 +12,8 @@ public class Tv32MatroskaRoutePolicyTest {
     }
 
     @Test
-    public void startupPreflightUsesDirectSystemUriWhenHdrMarkerIsLate() {
-        assertTrue(Tv32MatroskaRoutePolicy.shouldUseDirectUri(false, true));
+    public void startupPreflightWithoutHdrEvidenceKeepsRangeCache() {
+        assertFalse(Tv32MatroskaRoutePolicy.shouldUseDirectUri(false, true));
     }
 
     @Test

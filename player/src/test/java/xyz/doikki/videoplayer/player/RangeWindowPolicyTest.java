@@ -3,6 +3,7 @@ package xyz.doikki.videoplayer.player;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class RangeWindowPolicyTest {
@@ -36,6 +37,27 @@ public class RangeWindowPolicyTest {
                 3L * BLOCK, 8 * 1024 * 1024, BLOCK, MAX);
 
         assertEquals(MAX, window.size);
+    }
+
+    @Test
+    public void missingReadInsideActivePrefetchWindowKeepsPrefetchAlive() {
+        assertFalse(RangeWindowPolicy.shouldCancelPrefetchForMissingPosition(
+                8L * 1024L * 1024L, 4L * 1024L * 1024L, true,
+                10L * 1024L * 1024L));
+    }
+
+    @Test
+    public void missingReadOutsideActivePrefetchWindowCancelsOldLane() {
+        assertTrue(RangeWindowPolicy.shouldCancelPrefetchForMissingPosition(
+                8L * 1024L * 1024L, 4L * 1024L * 1024L, true,
+                64L * 1024L * 1024L));
+    }
+
+    @Test
+    public void inactivePrefetchNeverNeedsCancellation() {
+        assertFalse(RangeWindowPolicy.shouldCancelPrefetchForMissingPosition(
+                8L * 1024L * 1024L, 4L * 1024L * 1024L, false,
+                64L * 1024L * 1024L));
     }
 
     @Test

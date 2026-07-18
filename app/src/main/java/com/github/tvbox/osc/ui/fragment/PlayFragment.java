@@ -152,9 +152,10 @@ public class PlayFragment extends BaseLazyFragment {
     private VodController mController;
     private SourceViewModel sourceViewModel;
     private Handler mHandler;
+    // The second slot lets the latest generation proceed when a cancelled network probe is
+    // still unwinding. Generation checks below ensure only one result can own playback.
     private final ExecutorService playbackProbeExecutor = Executors.newFixedThreadPool(2);
     private volatile Future<?> activePlaybackProbeTask;
-    private final ExecutorService subtitleWorkExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService playbackPersistExecutor = Executors.newSingleThreadExecutor();
     private final AtomicInteger playbackRequestSeq = new AtomicInteger(0);
     private final AtomicInteger playGeneration = new AtomicInteger(0);
@@ -921,45 +922,13 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private void applyMappedSubtitleTrackAsync(@Nullable TrackInfoBean track, boolean showFailureToast) {
-        if (track == null || TextUtils.isEmpty(currentPlaybackUrl)) {
+        if (track == null || TextUtils.isEmpty(track.mappedSubtitlePath)) {
             if (showFailureToast) {
                 Toast.makeText(mContext, "当前内置字幕轨暂无法映射", Toast.LENGTH_SHORT).show();
             }
             return;
         }
-        final int generation = currentPlayGeneration();
-        final String playbackUrl = currentPlaybackUrl;
-        final HashMap<String, String> playbackHeaders = currentPlaybackHeaders == null
-                ? null : new HashMap<>(currentPlaybackHeaders);
-        subtitleWorkExecutor.execute(() -> {
-            String mappedPath = VideoStreamProbe.resolveMappedSubtitlePath(
-                    mContext,
-                    playbackUrl,
-                    playbackHeaders,
-                    track);
-            if (mHandler == null) {
-                return;
-            }
-            mHandler.post(() -> {
-                if (!isCurrentPlayGeneration(generation)) {
-                    logStalePlayback("mapped-subtitle", generation);
-                    return;
-                }
-                if (!TextUtils.isEmpty(mappedPath)) {
-                    track.mappedSubtitlePath = mappedPath;
-                    LOG.i("echo-subtitle apply mapped fragment track=" + track.trackId
-                            + " extractor=" + track.extractorTrackIndex
-                            + " path=" + mappedPath);
-                    applyExternalSubtitle(mappedPath);
-                } else if (showFailureToast) {
-                    Toast.makeText(mContext,
-                            SystemPlayerTrackManager.isBitmapSubtitleTrack(track)
-                                    ? "当前图形内置字幕轨暂不支持系统映射"
-                                    : "当前内置字幕轨暂无法映射",
-                            Toast.LENGTH_SHORT).show();
-                }
-            });
-        });
+        applyExternalSubtitle(track.mappedSubtitlePath);
     }
 
     @Nullable
@@ -1401,7 +1370,10 @@ public class PlayFragment extends BaseLazyFragment {
             LOG.i("echo-buffer-progress percent=" + percent
                     + " rendered=" + playbackRenderedFirstFrame);
         }
-        if (!mVideoView.isFullScreen()) {
+        if (PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+                playState,
+                playbackRenderedFirstFrame,
+                mVideoView.isFullScreen())) {
             String label = playState == VideoView.STATE_PREPARING
                     ? "正在加载视频 "
                     : "正在缓冲视频 ";
@@ -1430,9 +1402,17 @@ public class PlayFragment extends BaseLazyFragment {
 
     void setTip(String msg, boolean loading, boolean err) {
         if (!isAdded()) return;
+        final int generation = currentPlayGeneration();
         requireActivity().runOnUiThread(new Runnable() { //影魔
             @Override
             public void run() {
+                if (generation != currentPlayGeneration()) {
+                    return;
+                }
+                if (loading && playbackRenderedFirstFrame) {
+                    hideTip();
+                    return;
+                }
                 mPlayLoadTip.setText(msg);
                 mPlayLoadTip.setVisibility(View.VISIBLE);
                 mPlayLoading.setVisibility(loading ? View.VISIBLE : View.GONE);
@@ -3075,16 +3055,18 @@ public class PlayFragment extends BaseLazyFragment {
         super.onDestroyView();
         playbackRequestSeq.incrementAndGet();
         cancelActivePlaybackProbe();
+        if (mVideoView != null) {
+            persistPlaybackProgress();
+        }
         playbackProbeExecutor.shutdownNow();
-        subtitleWorkExecutor.shutdownNow();
-        playbackPersistExecutor.shutdownNow();
+        // Let the already-enqueued history snapshot finish off the UI thread.
+        playbackPersistExecutor.shutdown();
         if (mHandler != null) {
             mHandler.removeCallbacksAndMessages(null);
         }
         cancelPlayTimeout();
         EventBus.getDefault().unregister(this);
         if (mVideoView != null) {
-            persistPlaybackProgress();
             forceReleaseCurrentPlayer("fragment-destroy-view");
             mVideoView = null;
         }

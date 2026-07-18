@@ -21,7 +21,8 @@
 
 ## What was synced in 0.2.2
 
-- Playback reads and prebuffers immediately, reveals video after the target buffer is ready, and reports real percentage plus network speed during prepare, rebuffer, and seek states.
+- The final hotfix fixes playback freezing after the first frame: transient empty `206` responses and prematurely-ended bodies at cache boundaries are reopened instead of becoming false EOF. The 32-bit path uses 4 MB chunks with a 24 MB startup target and 32 MB forward target, and runtime file logging is disabled.
+- Playback reads and prebuffers immediately while reporting real percentage plus network speed during prepare, rebuffer, and seek states.
 - Initial resume and normal scrubbing share one seek coordinator; rapid repeated input keeps only the latest target and avoids stale progress, false completion, episode skips, or post-seek stalls.
 - Fullscreen controls include a default-on subtitle toggle, while subtitle discovery waits for the first frame/playback-ready state to avoid missing, duplicated, or blocking tracks.
 - The detail page displays the active video filename as a continuous marquee and keeps it aligned with history restoration, episode changes, and source changes.
