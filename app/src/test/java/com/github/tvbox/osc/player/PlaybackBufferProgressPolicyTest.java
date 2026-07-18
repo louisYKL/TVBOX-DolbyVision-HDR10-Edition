@@ -36,6 +36,20 @@ public class PlaybackBufferProgressPolicyTest {
     }
 
     @Test
+    public void detailLoadingOverlayNeverReturnsAfterTheFirstFrame() {
+        assertTrue(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+                VideoView.STATE_PREPARING, false, false));
+        assertTrue(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+                VideoView.STATE_BUFFERING, false, false));
+        assertFalse(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+                VideoView.STATE_BUFFERING, true, false));
+        assertFalse(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+                VideoView.STATE_BUFFERING, false, true));
+        assertFalse(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+                VideoView.STATE_PLAYING, false, false));
+    }
+
+    @Test
     public void highWaterMarkNeverMovesBackwardOrOutsidePercentBounds() {
         int highWater = -1;
         highWater = PlaybackBufferProgressPolicy.updateHighWater(highWater, -20);

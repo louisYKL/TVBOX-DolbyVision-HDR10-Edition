@@ -4,6 +4,9 @@
 
 ### 中文
 
+- 同版本最终热修复修正首帧后停住的根因：当本地代理在缓存边界暂时返回空的 `206` Range 响应或响应体提前结束时，数据源会在可取消的时限内重开同一范围，不再向系统解码器误报 EOF；恢复已经验证的前台读取与后台预读交接，避免每次缺块都取消预读。
+- 32 位端把单次预读块限制为 4 MB，同时保留 24 MB 启播目标、32 MB 前向缓存目标和 40 MB 总缓存上限，降低大对象 GC、首帧卡死和长时间界面无响应风险；真实首帧出现后，旧代际准备/缓冲任务不能重新显示详情页加载层。
+- 收敛字幕轨道合并、连续 seek、播放器释放和进度落库顺序，修复空样式首页崩溃，并停止写入运行日志与磁盘日志文件；三端同步这些修复且不改变 java64 触控链和 Hisense 包名/ABI 边界。
 - 重构系统播放器的启动与预读取流程：打开视频后立即开始读取，使用连续 Range 窗口和后台预取持续维持大缓存；预读取不再作为阻塞播放的门，也不会因自身超时进入错误状态，播放时机只由系统播放器真实的 prepared、缓冲和首帧事件决定。
 - 初始历史进度恢复与普通拖动统一交给单一 `SeekCoordinator`：快速连续拖动时新目标立即覆盖旧目标，不再排队播放中间位置；prepared 阶段提交恢复进度后可以立即启动，暂停期间拖动仍保持暂停，避免多层 seek 状态机互相等待。
 - 修复 seek 后的进度保存和假播放完成：seek 进行中优先保存最新目标位置，忽略旧位置回灌；对拖动后几秒内出现的厂商播放器错误完成回调直接忽略，不再重复 seek、重建数据源、误跳下一集、显示“最后一集”或黑屏。
@@ -18,6 +21,9 @@
 
 ### English
 
+- The final in-version hotfix fixes playback freezing after the first frame. A transient empty `206` range response or prematurely-ended body at a cache boundary is now reopened within a cancellable deadline instead of being reported to the native decoder as EOF. Foreground reads and background prefetch use the previously validated handoff again rather than cancelling read-ahead on every cache miss.
+- The 32-bit build now uses 4 MB prefetch chunks while retaining a 24 MB startup target, 32 MB forward target, and 40 MB total cache cap. This reduces large-object GC pressure and UI stalls, while a rendered first frame permanently suppresses stale detail-page loading overlays from older playback generations.
+- Subtitle track merging, repeated seek handling, player teardown, and progress persistence were tightened; the empty-style home crash was fixed; runtime and disk log writing were disabled. The same fixes ship across all variants without changing java64 touch behavior or the Hisense package/ABI boundary.
 - Rebuilt native-player startup and read-ahead so reads begin immediately while continuous range windows and background prefetch maintain a large forward buffer. Read-ahead no longer gates playback or raises its own timeout error; real prepared, buffering, and first-frame callbacks control playback state.
 - Unified initial resume and normal timeline seeks under a single `SeekCoordinator`. A new scrub target immediately supersedes the previous target instead of queueing intermediate positions, prepared playback can start while its resume seek completes, and seeking while paused stays paused.
 - Fixed progress persistence and false completion after seeking. The newest in-flight target takes precedence over stale native positions, while spurious vendor completion callbacks shortly after a seek are ignored without another seek or source rebuild.

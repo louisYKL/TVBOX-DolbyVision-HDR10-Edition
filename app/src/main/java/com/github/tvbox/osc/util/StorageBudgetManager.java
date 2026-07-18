@@ -12,7 +12,6 @@ import java.util.Comparator;
 import java.util.List;
 
 public final class StorageBudgetManager {
-    public static final long MAX_LOG_BYTES = 10L * 1024L * 1024L;
     public static final long MAX_CACHE_BYTES = 100L * 1024L * 1024L;
     private static final Comparator<File> OLDEST_FIRST = new Comparator<File>() {
         @Override
@@ -41,8 +40,7 @@ public final class StorageBudgetManager {
     }
 
     public static void trimLogs() {
-        File logDir = getLogDir();
-        trimDirectoryToBudget(logDir, MAX_LOG_BYTES, false);
+        deleteRecursively(getLogDir());
     }
 
     public static void trimCaches() {
@@ -63,11 +61,7 @@ public final class StorageBudgetManager {
     }
 
     public static File getLogFile() {
-        File logDir = getLogDir();
-        if (!logDir.exists()) {
-            logDir.mkdirs();
-        }
-        return new File(logDir, "runtime.log");
+        return new File(getLogDir(), "runtime.log");
     }
 
     private static File getLogDir() {

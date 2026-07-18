@@ -119,6 +119,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private boolean mVideoRenderStartSeen;
     private int mVideoRenderWatchdogGeneration;
     private int mVideoRenderWatchdogArmedPercent;
+    private long mVideoRenderDeadlineAtMs;
     private int mScheduledVideoRenderWatchdogGeneration = -1;
     private String mScheduledVideoRenderWatchdogReason;
     private final Runnable mVideoRenderWatchdogRunnable = new Runnable() {
@@ -132,8 +133,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             }
         }
     };
-    private static Method sRuntimeLogInfoMethod;
-    private static boolean sRuntimeLogLookupDone;
     private static Handler sProxyFdHandler;
     private static HandlerThread sProxyFdThread;
     private static final int DATA_SOURCE_NONE = 0;
@@ -331,6 +330,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (mMediaPlayer == null) {
             return;
         }
+        if (mState == STATE_STARTED && mPlaybackHasStarted) {
+            scheduleVideoRenderWatchdogIfNeeded("already-started");
+            return;
+        }
         try {
             restoreRequestedVolume();
             mMediaPlayer.start();
@@ -418,8 +421,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             }
             mIsPreparing = true;
             beginDirectUriProgress("prepare", false);
-            mMediaPlayer.prepareAsync();
             mState = STATE_PREPARING;
+            mMediaPlayer.prepareAsync();
         } catch (IllegalStateException e) {
             Log.e(TAG, "prepareAsync failed in state=" + mState, e);
             mState = STATE_ERROR;
@@ -552,6 +555,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         resetPostSeekCompletionGuardState();
         mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
         clearSeekState();
+        // MediaPlayer is looper-affine on several TV firmwares. Detach callbacks on the
+        // owning thread before clearing the field so the old instance cannot retain the
+        // Surface or race the next video during teardown.
         mMediaPlayer.setOnErrorListener(null);
         mMediaPlayer.setOnCompletionListener(null);
         mMediaPlayer.setOnInfoListener(null);
@@ -942,6 +948,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (what == AbstractPlayer.MEDIA_INFO_RENDERING_START) {
             mVideoRenderStartSeen = true;
             mWaitForRealVideoFrame = false;
+            mVideoRenderDeadlineAtMs = 0L;
             cancelVideoRenderWatchdog();
             mVideoRenderWatchdogGeneration++;
             // A rendered frame is definitive proof that startup buffering is no longer blocking
@@ -1028,7 +1035,12 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         cancelNativeSeekTimeout();
         logInfo("echo-system-seek complete target=" + completion.completedTarget
                 + " id=" + completion.completedDispatchId
+                + " next=" + completion.nextTarget
                 + " resume=" + completion.shouldResume);
+        if (completion.shouldDispatchNext) {
+            dispatchSeek(completion.nextTarget, completion.nextDispatchId, "queued-after-complete");
+            return;
+        }
         mLastRequestedSeekTarget = completion.completedTarget;
         finishPlaybackSeek();
         mAvoidPositionQueryUntilMs = System.currentTimeMillis() + 1500L;
@@ -1057,7 +1069,11 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 }
                 requestPlaybackPrebuffer();
                 restoreRequestedVolume();
-                mMediaPlayer.start();
+                if (NativePlayerOperationPolicy.shouldStartAfterSeekCompletion(
+                        mState == STATE_STARTED && mPlaybackHasStarted,
+                        isNativePlayerPlaying(mMediaPlayer))) {
+                    mMediaPlayer.start();
+                }
                 restoreRequestedVolume();
                 mState = STATE_STARTED;
                 mPlaybackHasStarted = true;
@@ -1124,7 +1140,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         finishPlaybackSeek();
     }
 
-    private void releaseNativePlayer(MediaPlayer player, String reason) {
+    private static void releaseNativePlayer(MediaPlayer player, String reason) {
         if (player == null) {
             return;
         }
@@ -1156,7 +1172,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             player.release();
-            writeRuntimeLog("echo-system-seek native-player-released reason=" + reason);
         } catch (Throwable th) {
             Log.w(TAG, "release native player failed reason=" + reason, th);
         }
@@ -1271,7 +1286,11 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         try {
             if (shouldResume && mState != STATE_PAUSED) {
                 restoreRequestedVolume();
-                owner.start();
+                if (NativePlayerOperationPolicy.shouldStartAfterSeekCompletion(
+                        mState == STATE_STARTED && mPlaybackHasStarted,
+                        isNativePlayerPlaying(owner))) {
+                    owner.start();
+                }
                 restoreRequestedVolume();
                 mState = STATE_STARTED;
                 mPlaybackHasStarted = true;
@@ -1302,6 +1321,17 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mState = STATE_ERROR;
         if (mPlayerEventListener != null) {
             mPlayerEventListener.onError();
+        }
+    }
+
+    private boolean isNativePlayerPlaying(MediaPlayer player) {
+        if (player == null || player != mMediaPlayer) {
+            return false;
+        }
+        try {
+            return player.isPlaying();
+        } catch (IllegalStateException ignored) {
+            return false;
         }
     }
 
@@ -1379,7 +1409,15 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 + " matroska=" + mCurrentDataSourceMatroskaLike
                 + " hdrLike=" + isCurrentHdrLikeDataSource());
         if (hasVideoOutputTarget()) {
-            start();
+            if (mSeekCoordinator.isInFlight()
+                    && mSeekCoordinator.shouldResumeAfterFinalSeek()) {
+                // Prime the prepared vendor decoder while the initial resume seek settles.
+                // Starting only after onSeekComplete parks Huawei's HTTP pipeline in buffering.
+                requestPlaybackPrebuffer();
+                startNow();
+            } else {
+                start();
+            }
         } else {
             mPendingStartAfterDisplayReady = true;
             Log.i(TAG, "delay start until display target ready");
@@ -1813,6 +1851,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mVideoRenderStartSeen = false;
         mVideoRenderWatchdogGeneration++;
         mVideoRenderWatchdogArmedPercent = getBufferedPercentage();
+        mVideoRenderDeadlineAtMs = System.currentTimeMillis() + getVideoRenderStartTimeoutMs();
         logInfo("echo-system-video render-watch-arm reason=" + reason
                 + " timeoutMs=" + getVideoRenderStartTimeoutMs());
         restoreRequestedVolume();
@@ -1822,6 +1861,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         cancelVideoRenderWatchdog();
         mWaitForRealVideoFrame = false;
         mVideoRenderStartSeen = false;
+        mVideoRenderDeadlineAtMs = 0L;
         mVideoRenderWatchdogGeneration++;
         logInfo("echo-system-video gate-clear reason=" + reason);
     }
@@ -1832,7 +1872,11 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         final int generation = mVideoRenderWatchdogGeneration;
         final String gateReason = reason;
-        final long timeoutMs = getVideoRenderStartTimeoutMs();
+        if (mVideoRenderDeadlineAtMs <= 0L) {
+            mVideoRenderDeadlineAtMs = System.currentTimeMillis() + getVideoRenderStartTimeoutMs();
+        }
+        final long timeoutMs = Math.max(0L,
+                mVideoRenderDeadlineAtMs - System.currentTimeMillis());
         logInfo("echo-system-video watchdog-start reason=" + gateReason
                 + " gen=" + generation
                 + " timeoutMs=" + timeoutMs);
@@ -1856,7 +1900,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (!mWaitForRealVideoFrame || mVideoRenderStartSeen || mMediaPlayer == null) {
             return;
         }
-        mVideoRenderWatchdogGeneration++;
         mVideoRenderWatchdogArmedPercent = getBufferedPercentage();
         scheduleVideoRenderWatchdogIfNeeded(reason);
     }
@@ -1875,15 +1918,19 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                     + " target=" + resolvePendingSeekTarget());
             return;
         }
+        long nowMs = System.currentTimeMillis();
         int currentPercent = getBufferedPercentage();
         if (BufferingProgressPolicy.shouldDeferFirstFrameFailure(
                 mNativeBuffering,
                 mVideoRenderWatchdogArmedPercent,
-                currentPercent)) {
+                currentPercent,
+                nowMs,
+                mVideoRenderDeadlineAtMs)) {
             logInfo("echo-system-video watchdog-defer reason=" + reason
                     + " nativeBuffering=" + mNativeBuffering
                     + " armedPercent=" + mVideoRenderWatchdogArmedPercent
-                    + " currentPercent=" + currentPercent);
+                    + " currentPercent=" + currentPercent
+                    + " remainingMs=" + Math.max(0L, mVideoRenderDeadlineAtMs - nowMs));
             mVideoRenderWatchdogArmedPercent = currentPercent;
             scheduleVideoRenderWatchdogIfNeeded(reason);
             return;
@@ -1958,6 +2005,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mBufferingInfoVisible = false;
         mAvoidPositionQueryUntilMs = 0L;
         mWaitForRealVideoFrame = false;
+        mVideoRenderDeadlineAtMs = 0L;
         cancelVideoRenderWatchdog();
         mVideoRenderWatchdogGeneration++;
         try {
@@ -1997,7 +2045,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     public int getPendingSeekPosition() {
-        int activeTarget = mSeekCoordinator.getActiveTarget();
+        int activeTarget = mSeekCoordinator.getLatestTarget();
         if (activeTarget != SeekCoordinator.NO_TARGET) {
             return activeTarget;
         }
@@ -2162,7 +2210,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private int resolvePendingSeekTarget() {
-        int active = mSeekCoordinator.getActiveTarget();
+        int active = mSeekCoordinator.getLatestTarget();
         if (active != SeekCoordinator.NO_TARGET) {
             return active;
         }
@@ -2194,7 +2242,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         } catch (Throwable th) {
             mSubtitleDataListenerProxy = null;
             Log.w(TAG, "installSubtitleDataListener failed", th);
-            writeRuntimeLog("echo-system-subtitle-data-listener failed " + th.getMessage());
         }
     }
 
@@ -2223,7 +2270,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             dispatchTimedText(text, "subtitle-data");
         } catch (Throwable th) {
             Log.w(TAG, "handleSubtitleData failed", th);
-            writeRuntimeLog("echo-system-subtitle-data failed " + th.getMessage());
         }
     }
 
@@ -2675,9 +2721,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mState = STATE_PREPARING;
             return true;
         } catch (Throwable th) {
-            writeRuntimeLog("echo-system-audio-recover failed reason=" + reason
-                    + " mode=" + networkSourceModeName(nextMode)
-                    + " err=" + th.getClass().getSimpleName() + ":" + th.getMessage());
             Log.e(TAG, "retrySystemDataSourceForMissingAudioTrack failed", th);
             return false;
         }
@@ -2798,19 +2841,19 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             } catch (Throwable ignored) {
             }
         }
-        ParcelFileDescriptor proxyFileDescriptor = mCurrentProxyFileDescriptor;
-        mCurrentProxyFileDescriptor = null;
-        if (proxyFileDescriptor != null) {
-            try {
-                proxyFileDescriptor.close();
-            } catch (Throwable ignored) {
-            }
-        }
         ProxyFdHttpDataSource proxyFdDataSource = mCurrentProxyFdDataSource;
         mCurrentProxyFdDataSource = null;
         if (proxyFdDataSource != null) {
             try {
                 proxyFdDataSource.onRelease();
+            } catch (Throwable ignored) {
+            }
+        }
+        ParcelFileDescriptor proxyFileDescriptor = mCurrentProxyFileDescriptor;
+        mCurrentProxyFileDescriptor = null;
+        if (proxyFileDescriptor != null) {
+            try {
+                proxyFileDescriptor.close();
             } catch (Throwable ignored) {
             }
         }
@@ -3036,41 +3079,12 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private void logInfo(String message) {
-        Log.i(TAG, message);
-        writeRuntimeLog(message);
     }
 
     private void logWarn(String message, Throwable th) {
-        Log.w(TAG, message, th);
-        writeRuntimeLog(message);
     }
 
     private static void writeRuntimeLog(String message) {
-        try {
-            Method method = getRuntimeLogInfoMethod();
-            if (method != null) {
-                method.invoke(null, message);
-            }
-        } catch (Throwable ignored) {
-        }
     }
 
-    private static Method getRuntimeLogInfoMethod() {
-        if (sRuntimeLogLookupDone) {
-            return sRuntimeLogInfoMethod;
-        }
-        synchronized (AndroidMediaPlayer.class) {
-            if (sRuntimeLogLookupDone) {
-                return sRuntimeLogInfoMethod;
-            }
-            try {
-                Class<?> logClass = Class.forName("com.github.tvbox.osc.util.LOG");
-                sRuntimeLogInfoMethod = logClass.getMethod("i", String.class);
-            } catch (Throwable ignored) {
-                sRuntimeLogInfoMethod = null;
-            }
-            sRuntimeLogLookupDone = true;
-            return sRuntimeLogInfoMethod;
-        }
-    }
 }

@@ -42,9 +42,16 @@ public class BufferingProgressPolicyTest {
     }
 
     @Test
-    public void firstFrameWatchdogDefersForRealOrAdvancingBuffering() {
-        assertTrue(BufferingProgressPolicy.shouldDeferFirstFrameFailure(true, 10, 10));
-        assertTrue(BufferingProgressPolicy.shouldDeferFirstFrameFailure(false, 10, 11));
-        assertFalse(BufferingProgressPolicy.shouldDeferFirstFrameFailure(false, 10, 10));
+    public void firstFrameWatchdogOnlyDefersBeforeAbsoluteDeadline() {
+        assertTrue(BufferingProgressPolicy.shouldDeferFirstFrameFailure(
+                true, 10, 10, 999L, 1_000L));
+        assertTrue(BufferingProgressPolicy.shouldDeferFirstFrameFailure(
+                false, 10, 11, 999L, 1_000L));
+        assertFalse(BufferingProgressPolicy.shouldDeferFirstFrameFailure(
+                false, 10, 10, 999L, 1_000L));
+        assertFalse(BufferingProgressPolicy.shouldDeferFirstFrameFailure(
+                true, 10, 11, 1_000L, 1_000L));
+        assertFalse(BufferingProgressPolicy.shouldDeferFirstFrameFailure(
+                true, 10, 11, 1_001L, 1_000L));
     }
 }

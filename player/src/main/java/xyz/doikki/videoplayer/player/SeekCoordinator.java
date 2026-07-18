@@ -1,13 +1,6 @@
 package xyz.doikki.videoplayer.player;
 
-/**
- * Tracks the latest native MediaPlayer seek.
- *
- * <p>Android's MediaPlayer already collapses an in-flight seek when a newer seekTo call
- * arrives. Serially replaying the old target and then the new target discards the network
- * buffer twice on several TV firmwares, so a newer request replaces the active request
- * immediately.</p>
- */
+/** Tracks one native MediaPlayer seek plus the latest target requested behind it. */
 final class SeekCoordinator {
     static final int NO_TARGET = -1;
     static final long NO_DISPATCH_ID = 0L;
@@ -31,21 +24,31 @@ final class SeekCoordinator {
         final boolean shouldResume;
         final int completedTarget;
         final long completedDispatchId;
+        final boolean shouldDispatchNext;
+        final int nextTarget;
+        final long nextDispatchId;
 
         private Completion(boolean accepted,
                            boolean shouldResume,
                            int completedTarget,
-                           long completedDispatchId) {
+                           long completedDispatchId,
+                           boolean shouldDispatchNext,
+                           int nextTarget,
+                           long nextDispatchId) {
             this.accepted = accepted;
             this.shouldResume = shouldResume;
             this.completedTarget = completedTarget;
             this.completedDispatchId = completedDispatchId;
+            this.shouldDispatchNext = shouldDispatchNext;
+            this.nextTarget = nextTarget;
+            this.nextDispatchId = nextDispatchId;
         }
     }
 
     private boolean inFlight;
     private int activeTarget = NO_TARGET;
     private long activeDispatchId = NO_DISPATCH_ID;
+    private int queuedTarget = NO_TARGET;
     private boolean resumeAfterFinalSeek;
     private long nextDispatchId = 1L;
 
@@ -60,22 +63,38 @@ final class SeekCoordinator {
 
         resumeAfterFinalSeek = resumeAfterFinalSeek || shouldResume;
         if (target == activeTarget) {
-            return new Request(false, target, NO_DISPATCH_ID, "duplicate-active");
+            boolean clearedQueuedTarget = queuedTarget != NO_TARGET;
+            queuedTarget = NO_TARGET;
+            return new Request(false, target, NO_DISPATCH_ID,
+                    clearedQueuedTarget ? "latest-matches-active" : "duplicate-active");
         }
-        activeTarget = target;
-        activeDispatchId = allocateDispatchId();
-        return new Request(true, target, activeDispatchId, "supersede-active");
+        if (target == queuedTarget) {
+            return new Request(false, target, NO_DISPATCH_ID, "duplicate-queued");
+        }
+        // MediaPlayer's callback does not identify which seek completed. Never issue a second
+        // native seek until the active callback arrives; only retain the newest requested target.
+        queuedTarget = target;
+        return new Request(false, target, NO_DISPATCH_ID, "queued-latest");
     }
 
     synchronized Completion complete() {
         if (!inFlight) {
-            return new Completion(false, false, NO_TARGET, NO_DISPATCH_ID);
+            return new Completion(false, false, NO_TARGET, NO_DISPATCH_ID,
+                    false, NO_TARGET, NO_DISPATCH_ID);
         }
         int completedTarget = activeTarget;
         long completedDispatchId = activeDispatchId;
+        if (queuedTarget != NO_TARGET) {
+            activeTarget = queuedTarget;
+            activeDispatchId = allocateDispatchId();
+            queuedTarget = NO_TARGET;
+            return new Completion(true, false, completedTarget, completedDispatchId,
+                    true, activeTarget, activeDispatchId);
+        }
         boolean shouldResume = resumeAfterFinalSeek;
         clearActiveState();
-        return new Completion(true, shouldResume, completedTarget, completedDispatchId);
+        return new Completion(true, shouldResume, completedTarget, completedDispatchId,
+                false, NO_TARGET, NO_DISPATCH_ID);
     }
 
     synchronized boolean isActiveDispatch(long dispatchId, int target) {
@@ -111,6 +130,7 @@ final class SeekCoordinator {
         inFlight = false;
         activeTarget = NO_TARGET;
         activeDispatchId = NO_DISPATCH_ID;
+        queuedTarget = NO_TARGET;
         resumeAfterFinalSeek = false;
     }
 
@@ -132,6 +152,14 @@ final class SeekCoordinator {
 
     synchronized int getActiveTarget() {
         return activeTarget;
+    }
+
+    synchronized int getLatestTarget() {
+        return queuedTarget != NO_TARGET ? queuedTarget : activeTarget;
+    }
+
+    synchronized int getQueuedTarget() {
+        return queuedTarget;
     }
 
     synchronized long getActiveDispatchId() {

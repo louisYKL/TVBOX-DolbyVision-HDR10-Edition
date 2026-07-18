@@ -2,8 +2,6 @@ package com.github.tvbox.osc.player;
 
 import android.media.MediaPlayer;
 import android.os.Build;
-import android.text.TextUtils;
-import android.util.Log;
 
 import androidx.annotation.Nullable;
 
@@ -20,8 +18,6 @@ import java.util.Map;
 import xyz.doikki.videoplayer.player.AndroidMediaPlayer;
 
 public final class SystemPlayerTrackManager {
-    private static final String TAG = "SystemTrackManager";
-
     private SystemPlayerTrackManager() {
     }
 
@@ -117,8 +113,7 @@ public final class SystemPlayerTrackManager {
             }
         }
         int reliableSystemSubtitleCount = countReliableSystemSubtitleTracks(baseTrackInfo);
-        boolean preferSystemSubtitleList = systemSubtitleCount > 1
-                && reliableSystemSubtitleCount >= systemSubtitleCount;
+        boolean preferSystemSubtitleList = systemSubtitleCount > 0;
         if (metadataTracks != null) {
             for (TrackInfoBean subtitle : metadataTracks) {
                 if (subtitle == null) {
@@ -129,14 +124,10 @@ public final class SystemPlayerTrackManager {
                 TrackInfoBean existing = ordered.get(key);
                 if (existing == null) {
                     if (preferSystemSubtitleList) {
-                        Log.i(TAG, "echo-subtitle-track skip metadata-only append systemCount="
-                                + systemSubtitleCount + " metadataTrack=" + subtitle.trackId
-                                + " lang=" + subtitle.rawLanguage);
                         continue;
                     }
-                    // tv32 某些 DV/HDR MKV 在系统链只暴露一个假的 chi timed-text 轨，
-                    // 这时手动字幕列表仍然应该尽量展示 probe 拿到的真实文本轨。
-                    // 只放行“看起来是可靠文本轨”的 metadata 项，避免把明显假轨一起抬进 UI。
+                    // Metadata may describe the list, but it is not a native-selectable track.
+                    // Only expose it when the running player has no subtitle track at all.
                     if (subtitle.extractorTrackIndex >= 0 || isReliableMetadataSubtitle(subtitle)) {
                         ordered.put(key, subtitle);
                     }
@@ -145,32 +136,14 @@ public final class SystemPlayerTrackManager {
                 }
             }
         }
-        boolean hasExtractorBackedSubtitle = false;
-        for (TrackInfoBean subtitle : ordered.values()) {
-            if (subtitle != null && subtitle.extractorTrackIndex >= 0) {
-                hasExtractorBackedSubtitle = true;
-                break;
-            }
-        }
+        boolean allowUnreliableSystemFallback = systemSubtitleCount > 0
+                && reliableSystemSubtitleCount == 0;
         for (TrackInfoBean subtitle : ordered.values()) {
             if (subtitle != null
                     && !subtitle.metadataOnly
                     && subtitle.unreliableMetadata
-                    && hasExtractorBackedSubtitle) {
-                Log.i(TAG, "echo-subtitle-track suppress unreliable-system-track id="
-                        + subtitle.trackId + " lang=" + subtitle.rawLanguage
-                        + " extractorBacked=" + hasExtractorBackedSubtitle
-                        + " total=" + ordered.size());
-                continue;
-            }
-            if (subtitle != null
-                    && !subtitle.metadataOnly
-                    && subtitle.unreliableMetadata
-                    && !hasExtractorBackedSubtitle) {
+                    && allowUnreliableSystemFallback) {
                 subtitle.autoSelectBlocked = false;
-                Log.i(TAG, "echo-subtitle-track keep unreliable-system-track fallback id="
-                        + subtitle.trackId + " lang=" + subtitle.rawLanguage
-                        + " total=" + ordered.size());
             }
             if (subtitle != null
                     && !subtitle.metadataOnly
@@ -296,7 +269,6 @@ public final class SystemPlayerTrackManager {
             }
         }
         if (!hasReliableCandidate) {
-            Log.i(TAG, "echo-subtitle-track auto-select skipped reason=no-reliable-candidate");
             return null;
         }
         TrackInfoBean best = null;
@@ -343,7 +315,7 @@ public final class SystemPlayerTrackManager {
             return null;
         }
         for (Subtitle subtitle : subtitles) {
-            if (subtitle != null && subtitle.isSelected() && !TextUtils.isEmpty(subtitle.getUrl())) {
+            if (subtitle != null && subtitle.isSelected() && !isEmpty(subtitle.getUrl())) {
                 return subtitle;
             }
         }
@@ -361,7 +333,7 @@ public final class SystemPlayerTrackManager {
                 continue;
             }
             String url = obj.optString("url", "");
-            if (TextUtils.isEmpty(url)) {
+            if (isEmpty(url)) {
                 continue;
             }
             String name = obj.optString("name", "字幕 " + (i + 1));
@@ -417,25 +389,25 @@ public final class SystemPlayerTrackManager {
         if (target.extractorTrackIndex < 0) {
             target.extractorTrackIndex = metadata.extractorTrackIndex;
         }
-        if (TextUtils.isEmpty(target.rawLanguage)) {
+        if (isEmpty(target.rawLanguage)) {
             target.rawLanguage = metadata.rawLanguage;
         }
-        if (TextUtils.isEmpty(target.rawTitle)) {
+        if (isEmpty(target.rawTitle)) {
             target.rawTitle = metadata.rawTitle;
         }
-        if (TextUtils.isEmpty(target.rawCodec)) {
+        if (isEmpty(target.rawCodec)) {
             target.rawCodec = metadata.rawCodec;
         }
-        if (TextUtils.isEmpty(target.rawMimeType)) {
+        if (isEmpty(target.rawMimeType)) {
             target.rawMimeType = metadata.rawMimeType;
         }
-        if (TextUtils.isEmpty(target.language)) {
+        if (isEmpty(target.language)) {
             target.language = metadata.language;
         }
-        if (TextUtils.isEmpty(target.name)) {
+        if (isEmpty(target.name)) {
             target.name = metadata.name;
         }
-        if (TextUtils.isEmpty(target.mappedSubtitlePath)) {
+        if (isEmpty(target.mappedSubtitlePath)) {
             target.mappedSubtitlePath = metadata.mappedSubtitlePath;
         }
         target.unreliableMetadata = target.unreliableMetadata && metadata.unreliableMetadata;
@@ -497,7 +469,7 @@ public final class SystemPlayerTrackManager {
     }
 
     public static String buildTrackDetail(String rawInfo) {
-        if (TextUtils.isEmpty(rawInfo)) {
+        if (isEmpty(rawInfo)) {
             return "";
         }
         String normalized = rawInfo.replace('\n', ' ').replace('\r', ' ').trim();
@@ -506,10 +478,10 @@ public final class SystemPlayerTrackManager {
 
     public static String buildDisplayName(String prefix, int number, String language, String detail) {
         StringBuilder builder = new StringBuilder(prefix).append(" ").append(number);
-        if (!TextUtils.isEmpty(language)) {
+        if (!isEmpty(language)) {
             builder.append(" - ").append(language);
         }
-        if (!TextUtils.isEmpty(detail)) {
+        if (!isEmpty(detail)) {
             builder.append(" ").append(detail);
         }
         return builder.toString();
@@ -548,7 +520,7 @@ public final class SystemPlayerTrackManager {
     }
 
     private static boolean containsChinese(String value) {
-        if (TextUtils.isEmpty(value)) {
+        if (isEmpty(value)) {
             return false;
         }
         String lower = safeLower(value);
@@ -573,14 +545,13 @@ public final class SystemPlayerTrackManager {
             return Integer.MIN_VALUE;
         }
         if (bean.autoSelectBlocked) {
-            Log.i(TAG, "echo-subtitle-track-score id=" + bean.trackId + " blocked=true");
             return Integer.MIN_VALUE / 4;
         }
         String key = buildTrackSearchKey(bean);
         boolean explicitChinese = containsExplicitChineseMarker(key);
         boolean genericChineseOnly = !explicitChinese && containsGenericChineseMarker(key);
         int score = scoreChinesePreference(key);
-        if (TextUtils.isEmpty(bean.rawLanguage) && TextUtils.isEmpty(bean.rawTitle) && TextUtils.isEmpty(bean.name)) {
+        if (isEmpty(bean.rawLanguage) && isEmpty(bean.rawTitle) && isEmpty(bean.name)) {
             score -= 40;
         }
         if (looksLikeNonChinese(key)) {
@@ -609,7 +580,6 @@ public final class SystemPlayerTrackManager {
         if (bean.selected) {
             score += 6;
         }
-        Log.i(TAG, "echo-subtitle-track-score id=" + bean.trackId + " score=" + score + " key=" + key);
         return score;
     }
 
@@ -646,7 +616,7 @@ public final class SystemPlayerTrackManager {
     }
 
     private static boolean containsExplicitChineseMarker(String value) {
-        if (TextUtils.isEmpty(value)) {
+        if (isEmpty(value)) {
             return false;
         }
         String lower = safeLower(value);
@@ -665,7 +635,7 @@ public final class SystemPlayerTrackManager {
     }
 
     private static boolean containsGenericChineseMarker(String value) {
-        if (TextUtils.isEmpty(value)) {
+        if (isEmpty(value)) {
             return false;
         }
         String lower = safeLower(value);
@@ -677,7 +647,7 @@ public final class SystemPlayerTrackManager {
     }
 
     private static boolean looksLikeNonChinese(String key) {
-        if (TextUtils.isEmpty(key)) {
+        if (isEmpty(key)) {
             return false;
         }
         return key.contains("english") || key.contains(" eng") || key.startsWith("eng")
@@ -708,7 +678,7 @@ public final class SystemPlayerTrackManager {
     }
 
     private static boolean containsToken(String value, String token) {
-        if (TextUtils.isEmpty(value) || TextUtils.isEmpty(token)) {
+        if (isEmpty(value) || isEmpty(token)) {
             return false;
         }
         String normalized = normalizeTokens(value);
@@ -730,7 +700,7 @@ public final class SystemPlayerTrackManager {
     }
 
     private static String compactLatin(String value) {
-        if (TextUtils.isEmpty(value)) {
+        if (isEmpty(value)) {
             return "";
         }
         String lower = safeLower(value);
@@ -787,7 +757,7 @@ public final class SystemPlayerTrackManager {
             return "";
         }
         for (String value : values) {
-            if (!TextUtils.isEmpty(value)) {
+            if (!isEmpty(value)) {
                 return value.trim();
             }
         }
@@ -817,7 +787,7 @@ public final class SystemPlayerTrackManager {
 
     private static boolean isLikelyMisleadingSingleSystemSubtitle(String rawLanguage, String rawInfo) {
         String tokenText = normalizeTokens(firstNonEmpty(rawLanguage, "") + " " + firstNonEmpty(rawInfo, ""));
-        if (TextUtils.isEmpty(tokenText)) {
+        if (isEmpty(tokenText)) {
             return true;
         }
         return containsToken(tokenText, "chi")
@@ -846,5 +816,9 @@ public final class SystemPlayerTrackManager {
             }
         }
         return count;
+    }
+
+    private static boolean isEmpty(CharSequence value) {
+        return value == null || value.length() == 0;
     }
 }

@@ -50,7 +50,7 @@ public class ImgUtil {
     public static Style initStyle()
     {
         String bStyle = ApiConfig.get().getHomeSourceBean().getStyle();
-        if(!bStyle.isEmpty()){
+        if (bStyle != null && !bStyle.trim().isEmpty()) {
             try {
                 JSONObject jsonObject = new JSONObject(bStyle);
                 float ratio = (float) jsonObject.getDouble("ratio");
