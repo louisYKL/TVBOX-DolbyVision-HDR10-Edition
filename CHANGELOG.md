@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.3
+
+### 中文
+
+- 修复本地代理流客户端继承 `ItvClient` 无限读超时的根因：源站接受连接后中途停发数据时，代理的 `read()` 会永久阻塞，已有的重开/重试恢复逻辑永远不会触发，原生播放器被饿死直到应用强制杀掉播放（"播放超时"/卡死）。现为本地代理流设置 20 秒每次读取的空闲超时（限制的是"连接卡死"，不是总下载时长），卡死连接被及时放弃并自动重开恢复。
+- 将同一无限读超时根因扩展修复到另外三条同样在 NanoHTTPD 线程上直接给原生播放器供数的通路：HLS/直播 `ts` 分片转发、非本地 `go=stream` 透传、以及 m3u8 播放列表与分片预取抓取。这些通路此前全部继承无限读超时，源站中途卡住会导致 HLS 源快进/拖动后无限卡死、播放无法开始或直播列表刷新后卡住。现统一走带有限空闲读超时的流式客户端（保留连接复用），静默源被放弃而不是永久挂起。
+- 外层缓冲超时把"原生播放器持续缓冲中"当作存活信号刷新（上限 180 秒），避免在代理"检测卡死-放弃-重开"恢复窗口内误杀健康的播放器；仅对缓冲态生效，真正的准备卡死仍会正常超时报错。
+- 三端（java32、java64、Hisense）共用同一套修复。版本统一为 `0.2.3`（`versionCode 2027`），沿用原签名证书，可覆盖安装 `0.2.2` 及更早的 `0.2.1.x`。
+
+### English
+
+- Fixed the root cause where the local-proxy stream client inherited `ItvClient`'s infinite read timeout: when an origin accepts the connection then stalls mid-body, the proxy's `read()` blocks forever, the existing reopen/retry recovery never runs, and the native player is starved until the app force-kills playback (freeze / "播放超时"). The local-proxy stream now uses a 20s per-read inactivity timeout (bounding stall, not total download), so a wedged connection is abandoned and reopened.
+- Extended the same infinite-read-timeout fix to three more paths that also feed the native player directly from a NanoHTTPD worker: HLS/live `ts` segment serving, foreign `go=stream` passthrough, and m3u8 playlist + segment-prefetch fetches. These previously all inherited the infinite read timeout, so a stalled origin caused indefinite freezes on HLS sources after seek/fast-forward, playback that never started, or hangs after a live-playlist refresh. They now share a bounded-read streaming client (keeping connection reuse) so a silent origin is abandoned instead of hanging.
+- The outer buffer-stall safety-net now treats sustained native buffering as a liveness signal (bounded by a 180s ceiling), so it no longer kills a healthy player during the proxy's detect-stall/abandon/reopen recovery window; it applies only to the buffering state, and a genuine prepare hang still times out.
+- Shipped across all three variants (java32, java64, Hisense). Unified under `0.2.3` (`versionCode 2027`) with the existing signing certificate for in-place updates from `0.2.2` and earlier `0.2.1.x`.
+
 ## 0.2.2
 
 ### 中文

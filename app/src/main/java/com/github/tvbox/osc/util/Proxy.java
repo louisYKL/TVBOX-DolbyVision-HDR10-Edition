@@ -39,6 +39,10 @@ public class Proxy {
     private static final Pattern M3U8_URI_ATTRIBUTE_PATTERN = Pattern.compile("URI=(\"([^\"]*)\"|'([^']*)')");
     private static final int LOCAL_PROXY_STREAM_MAX_RETRIES = 4;
     private static final long LOCAL_PROXY_STREAM_RETRY_DELAY_MS = 150L;
+    // Per-read inactivity timeout for the local proxy origin stream. Long enough to tolerate slow
+    // CDN first-byte latency after a range reopen, short enough that a silently stalled connection
+    // is abandoned and retried well within the app buffer-stall window instead of hanging forever.
+    private static final long LOCAL_PROXY_STREAM_READ_TIMEOUT_MS = 20_000L;
     private static final long LOCAL_PROXY_FETCH_CHUNK_SIZE = 128L * 1024L * 1024L;
     private static final long LOCAL_PROXY_MAX_RANGE_DISCARD = 8L * 1024L * 1024L;
     private static final int LOCAL_PROXY_MAX_PREMATURE_EOF = 12;
@@ -60,6 +64,7 @@ public class Proxy {
     private static final long HLS_PREFETCH_CACHE_BYTES = resolveHlsPrefetchCacheBytes();
     private static final int HLS_PREFETCH_THREADS = resolveHlsPrefetchThreads();
     private static volatile OkHttpClient localProxyStreamClient;
+    private static volatile OkHttpClient boundedStreamClient;
     private static final ExecutorService HLS_PREFETCH_EXECUTOR = Executors.newFixedThreadPool(HLS_PREFETCH_THREADS);
     private static final Object HLS_PREFETCH_LOCK = new Object();
     private static final LinkedHashMap<String, HlsSegmentCacheEntry> HLS_SEGMENT_CACHE =
@@ -131,7 +136,7 @@ public class Proxy {
             Map<String, String> requestHeaders = extractProxyHeaders(params);
             mergeRequestHeadersFromSession(params, requestHeaders);
 
-            OkHttpClient client = OkGoHelper.ItvClient;
+            OkHttpClient client = getBoundedStreamClient();
             assert type != null;
             if (type.equals("m3u8")) {
                 M3u8FetchResult fetchResult = fetchM3u8(client, url, requestHeaders);
@@ -174,7 +179,7 @@ public class Proxy {
             url = URLDecoder.decode(url,"UTF-8");
             Map<String, String> requestHeaders = extractProxyHeaders(params);
 
-            OkHttpClient client = OkGoHelper.ItvClient;
+            OkHttpClient client = getBoundedStreamClient();
             M3u8FetchResult fetchResult = fetchM3u8(client, url, requestHeaders);
             String m3u8Content = fetchResult.content;
             // 检查并去除 UTF-8 BOM 头（BOM 为 \uFEFF）
@@ -528,7 +533,11 @@ public class Proxy {
 
     private static OkHttpClient getStreamClient(boolean localProxyPlayUrl) {
         if (!localProxyPlayUrl) {
-            return OkGoHelper.ItvClient;
+            // Foreign go=stream bodies are pumped to the native player on the NanoHTTPD worker
+            // thread. ItvClient's infinite read timeout would freeze that thread forever if the
+            // upstream spider proxy accepts the connection then stalls mid-body, so serve these
+            // through the bounded-read passthrough client too.
+            return getBoundedStreamClient();
         }
         OkHttpClient client = localProxyStreamClient;
         if (client != null) {
@@ -546,8 +555,45 @@ public class Proxy {
                 builder.protocols(Collections.singletonList(Protocol.HTTP_1_1));
                 builder.connectionPool(new ConnectionPool(0, 1, TimeUnit.MILLISECONDS));
                 builder.retryOnConnectionFailure(true);
+                // ItvClient uses an infinite read timeout, which is correct for short API calls but
+                // fatal for streaming: if an origin CDN accepts the connection then stalls mid-body,
+                // currentStream.read() blocks forever and the reopen/retry recovery below never runs,
+                // starving the native player until the app force-kills playback ("播放超时"). A finite
+                // per-read inactivity timeout lets a silent connection be abandoned and reopened. It
+                // bounds inactivity, NOT total download time, so large sequential streams are fine.
+                builder.readTimeout(LOCAL_PROXY_STREAM_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS);
                 client = builder.build();
                 localProxyStreamClient = client;
+            }
+        }
+        return client;
+    }
+
+    /**
+     * Client for HLS/live segment, foreign go=stream passthrough, and m3u8 playlist fetches. These
+     * all run on a NanoHTTPD worker thread that pumps bytes straight to the native player, yet the
+     * shared {@link OkGoHelper#ItvClient} they used carries an infinite read timeout. A CDN that
+     * accepts the connection then stalls mid-body would block that read forever, starving the player
+     * until the app force-kills playback ("播放超时"), and a stalled seek/segment fetch would never
+     * recover. This bounded client keeps connection reuse (unlike the range-reopen local-proxy
+     * client) but adds a finite per-read inactivity timeout so a silent origin is abandoned instead
+     * of hanging. It bounds inactivity, not total download time, so long sequential segments are fine.
+     */
+    private static OkHttpClient getBoundedStreamClient() {
+        OkHttpClient base = OkGoHelper.ItvClient;
+        OkHttpClient client = boundedStreamClient;
+        if (client != null) {
+            return client;
+        }
+        synchronized (Proxy.class) {
+            client = boundedStreamClient;
+            if (client == null) {
+                OkHttpClient.Builder builder = base != null
+                        ? base.newBuilder()
+                        : new OkHttpClient.Builder();
+                builder.readTimeout(LOCAL_PROXY_STREAM_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                client = builder.build();
+                boundedStreamClient = client;
             }
         }
         return client;
@@ -700,7 +746,7 @@ public class Proxy {
                 .url(url)
                 .build();
 
-        OkHttpClient client = OkGoHelper.ItvClient;
+        OkHttpClient client = getBoundedStreamClient();
         try (Response response = client.newCall(request).execute()) {
             if (response.isSuccessful()) {
                 return response.body().string(); // 获取 m3u8 文件内容
@@ -1078,7 +1124,7 @@ public class Proxy {
     private static HlsSegmentCacheEntry fetchHlsSegment(String url,
                                                         Map<String, String> requestHeaders) throws IOException {
         Request request = buildRequest(url, requestHeaders);
-        try (Response response = executeRequest(OkGoHelper.ItvClient, request)) {
+        try (Response response = executeRequest(getBoundedStreamClient(), request)) {
             if (!response.isSuccessful() || response.body() == null) {
                 throw new IOException("Prefetch request failed with code: " + response.code());
             }

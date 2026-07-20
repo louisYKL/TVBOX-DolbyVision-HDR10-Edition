@@ -2,10 +2,10 @@
 
 # TV BOX Hisense 32-bit Edition
 
-> A dedicated Hisense Android / Google TV branch synced to the `0.2.2` playback core.
+> A dedicated Hisense Android / Google TV branch synced to the `0.2.3` playback core.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.2"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.2-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.3"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.3-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Hisense%20Android%20TV-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
@@ -14,20 +14,16 @@
 ## Current build
 
 - Package name: `com.github.tvbox.osc.hisense`
-- Version: `0.2.2` (`versionCode 2026`)
+- Version: `0.2.3` (`versionCode 2027`)
 - ABI: `armeabi-v7a`
-- Output APK: `TVBox_v0.2.2_hisense32.apk`
+- Output APK: `TVBox_v0.2.3_hisense32.apk`
 - Minimum Android: 4.4 / API 19
 
-## What was synced in 0.2.2
+## What 0.2.3 fixed
 
-- The final hotfix fixes playback freezing after the first frame: transient empty `206` responses and prematurely-ended bodies at cache boundaries are reopened instead of becoming false EOF. The 32-bit path uses 4 MB chunks with a 24 MB startup target and 32 MB forward target, and runtime file logging is disabled.
-- Playback reads and prebuffers immediately while reporting real percentage plus network speed during prepare, rebuffer, and seek states.
-- Initial resume and normal scrubbing share one seek coordinator; rapid repeated input keeps only the latest target and avoids stale progress, false completion, episode skips, or post-seek stalls.
-- Fullscreen controls include a default-on subtitle toggle, while subtitle discovery waits for the first frame/playback-ready state to avoid missing, duplicated, or blocking tracks.
-- The detail page displays the active video filename as a continuous marquee and keeps it aligned with history restoration, episode changes, and source changes.
-- Passthrough validates stream codecs against HDMI / ARC / eARC / digital-output capabilities and decodes unsupported formats without rerouting audio away from the active external device.
-- Short cancellable probes, bounded warmup caches, and generation-isolated callbacks reduce stalls and dropped frames on lower-end Hisense hardware.
+- Fixes the root cause of playback/seek/scrub freezing and the eventual "播放超时": the local proxy's stream-forwarding OkHttp client inherited an infinite read timeout, so when an origin CDN accepted the connection then stalled mid-body the forwarding thread blocked forever, the existing reconnect recovery never ran, and the native player was starved. Local-proxy streaming, HLS/live segment (`ts`) forwarding, foreign `go=stream` passthrough, and m3u8 playlist fetches now share a 20s per-read inactivity timeout that abandons and reconnects a dead connection without capping total download time.
+- Fixes healthy playback being killed while buffering: the outer 45s safety-net timeout only refreshed on rising buffer percentage, but direct HDR streaming derives that percentage from received bytes, which freezes once the native player buffers enough and switches to decoding the first frame. Sustained native buffering now counts as a liveness signal (capped at 180s); genuine prepare hangs still time out.
+- All three variants share the same playback and proxy core, so fast-forward, timeline scrubbing, and episode/source switching are far less likely to freeze on slow or unstable sources.
 - The dedicated `com.github.tvbox.osc.hisense` package, Android 4.4 minimum, and `armeabi-v7a` ABI remain unchanged for side-by-side installation.
 
 ## Build

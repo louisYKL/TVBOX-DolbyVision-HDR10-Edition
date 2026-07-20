@@ -137,6 +137,11 @@ public class PlayActivity extends BaseActivity {
     private static final long PLAY_TIMEOUT_PROXY_MS = 30 * 1000L;
     private static final long PLAY_TIMEOUT_SYSTEM_PROXY_MS = 120 * 1000L;
     private static final long BUFFER_STALL_TIMEOUT_MS = 45 * 1000L;
+    // Absolute per-episode ceiling for the outer buffer-stall safety-net while the native player
+    // is still actively buffering (decoding a first frame, or a mid-playback rebuffer). Sustained
+    // native buffering is treated as liveness up to this bound; a dead source surfaces STATE_ERROR
+    // so this only guards a fully wedged pipeline.
+    private static final long ACTIVE_BUFFERING_LIVENESS_CEILING_MS = 180 * 1000L;
     private static final long BUFFER_PROGRESS_POLL_MS = 500L;
     private static final long BUFFER_TIMEOUT_REFRESH_MS = 5_000L;
     private static final long PLAYER_RELEASE_SETTLE_MS = 260L;
@@ -167,6 +172,7 @@ public class PlayActivity extends BaseActivity {
     private int bufferingProgressPlayState = VideoView.STATE_IDLE;
     private int lastBufferingPercent = -1;
     private long lastBufferTimeoutRefreshAtMs;
+    private long activeBufferingEpisodeStartAtMs = 0L;
     private final Runnable bufferingProgressRunnable = new Runnable() {
         @Override
         public void run() {
@@ -1318,6 +1324,7 @@ public class PlayActivity extends BaseActivity {
         bufferingProgressPlayState = VideoView.STATE_IDLE;
         lastBufferingPercent = -1;
         lastBufferTimeoutRefreshAtMs = 0L;
+        activeBufferingEpisodeStartAtMs = 0L;
         if (mHandler != null) {
             mHandler.removeCallbacks(bufferingProgressRunnable);
         }
@@ -1341,6 +1348,16 @@ public class PlayActivity extends BaseActivity {
                     + " rendered=" + playbackRenderedFirstFrame);
         }
         long now = System.currentTimeMillis();
+        // Track the current native buffering episode so the outer safety-net treats sustained
+        // native buffering as liveness (bounded) instead of killing a healthy player whose
+        // byte-count percent has plateaued while decoding a first frame or a mid-playback rebuffer.
+        if (playState == VideoView.STATE_BUFFERING) {
+            if (activeBufferingEpisodeStartAtMs == 0L) {
+                activeBufferingEpisodeStartAtMs = now;
+            }
+        } else {
+            activeBufferingEpisodeStartAtMs = 0L;
+        }
         if (PlaybackBufferProgressPolicy.shouldRefreshTimeout(
                 playState,
                 lastBufferingPercent,
@@ -1353,6 +1370,16 @@ public class PlayActivity extends BaseActivity {
                     playState == VideoView.STATE_PREPARING
                             ? "prepare-progress"
                             : "buffer-progress");
+        } else if (PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
+                playState,
+                now - lastBufferTimeoutRefreshAtMs,
+                BUFFER_TIMEOUT_REFRESH_MS,
+                activeBufferingEpisodeStartAtMs == 0L ? -1L : now - activeBufferingEpisodeStartAtMs,
+                ACTIVE_BUFFERING_LIVENESS_CEILING_MS)) {
+            lastBufferTimeoutRefreshAtMs = now;
+            startPlayTimeout(currentPlaybackUrl,
+                    BUFFER_STALL_TIMEOUT_MS,
+                    "buffer-native-alive");
         }
         lastBufferingPercent = PlaybackBufferProgressPolicy.updateHighWater(
                 lastBufferingPercent, percent);
