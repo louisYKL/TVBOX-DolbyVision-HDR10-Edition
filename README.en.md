@@ -5,13 +5,13 @@
 > A TV-first TVBox branch focused on native hardware playback, HDR activation, Dolby Vision fallback routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.2"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.2-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.3"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.3-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.2">Download 0.2.2</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.3">Download 0.2.3</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -25,9 +25,9 @@ This branch is built for real living-room playback: keep native system decoding 
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.2.2_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, compatible with in-place updates from 0.2.1 and 0.2.1.x test builds |
-| `TVBox_v0.2.2_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, compatible with in-place updates from 0.2.1 and 0.2.1.x test builds |
-| `TVBox_v0.2.2_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, compatible with in-place updates from 0.2.1 |
+| `TVBox_v0.2.3_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, compatible with in-place updates from 0.2.2 and earlier test builds |
+| `TVBox_v0.2.3_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, compatible with in-place updates from 0.2.2 and earlier test builds |
+| `TVBox_v0.2.3_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, compatible with in-place updates from 0.2.2 |
 
 ## Preview
 
@@ -56,7 +56,7 @@ The core principle is simple:
 - Keep subtitles, audio passthrough, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
 
-## 0.2.2 Variants
+## 0.2.3 Variants
 
 | Variant | ABI | Target devices | Notes |
 | --- | --- | --- | --- |
@@ -64,16 +64,12 @@ The core principle is simple:
 | `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
 | `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Dedicated Hisense build |
 
-## What 0.2.2 focused on
+## What 0.2.3 focused on
 
-- The final hotfix fixes playback freezing after the first frame: transient empty `206` responses and prematurely-ended bodies at cache boundaries are reopened instead of becoming false EOF. The 32-bit path uses 4 MB chunks with a 24 MB startup target and 32 MB forward target, and runtime file logging is disabled.
-- Playback now begins reading immediately, builds the configured prebuffer before revealing video, and reports real buffering percentage plus network speed without leaving stale loading overlays on stable playback.
-- Initial resume and normal scrubbing share one seek state machine. Rapid repeated seeks coalesce to the latest target, playback resumes only after the final completion, and stale positions or false completion callbacks can no longer advance the episode or produce a black screen.
-- Fullscreen controls now include a subtitle toggle enabled by default. Subtitle discovery waits for the first frame/playback-ready state to prevent missing, duplicated, or blocking track initialization.
-- The detail page shows the active video filename above the playback URL with continuous marquee behavior and keeps it aligned with history restoration, episode changes, and source changes.
-- Passthrough checks the stream codec and active external-output capability, passing through only formats the HDMI / ARC / eARC / digital device supports and decoding the rest without rerouting audio to a silent built-in speaker.
-- Shorter cancellable probes, warmed-byte reuse, bounded caches, and generation-isolated callbacks reduce stalls and dropped frames without reducing existing animation effects.
-- All three variants share the same fixes while preserving java64 touch/gesture/focus behavior and the Hisense package/ABI boundary. Version is `0.2.2` (`versionCode 2026`) with the existing signing certificate.
+- Fixes the root cause of playback/seek/scrub freezing that ended in a "播放超时" (play timeout): the OkHttp clients that forward raw streams through the local proxy inherited an infinite read timeout, so when an origin CDN accepted the connection then stopped sending data mid-body, the forwarding thread blocked forever, the existing reconnect/retry recovery never ran, and the native player was starved to death. A finite 20-second per-read inactivity timeout now covers the local-proxy direct stream, HLS/live segment (`ts`) forwarding, foreign `go=stream` passthrough, and m3u8 playlist fetches. It only detects a dead connection — it does not cap total download time — so a stalled connection is abandoned and reconnected instead of hanging.
+- Fixes healthy playback being killed while buffering: the outer 45-second safety-net timeout previously only refreshed on rising buffer percentage, but direct HDR high-bitrate playback computes that percentage from received bytes. Once the native player has buffered enough and switches to decoding the first frame, received bytes plateau and the percentage freezes, so a healthy stream was force-killed. Sustained native buffering is now treated as a liveness signal that refreshes the timeout (capped at 180 seconds), while a genuine prepare hang still times out normally.
+- Both fixes ship across the java32 / java64 / Hisense variants on the same playback and proxy core, so fast-forward, timeline scrubbing, and episode/source switching are far less likely to freeze on slow or unstable sources.
+- All three variants preserve java64 touch/gesture/focus behavior and the Hisense package/ABI boundary. Version is `0.2.3` (`versionCode 2027`) with the existing signing certificate, installable in place over `0.2.2` and earlier `0.2.1.x` builds.
 
 ## Highlights
 
@@ -158,9 +154,9 @@ $env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 
 The repository includes a basic Android build workflow for:
 
-- `TVBox_v0.2.2_java32.apk`
-- `TVBox_v0.2.2_java64.apk`
-- `TVBox_v0.2.2_hisense32.apk`
+- `TVBox_v0.2.3_java32.apk`
+- `TVBox_v0.2.3_java64.apk`
+- `TVBox_v0.2.3_hisense32.apk`
 
 ## Community
 
@@ -190,4 +186,5 @@ The repository includes a basic Android build workflow for:
 - `0.2.0`: fix 32-bit system-player black-screen-with-audio, playback-failure, and player-error risks while preserving in-place updates from `0.1.9.1`.
 - `0.2.1`: fix Wen Cai HLS black-screen-with-audio / fake-first-frame / false-error cases, unify the `SurfaceView` hardware-decode path, and fail unsupported `H.264 High10` streams explicitly.
 - `0.2.2`: rebuild prebuffering and seek coordination, restore stable audio/subtitle/progress behavior, add buffering percentage, fullscreen subtitle controls, and the detail-page filename, then sync all three variants.
+- `0.2.3`: fix the root cause of playback/seek/scrub freezing into "播放超时" by adding a finite per-read inactivity timeout to every proxy streaming client (local direct stream, HLS/live `ts` relay, foreign `go=stream` passthrough, and m3u8 fetch), and treat active native buffering itself as a liveness signal so healthy playback is no longer killed while its byte-count percentage plateaus.
 - Next: keep closing playback, subtitle, HDR, and audio behavior from device logs.

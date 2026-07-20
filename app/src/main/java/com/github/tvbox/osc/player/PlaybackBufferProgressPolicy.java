@@ -41,4 +41,30 @@ public final class PlaybackBufferProgressPolicy {
                 && hasForwardProgress(previousHighWaterPercent, currentPercent)
                 && elapsedSinceRefreshMs >= Math.max(0L, minimumRefreshIntervalMs);
     }
+
+    /**
+     * The player only stays in STATE_BUFFERING while the native player still reports active
+     * buffering (see AndroidMediaPlayer.shouldHoldBufferingEnd). For a direct-URI source the
+     * displayed buffered percentage is driven by received bytes, so once the native player has
+     * filled its internal buffer and switched to decoding (a large HDR/4K first frame, or a
+     * mid-playback rebuffer) the percentage freezes even though the player is alive and working.
+     *
+     * <p>Treat that active-buffering window as liveness so the outer buffer-stall safety-net does
+     * not destructively release a healthy player whose percent has merely plateaued. Before the
+     * first frame the native render watchdog is the authoritative deadline; after it, the stream
+     * has already proven it plays, so patience is justified — a genuinely dead source surfaces a
+     * native STATE_ERROR (which cancels the timer) instead. This is bounded by an absolute
+     * per-buffering-episode ceiling so a fully wedged pipeline still fails, and it intentionally
+     * does NOT apply to STATE_PREPARING, where a real prepare hang must still time out.
+     */
+    public static boolean shouldRefreshTimeoutForActiveBuffering(int playState,
+                                                                 long elapsedSinceRefreshMs,
+                                                                 long minimumRefreshIntervalMs,
+                                                                 long elapsedSinceBufferingStartMs,
+                                                                 long maxBufferingEpisodeMs) {
+        return playState == VideoView.STATE_BUFFERING
+                && elapsedSinceBufferingStartMs >= 0L
+                && elapsedSinceBufferingStartMs < Math.max(0L, maxBufferingEpisodeMs)
+                && elapsedSinceRefreshMs >= Math.max(0L, minimumRefreshIntervalMs);
+    }
 }
