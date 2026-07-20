@@ -61,4 +61,48 @@ public class PlaybackBufferProgressPolicyTest {
         highWater = PlaybackBufferProgressPolicy.updateHighWater(highWater, 180);
         assertEquals(100, highWater);
     }
+
+    @Test
+    public void activeNativeBufferingRefreshesEvenWithFrozenPercent() {
+        // The java64 4K HDR regression: native player filled its buffer, percent frozen at 29,
+        // still buffering/decoding the first frame. The outer safety-net must keep refreshing.
+        assertTrue(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
+                VideoView.STATE_BUFFERING, 5_000L, 5_000L, 30_000L, 180_000L));
+    }
+
+    @Test
+    public void activeBufferingRefreshRespectsMinimumInterval() {
+        assertFalse(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
+                VideoView.STATE_BUFFERING, 4_999L, 5_000L, 30_000L, 180_000L));
+    }
+
+    @Test
+    public void activeBufferingRefreshStopsAtAbsoluteCeiling() {
+        // A genuinely wedged pipeline must still fail: past the ceiling we no longer refresh.
+        assertFalse(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
+                VideoView.STATE_BUFFERING, 5_000L, 5_000L, 180_000L, 180_000L));
+        assertFalse(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
+                VideoView.STATE_BUFFERING, 5_000L, 5_000L, 200_000L, 180_000L));
+    }
+
+    @Test
+    public void activeBufferingRefreshNeverAppliesToPrepareState() {
+        // A real prepare hang must still time out (rx frozen, no native buffering yet).
+        assertFalse(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
+                VideoView.STATE_PREPARING, 5_000L, 5_000L, 30_000L, 180_000L));
+    }
+
+    @Test
+    public void activeBufferingRefreshAppliesToPostFirstFrameRebuffer() {
+        // Mid-playback rebuffering has the same frozen-percent mechanism and no render watchdog;
+        // a proven-working stream should not be killed while still actively buffering.
+        assertTrue(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
+                VideoView.STATE_BUFFERING, 5_000L, 5_000L, 60_000L, 180_000L));
+    }
+
+    @Test
+    public void activeBufferingRefreshIgnoresUnsetBufferingStart() {
+        assertFalse(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
+                VideoView.STATE_BUFFERING, 5_000L, 5_000L, -1L, 180_000L));
+    }
 }
