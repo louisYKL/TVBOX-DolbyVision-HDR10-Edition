@@ -452,7 +452,11 @@ public class VodController extends BaseController {
                 myHandle.removeCallbacks(myRunnable);
                 myHandle.postDelayed(myRunnable, myHandleSeconds);
                 try {
-                    int scaleType = VideoView.SCREEN_SCALE_DEFAULT;
+                    // Cycle through all supported scale modes (默认/16:9/4:3/填充/原始/裁剪).
+                    // Previously this was hardcoded to SCREEN_SCALE_DEFAULT, so the button was a
+                    // permanent no-op that could never reach any non-default aspect ratio.
+                    int current = mPlayerConfig.getInt("sc");
+                    int scaleType = (current + 1) % 6;
                     mPlayerConfig.put("sc", scaleType);
                     updatePlayerCfgView();
                     listener.updatePlayerCfg();
