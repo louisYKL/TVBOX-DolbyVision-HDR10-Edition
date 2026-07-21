@@ -968,19 +968,16 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             }
         } else if (what == MEDIA_INFO_VIDEO_NOT_PLAYING
                 && shouldTreatAsVideoStartupFailure(extra)) {
-            // MEDIA_INFO_VIDEO_NOT_PLAYING (805) fires transiently on many devices during
-            // live/HLS startup, before the first keyframe, with vendor status codes such as
-            // -38. Hard-failing on it forced good live channels into STATE_ERROR and a reswitch
-            // loop while audio was already playing ("有声音无画面"). Do not fail here; defer to the
-            // buffering-aware render watchdog (already armed at prepared/start), which waits a
-            // real timeout before declaring a genuine no-video failure. A spurious 805 therefore
-            // no longer kills a stream that is about to render, while a truly video-less stream
-            // is still caught by the watchdog deadline.
-            logInfo("echo-system-video not-playing-info extra=" + extra
-                    + " state=" + mState
-                    + " nativeBuffering=" + mNativeBuffering
-                    + " action=defer-to-watchdog");
-            scheduleVideoRenderWatchdogIfNeeded("video-not-playing-info");
+            // MEDIA_INFO_VIDEO_NOT_PLAYING (805) with audio flowing but no video is the
+            // black-screen-with-audio signature. shouldTreatAsVideoStartupFailure already
+            // ignores it while the stream is still natively buffering (transient startup 805)
+            // and while an audio-only track list is playing, so reaching here means the decoder
+            // has genuinely produced audio without video. Fail into onError, which drives the
+            // live UI's automatic source switch (active recovery) instead of leaving the stream
+            // parked on a permanent black screen. A previous "defer to the render watchdog"
+            // attempt regressed this: when native buffering stayed true the watchdog deferred
+            // indefinitely and the channel stayed black-with-audio forever.
+            failBeforeFirstVideoFrame("media-info-805:" + extra);
         } else {
             mPlayerEventListener.onInfo(what, extra);
         }
