@@ -1127,13 +1127,18 @@ public class PlayActivity extends BaseActivity {
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
         TrackInfo trackInfo = mediaPlayer instanceof AndroidMediaPlayer
                 ? SystemPlayerTrackManager.getTrackInfo((AndroidMediaPlayer) mediaPlayer)
+                : mediaPlayer instanceof MPVCompatPlayer
+                ? ((MPVCompatPlayer) mediaPlayer).getTrackInfo()
                 : null;
         if (trackInfo == null) {
             Toast.makeText(mContext, "没有音轨", Toast.LENGTH_SHORT).show();
             return;
         }
         List<TrackInfoBean> bean = trackInfo.getAudio();
-        if (bean.size() < 1) return;
+        if (bean.size() < 1) {
+            Toast.makeText(mContext, "没有音轨", Toast.LENGTH_SHORT).show();
+            return;
+        }
         SelectDialog<TrackInfoBean> dialog = new SelectDialog<>(PlayActivity.this);
         dialog.setTip("切换音轨");
         dialog.setAdapter(new SelectDialogAdapter.SelectDialogInterface<TrackInfoBean>() {
@@ -1145,6 +1150,8 @@ public class PlayActivity extends BaseActivity {
                     }
                     if (mediaPlayer instanceof AndroidMediaPlayer) {
                         SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
+                    } else if (mediaPlayer instanceof MPVCompatPlayer) {
+                        ((MPVCompatPlayer) mediaPlayer).selectAudioTrack(value);
                     }
                     dialog.dismiss();
                 } catch (Exception e) {

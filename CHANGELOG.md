@@ -8,6 +8,8 @@
 - 将同一无限读超时根因扩展修复到另外三条同样在 NanoHTTPD 线程上直接给原生播放器供数的通路：HLS/直播 `ts` 分片转发、非本地 `go=stream` 透传、以及 m3u8 播放列表与分片预取抓取。这些通路此前全部继承无限读超时，源站中途卡住会导致 HLS 源快进/拖动后无限卡死、播放无法开始或直播列表刷新后卡住。现统一走带有限空闲读超时的流式客户端（保留连接复用），静默源被放弃而不是永久挂起。
 - 外层缓冲超时把"原生播放器持续缓冲中"当作存活信号刷新（上限 180 秒），避免在代理"检测卡死-放弃-重开"恢复窗口内误杀健康的播放器；仅对缓冲态生效，真正的准备卡死仍会正常超时报错。
 - 修复 64 位直播"有声音无画面"：系统播放器解码出音频却始终没有视频输出时，会上报 `MEDIA_INFO_VIDEO_NOT_PLAYING`（805）。此前 `0.2.3` 一度把 805 改为"交给首帧看门狗判定"，但当原生缓冲一直为真时看门狗会无限期推迟，导致直播永久停在有声音无画面。本版恢复到已验证的处理：805 直接触发 `onError`，驱动直播界面的自动换源/重播恢复（`shouldTreatAsVideoStartupFailure` 已排除启播瞬时 805 和纯音频轨，只有真正"有音频无视频"才会走到这里），不再永久黑屏。
+- 修复点播全屏"画面比例"按钮点击无效：此前被写死为 `SCREEN_SCALE_DEFAULT`，永远停在默认比例、无法切换。现在按 默认→16:9→4:3→填充→原始→裁剪 循环切换并保存。
+- 修复点播全屏切换到杜比视界/HDR 兼容（MPV）播放器时"切换音轨"始终显示"没有音轨"：全屏音轨逻辑此前只识别系统播放器，现在与小窗一致地同时支持系统播放器和 MPV 兼容播放器，多音轨影片可正常切换。
 - 三端（java32、java64、Hisense）共用同一套修复。版本统一为 `0.2.3`（`versionCode 2029`），沿用原签名证书，可覆盖安装 `0.2.2` 及更早的 `0.2.1.x`。
 
 ### English
@@ -16,6 +18,8 @@
 - Extended the same infinite-read-timeout fix to three more paths that also feed the native player directly from a NanoHTTPD worker: HLS/live `ts` segment serving, foreign `go=stream` passthrough, and m3u8 playlist + segment-prefetch fetches. These previously all inherited the infinite read timeout, so a stalled origin caused indefinite freezes on HLS sources after seek/fast-forward, playback that never started, or hangs after a live-playlist refresh. They now share a bounded-read streaming client (keeping connection reuse) so a silent origin is abandoned instead of hanging.
 - The outer buffer-stall safety-net now treats sustained native buffering as a liveness signal (bounded by a 180s ceiling), so it no longer kills a healthy player during the proxy's detect-stall/abandon/reopen recovery window; it applies only to the buffering state, and a genuine prepare hang still times out.
 - Fixed 64-bit live "audio but no video": when the system player decodes audio but never produces video output, it reports `MEDIA_INFO_VIDEO_NOT_PLAYING` (805). An earlier `0.2.3` attempt changed 805 to "defer to the first-frame watchdog", but while native buffering stayed true the watchdog deferred indefinitely and the channel stayed audio-only with a black screen forever. This restores the proven handling: 805 fails into `onError`, driving the live UI's automatic source-switch / replay recovery (`shouldTreatAsVideoStartupFailure` already excludes transient startup 805 and audio-only track lists, so only genuine audio-without-video reaches here) instead of a permanent black screen.
+- Fixed the VOD fullscreen "画面比例" (aspect-ratio) button, which was hardcoded to `SCREEN_SCALE_DEFAULT` and could never reach any other mode. It now cycles 默认 → 16:9 → 4:3 → 填充 → 原始 → 裁剪.
+- Fixed the fullscreen audio-track switch for HDR / Dolby Vision playback routed to the compatibility player: `PlayActivity.selectMyAudioTrack` only handled the system player, so multi-audio files on the compat player showed "没有音轨". It now resolves and switches tracks for the compatibility player too, matching the embedded-preview behavior.
 - Shipped across all three variants (java32, java64, Hisense). Unified under `0.2.3` (`versionCode 2029`) with the existing signing certificate for in-place updates from `0.2.2` and earlier `0.2.1.x`.
 
 ## 0.2.2
