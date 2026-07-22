@@ -105,4 +105,14 @@ public class PlaybackBufferProgressPolicyTest {
         assertFalse(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForActiveBuffering(
                 VideoView.STATE_BUFFERING, 5_000L, 5_000L, -1L, 180_000L));
     }
+
+    @Test
+    public void activeNativeBufferingDefersOuterTimeoutUntilTheSameCeiling() {
+        assertTrue(PlaybackBufferProgressPolicy.shouldDeferTimeoutForActiveBuffering(
+                179_999L, 180_000L));
+        assertFalse(PlaybackBufferProgressPolicy.shouldDeferTimeoutForActiveBuffering(
+                180_000L, 180_000L));
+        assertFalse(PlaybackBufferProgressPolicy.shouldDeferTimeoutForActiveBuffering(
+                -1L, 180_000L));
+    }
 }
