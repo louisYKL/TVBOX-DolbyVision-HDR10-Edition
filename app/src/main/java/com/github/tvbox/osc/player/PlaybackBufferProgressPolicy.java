@@ -67,4 +67,14 @@ public final class PlaybackBufferProgressPolicy {
                 && elapsedSinceBufferingStartMs < Math.max(0L, maxBufferingEpisodeMs)
                 && elapsedSinceRefreshMs >= Math.max(0L, minimumRefreshIntervalMs);
     }
+
+    /**
+     * The watchdog can fire between progress polls. Keep that independent path aligned with
+     * the periodic refresh above so an active native buffer is never released early.
+     */
+    public static boolean shouldDeferTimeoutForActiveBuffering(long elapsedSinceBufferingStartMs,
+                                                               long maxBufferingEpisodeMs) {
+        return elapsedSinceBufferingStartMs >= 0L
+                && elapsedSinceBufferingStartMs < Math.max(0L, maxBufferingEpisodeMs);
+    }
 }

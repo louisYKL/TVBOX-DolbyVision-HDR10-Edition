@@ -80,6 +80,20 @@ public final class DolbyVisionPlaybackRouter {
         // HDR/DV 只能由视频流探测结果决定，禁止根据标题/文件名里的 DV/HDR/10Bit 字样判断。
         boolean looksLikeDolbyVision = streamDetectedDv;
 
+        // TV32 and Hisense use Android MediaPlayer for ordinary VOD so decoding stays on
+        // the vendor hardware decoder. Keep real DV on its dedicated compatibility/native
+        // decision tree below, where profile and display capability still matter.
+        if (SystemDecoderRoutePolicy.shouldForceSystemDecoder(
+                App.isJava64Build(),
+                looksLikeDolbyVision,
+                PlayerHelper.isSystemPlayerType(requestedPlayerType))) {
+            LOG.i("echo-dolby-route route=tv-system-hardware player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
+                    + " probe=" + streamProbe.summary + " url=" + safeSnippet(url));
+            return new Decision(false, false, false, false, false, "", streamProbe.hasHdr10
+                    || streamProbe.hasHdr10Plus, PlayerHelper.PLAYER_TYPE_SYSTEM,
+                    "tv-system-hardware");
+        }
+
         boolean requiresHdrOutput = streamProbe.hasDolbyVision
                 || streamProbe.hasHdr10
                 || streamProbe.hasHdr10Plus;

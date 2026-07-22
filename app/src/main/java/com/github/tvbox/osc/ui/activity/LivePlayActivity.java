@@ -61,6 +61,7 @@ import com.github.tvbox.osc.util.DefaultConfig;
 import com.github.tvbox.osc.util.EpgUtil;
 import com.github.tvbox.osc.util.FastClickCheckUtil;
 import com.github.tvbox.osc.util.HawkConfig;
+import com.github.tvbox.osc.util.LivePlaybackRoutePolicy;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
 import com.github.tvbox.osc.util.PlayerHelper;
@@ -1438,9 +1439,17 @@ public class LivePlayActivity extends BaseActivity {
     }
 
     private boolean startLivePlayback(String url, HashMap<String, String> headers, boolean keepSnapshotOnFailure) {
+        return startLivePlayback(url, headers, keepSnapshotOnFailure, false);
+    }
+
+    private boolean startLivePlayback(String url,
+                                      HashMap<String, String> headers,
+                                      boolean keepSnapshotOnFailure,
+                                      boolean playerAlreadyReleased) {
         if (mVideoView == null) {
             return false;
         }
+        boolean playerReleased = playerAlreadyReleased;
         try {
             PlaybackUrlNormalizer.UrlWithHeaders split = PlaybackUrlNormalizer.splitUrlAndHeaders(url, headers);
             String sourceUrl = split.url == null ? "" : split.url.trim();
@@ -1450,7 +1459,7 @@ public class LivePlayActivity extends BaseActivity {
             }
             HashMap<String, String> finalHeaders = mergedHeaders.isEmpty() ? null : mergedHeaders;
             int currentPlayerType = livePlayerManager.getCurrentPlayerType();
-            boolean useCompatPlaybackUrl = App.isJava64Build();
+            boolean useCompatPlaybackUrl = LivePlaybackRoutePolicy.shouldUseCompatUrl(currentPlayerType);
             String playbackUrl = useCompatPlaybackUrl
                     ? PlaybackUrlNormalizer.resolveCompatPlaybackUrl(sourceUrl, finalHeaders, true)
                     : (PlayerHelper.isSystemPlayerType(currentPlayerType)
@@ -1461,7 +1470,10 @@ public class LivePlayActivity extends BaseActivity {
                     + " src=" + sourceUrl
                     + " dst=" + playbackUrl);
             // 连续切台/重进时直接复用当前播放器实例，避免 surface 回调落到已释放对象上。
-            mVideoView.release();
+            if (!playerReleased) {
+                mVideoView.release();
+                playerReleased = true;
+            }
             if (finalHeaders != null) {
                 mVideoView.setUrl(playbackUrl, finalHeaders);
             } else {
@@ -1470,23 +1482,27 @@ public class LivePlayActivity extends BaseActivity {
             mVideoView.start();
             return true;
         } catch (Throwable th) {
-            handleLivePlayerStartFailure(th, keepSnapshotOnFailure);
+            handleLivePlayerStartFailure(th, keepSnapshotOnFailure, playerReleased);
             return false;
         }
     }
 
-    private void handleLivePlayerStartFailure(Throwable th, boolean keepSnapshotOnFailure) {
+    private void handleLivePlayerStartFailure(Throwable th,
+                                              boolean keepSnapshotOnFailure,
+                                              boolean playerAlreadyReleased) {
         LOG.e("echo-live-player-start-failed " + th.getClass().getSimpleName() + ": " + th.getMessage());
-        if (mVideoView != null) {
+        boolean playerReleased = playerAlreadyReleased;
+        if (!playerReleased && mVideoView != null) {
             try {
                 mVideoView.release();
+                playerReleased = true;
             } catch (Throwable ignored) {
             }
         }
         if (!keepSnapshotOnFailure) {
             hideSwitchChannelSnapshot();
         }
-        if (switchLivePlayerAndReplay()) {
+        if (switchLivePlayerAndReplay(playerReleased)) {
             return;
         }
         mHandler.removeCallbacks(mConnectTimeoutChangeSourceRun);
@@ -2101,6 +2117,10 @@ public class LivePlayActivity extends BaseActivity {
     }
 
     private boolean switchLivePlayerAndReplay() {
+        return switchLivePlayerAndReplay(false);
+    }
+
+    private boolean switchLivePlayerAndReplay(boolean playerAlreadyReleased) {
         if (!allowLiveSwitchPlayer || currentLiveChannelItem == null || mVideoView == null) {
             return false;
         }
@@ -2111,7 +2131,8 @@ public class LivePlayActivity extends BaseActivity {
         }
         LOG.i("echo-liveAutoRetry switch player and replay current url");
         allowLiveSwitchPlayer = false;
-        return startLivePlayback(currentLiveChannelItem.getUrl(), liveWebHeader(), false);
+        return startLivePlayback(currentLiveChannelItem.getUrl(), liveWebHeader(), false,
+                playerAlreadyReleased);
     }
 
     private Runnable mConnectTimeoutChangeSourceRun = new Runnable() {

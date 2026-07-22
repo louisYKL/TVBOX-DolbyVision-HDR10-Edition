@@ -75,6 +75,7 @@ import com.github.tvbox.osc.util.HdrDeviceSupport;
 import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
+import com.github.tvbox.osc.util.PlaybackStartupTimeoutPolicy;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
 import com.github.tvbox.osc.util.PlayerCapability;
 import com.github.tvbox.osc.util.PlayerHelper;
@@ -601,6 +602,9 @@ public class PlayFragment extends BaseLazyFragment {
                     case MSG_PLAY_TIMEOUT:
                         if (msg.arg1 > 0 && !isCurrentPlayGeneration(msg.arg1)) {
                             LOG.i("echo-play-stale play-timeout gen=" + msg.arg1 + " active=" + activePlayGeneration);
+                            return true;
+                        }
+                        if (deferPlayTimeoutWhileNativeBuffering()) {
                             return true;
                         }
                         LOG.i("echo-playTimeout exceeded, no auto source/player fallback");
@@ -1343,6 +1347,9 @@ public class PlayFragment extends BaseLazyFragment {
         bufferingProgressPlayState = playState;
         lastBufferingPercent = -1;
         lastBufferTimeoutRefreshAtMs = System.currentTimeMillis();
+        if (playState == VideoView.STATE_BUFFERING) {
+            activeBufferingEpisodeStartAtMs = lastBufferTimeoutRefreshAtMs;
+        }
         if (mHandler != null) {
             mHandler.post(bufferingProgressRunnable);
         }
@@ -3578,8 +3585,12 @@ public class PlayFragment extends BaseLazyFragment {
 
     void startPlayTimeout(String playbackUrl) {
         cancelPlayTimeout();
-        long timeoutMs = resolvePlayTimeoutMs(playbackUrl);
-        LOG.i("echo-startPlayTimeout:" + timeoutMs + " url=" + playbackUrl);
+        boolean resumingSavedProgress = getSavedProgress(getPlaybackProgressKeyForPersistence()) > 0L;
+        long timeoutMs = PlaybackStartupTimeoutPolicy.resolveInitialTimeout(
+                resolvePlayTimeoutMs(playbackUrl), resumingSavedProgress);
+        LOG.i("echo-startPlayTimeout:" + timeoutMs
+                + " reason=" + (resumingSavedProgress ? "startup-resume" : "startup")
+                + " url=" + playbackUrl);
         Message message = mHandler.obtainMessage(MSG_PLAY_TIMEOUT);
         message.arg1 = currentPlayGeneration();
         mHandler.sendMessageDelayed(message, timeoutMs);
@@ -3595,6 +3606,25 @@ public class PlayFragment extends BaseLazyFragment {
 
     void cancelPlayTimeout() {
         mHandler.removeMessages(MSG_PLAY_TIMEOUT);
+    }
+
+    private boolean deferPlayTimeoutWhileNativeBuffering() {
+        if (mVideoView == null
+                || mVideoView.getCurrentPlayState() != VideoView.STATE_BUFFERING
+                || activeBufferingEpisodeStartAtMs <= 0L) {
+            return false;
+        }
+        long elapsedMs = Math.max(0L, System.currentTimeMillis() - activeBufferingEpisodeStartAtMs);
+        if (!PlaybackBufferProgressPolicy.shouldDeferTimeoutForActiveBuffering(
+                elapsedMs, ACTIVE_BUFFERING_LIVENESS_CEILING_MS)) {
+            return false;
+        }
+        long remainingMs = ACTIVE_BUFFERING_LIVENESS_CEILING_MS - elapsedMs;
+        long nextCheckMs = Math.max(1_000L, Math.min(BUFFER_STALL_TIMEOUT_MS, remainingMs));
+        LOG.i("echo-playTimeout defer native-buffering elapsed=" + elapsedMs
+                + " next=" + nextCheckMs);
+        startPlayTimeout(currentPlaybackUrl, nextCheckMs, "buffer-native-liveness");
+        return true;
     }
 
     long resolvePlayTimeoutMs(String playbackUrl) {
