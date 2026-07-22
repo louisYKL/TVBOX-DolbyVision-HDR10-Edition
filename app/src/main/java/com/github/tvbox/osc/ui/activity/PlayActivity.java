@@ -75,11 +75,13 @@ import com.github.tvbox.osc.util.HdrDeviceSupport;
 import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
+import com.github.tvbox.osc.util.PlaybackStartupTimeoutPolicy;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
 import com.github.tvbox.osc.util.PlayerCapability;
 import com.github.tvbox.osc.util.PlayerHelper;
 import com.github.tvbox.osc.util.ScreenUtils;
 import com.github.tvbox.osc.util.SubtitleHelper;
+import com.github.tvbox.osc.util.SystemDecoderRoutePolicy;
 import com.github.tvbox.osc.util.VideoStreamProbe;
 import com.github.tvbox.osc.util.VideoParseRuler;
 import com.github.tvbox.osc.util.XWalkUtils;
@@ -185,6 +187,7 @@ public class PlayActivity extends BaseActivity {
     private boolean lastReleasedPlaybackRequiresHdrOutput;
     private boolean keepHdrWindowDuringPlayerSwitch;
     private boolean currentPlaybackUsesNativeJava64DolbyVision;
+    private int activePlaybackPlayerType = PlayerHelper.PLAYER_TYPE_SYSTEM;
     private boolean subtitleInitSettledForGeneration;
     private boolean subtitleInitPendingForPlaybackReady;
     private boolean subtitleInitScheduledForGeneration;
@@ -534,6 +537,9 @@ public class PlayActivity extends BaseActivity {
                         if (msg.arg1 > 0 && !isCurrentPlayGeneration(msg.arg1)) {
                             LOG.i("echo-play-stale activity play-timeout gen=" + msg.arg1
                                     + " active=" + activePlayGeneration);
+                            return true;
+                        }
+                        if (deferPlayTimeoutWhileNativeBuffering()) {
                             return true;
                         }
                         LOG.i("echo-playTimeout exceeded, no auto source/player fallback");
@@ -1319,6 +1325,9 @@ public class PlayActivity extends BaseActivity {
         bufferingProgressPlayState = playState;
         lastBufferingPercent = -1;
         lastBufferTimeoutRefreshAtMs = System.currentTimeMillis();
+        if (playState == VideoView.STATE_BUFFERING) {
+            activeBufferingEpisodeStartAtMs = lastBufferTimeoutRefreshAtMs;
+        }
         if (mHandler != null) {
             mHandler.post(bufferingProgressRunnable);
         }
@@ -1666,7 +1675,8 @@ public class PlayActivity extends BaseActivity {
             } catch (JSONException e) {
                 LOG.e("echo-dolby-route put compat mode failed: " + e.getMessage());
             }
-            final int resolvedPlayerType = dvDecision.useCompatPlayer ? dvDecision.playerType : requestedPlayerType;
+            final int resolvedPlayerType = SystemDecoderRoutePolicy.resolvePlayerType(
+                    requestedPlayerType, dvDecision.playerType, dvDecision.forcePlayerType);
             if (resolvedPlayerType != playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM)) {
                 try {
                     playbackPlayerCfg.put("pl", resolvedPlayerType);
@@ -1724,6 +1734,7 @@ public class PlayActivity extends BaseActivity {
                     || "native-dolby-vision-java64".equals(dvDecision.reason));
             applySubtitleToneForCurrentPlayback();
             int activePlayerType = playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
+            activePlaybackPlayerType = activePlayerType;
             markHdrOutputRequested(playbackPlayerCfg, dvDecision.requiresHdrOutput);
             prepareHdrWindowForPlaybackStart(activePlayerType, dvDecision.requiresHdrOutput,
                     "activity-player-" + resolvedPlayerType);
@@ -2216,30 +2227,10 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean shouldUseCompatFallbackForCurrentPlayback() {
-        if (!isTvDevice()) {
-            return false;
-        }
-        if (TextUtils.isEmpty(currentPlaybackUrl)) {
-            return false;
-        }
-        VideoStreamProbe.Result probe = getCurrentPlaybackProbe();
-        if (probe == null) {
-            return false;
-        }
-        if (probe.hasDolbyVision || probe.hasHdr10 || probe.hasHdr10Plus) {
-            return false;
-        }
-        String lower = currentPlaybackUrl.toLowerCase(Locale.US);
-        if (PlaybackUrlNormalizer.isHlsLike(lower)) {
-            return lower.startsWith("http://") || lower.startsWith("https://");
-        }
-        if (isTv32LocalProxySdrVod(currentPlaybackUrl, probe)) {
-            return true;
-        }
-        if (lower.contains("127.0.0.1") || lower.contains("localhost")) {
-            return false;
-        }
-        return lower.startsWith("http://") || lower.startsWith("https://");
+        // Ordinary TV VOD is deliberately pinned to Android MediaPlayer hardware decoding.
+        // A silent system-to-MPV retry contradicts that route and can re-enter the same URL with
+        // different buffering semantics. Dolby Vision has its own explicit compatibility route.
+        return false;
     }
 
     private boolean isTv32LocalProxySdrVod(String playbackUrl, VideoStreamProbe.Result probe) {
@@ -2392,7 +2383,11 @@ public class PlayActivity extends BaseActivity {
     }
 
     void startPlayTimeout(String playbackUrl) {
-        startPlayTimeout(playbackUrl, resolvePlayTimeoutMs(playbackUrl), "startup");
+        boolean resumingSavedProgress = getSavedProgress(getPlaybackProgressKeyForPersistence()) > 0L;
+        long timeoutMs = PlaybackStartupTimeoutPolicy.resolveInitialTimeout(
+                resolvePlayTimeoutMs(playbackUrl), resumingSavedProgress);
+        startPlayTimeout(playbackUrl, timeoutMs,
+                resumingSavedProgress ? "startup-resume" : "startup");
     }
 
     void startPlayTimeout(String playbackUrl, long timeoutMs, String reason) {
@@ -2407,6 +2402,25 @@ public class PlayActivity extends BaseActivity {
         mHandler.removeMessages(MSG_PLAY_TIMEOUT);
     }
 
+    private boolean deferPlayTimeoutWhileNativeBuffering() {
+        if (mVideoView == null
+                || mVideoView.getCurrentPlayState() != VideoView.STATE_BUFFERING
+                || activeBufferingEpisodeStartAtMs <= 0L) {
+            return false;
+        }
+        long elapsedMs = Math.max(0L, System.currentTimeMillis() - activeBufferingEpisodeStartAtMs);
+        if (!PlaybackBufferProgressPolicy.shouldDeferTimeoutForActiveBuffering(
+                elapsedMs, ACTIVE_BUFFERING_LIVENESS_CEILING_MS)) {
+            return false;
+        }
+        long remainingMs = ACTIVE_BUFFERING_LIVENESS_CEILING_MS - elapsedMs;
+        long nextCheckMs = Math.max(1_000L, Math.min(BUFFER_STALL_TIMEOUT_MS, remainingMs));
+        LOG.i("echo-playTimeout defer native-buffering elapsed=" + elapsedMs
+                + " next=" + nextCheckMs);
+        startPlayTimeout(currentPlaybackUrl, nextCheckMs, "buffer-native-liveness");
+        return true;
+    }
+
     long resolvePlayTimeoutMs(String playbackUrl) {
         if (TextUtils.isEmpty(playbackUrl)) {
             return PLAY_TIMEOUT_MS;
@@ -2415,7 +2429,7 @@ public class PlayActivity extends BaseActivity {
         if (lower.contains("127.0.0.1:6677/proxy/play/")
                 || lower.contains("127.0.0.1:9978/proxy?go=stream")
                 || lower.contains("/proxy/play/")) {
-            if (PlayerHelper.isSystemPlayerType(mVodPlayerCfg == null ? -1 : mVodPlayerCfg.optInt("pl", -1))) {
+            if (PlayerHelper.isSystemPlayerType(activePlaybackPlayerType)) {
                 return PLAY_TIMEOUT_SYSTEM_PROXY_MS;
             }
             return PLAY_TIMEOUT_PROXY_MS;

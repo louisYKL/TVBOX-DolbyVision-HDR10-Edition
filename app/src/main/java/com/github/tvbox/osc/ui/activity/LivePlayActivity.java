@@ -1434,9 +1434,17 @@ public class LivePlayActivity extends BaseActivity {
     }
 
     private boolean startLivePlayback(String url, HashMap<String, String> headers, boolean keepSnapshotOnFailure) {
+        return startLivePlayback(url, headers, keepSnapshotOnFailure, false);
+    }
+
+    private boolean startLivePlayback(String url,
+                                      HashMap<String, String> headers,
+                                      boolean keepSnapshotOnFailure,
+                                      boolean playerAlreadyReleased) {
         if (mVideoView == null) {
             return false;
         }
+        boolean playerReleased = playerAlreadyReleased;
         try {
             PlaybackUrlNormalizer.UrlWithHeaders split = PlaybackUrlNormalizer.splitUrlAndHeaders(url, headers);
             String sourceUrl = split.url == null ? "" : split.url.trim();
@@ -1449,7 +1457,10 @@ public class LivePlayActivity extends BaseActivity {
             String playbackUrl = PlayerHelper.isSystemPlayerType(currentPlayerType)
                     ? PlaybackUrlNormalizer.resolveSystemPlaybackUrl(sourceUrl, finalHeaders, true)
                     : PlaybackUrlNormalizer.resolvePlaybackUrl(sourceUrl, finalHeaders, true);
-            mVideoView.release();
+            if (!playerReleased) {
+                mVideoView.release();
+                playerReleased = true;
+            }
             if (finalHeaders != null) {
                 mVideoView.setUrl(playbackUrl, finalHeaders);
             } else {
@@ -1458,23 +1469,27 @@ public class LivePlayActivity extends BaseActivity {
             mVideoView.start();
             return true;
         } catch (Throwable th) {
-            handleLivePlayerStartFailure(th, keepSnapshotOnFailure);
+            handleLivePlayerStartFailure(th, keepSnapshotOnFailure, playerReleased);
             return false;
         }
     }
 
-    private void handleLivePlayerStartFailure(Throwable th, boolean keepSnapshotOnFailure) {
+    private void handleLivePlayerStartFailure(Throwable th,
+                                              boolean keepSnapshotOnFailure,
+                                              boolean playerAlreadyReleased) {
         LOG.e("echo-live-player-start-failed " + th.getClass().getSimpleName() + ": " + th.getMessage());
-        if (mVideoView != null) {
+        boolean playerReleased = playerAlreadyReleased;
+        if (!playerReleased && mVideoView != null) {
             try {
                 mVideoView.release();
+                playerReleased = true;
             } catch (Throwable ignored) {
             }
         }
         if (!keepSnapshotOnFailure) {
             hideSwitchChannelSnapshot();
         }
-        if (switchLivePlayerAndReplay()) {
+        if (switchLivePlayerAndReplay(playerReleased)) {
             return;
         }
         mHandler.removeCallbacks(mConnectTimeoutChangeSourceRun);
@@ -2089,18 +2104,24 @@ public class LivePlayActivity extends BaseActivity {
     }
 
     private boolean switchLivePlayerAndReplay() {
+        return switchLivePlayerAndReplay(false);
+    }
+
+    private boolean switchLivePlayerAndReplay(boolean playerAlreadyReleased) {
         if (!allowLiveSwitchPlayer || currentLiveChannelItem == null || mVideoView == null) {
             return false;
         }
         mHandler.removeCallbacks(mConnectTimeoutChangeSourceRun);
-        mVideoView.release();
+        if (!playerAlreadyReleased) {
+            mVideoView.release();
+        }
         if (!livePlayerManager.switchLivePlayer(mVideoView, currentLiveChannelItem.getChannelName())) {
             allowLiveSwitchPlayer = false;
             return false;
         }
         LOG.i("echo-liveAutoRetry switch player and replay current url");
         allowLiveSwitchPlayer = false;
-        return startLivePlayback(currentLiveChannelItem.getUrl(), liveWebHeader(), false);
+        return startLivePlayback(currentLiveChannelItem.getUrl(), liveWebHeader(), false, true);
     }
 
     private Runnable mConnectTimeoutChangeSourceRun = new Runnable() {

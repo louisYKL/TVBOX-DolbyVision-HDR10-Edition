@@ -5,13 +5,13 @@
 > 为电视而做的 TVBox 分支，重点优化系统硬解、HDR 激发、杜比视界兼容链路与大屏交互体验。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.3"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.3-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.4"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.4-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.3">下载 0.2.3</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.4">下载 0.2.4</a> ·
   <a href="README.en.md">English</a>
 </p>
 
@@ -25,9 +25,9 @@
 
 | 文件 | 适用设备 | 说明 |
 | --- | --- | --- |
-| `TVBox_v0.2.3_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本，可覆盖安装 0.2.2 及更早测试版 |
-| `TVBox_v0.2.3_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本，可覆盖安装 0.2.2 及更早测试版 |
-| `TVBox_v0.2.3_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本，可覆盖安装 0.2.2 |
+| `TVBox_v0.2.4_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本，可覆盖安装 0.2.3 及更早测试版 |
+| `TVBox_v0.2.4_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本，可覆盖安装 0.2.3 及更早测试版 |
+| `TVBox_v0.2.4_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本，可覆盖安装 0.2.3 |
 
 ## 项目观感
 
@@ -56,7 +56,7 @@
 - 保持音频直通、字幕、全屏控制、遥控器焦点和返回逻辑在电视场景下更连贯。
 - 把项目拆成更明确的 32 位电视版、64 位 Android 版和海信 32 位版，便于后续长期维护。
 
-## 0.2.3 当前版本包含
+## 0.2.4 当前版本包含
 
 | 版本 | ABI | 面向设备 | 说明 |
 | --- | --- | --- | --- |
@@ -64,12 +64,12 @@
 | `java64` | `arm64-v8a` | 64 位 Android 手机 / 平板 / 盒子 | 独立 64 位版本 |
 | `hisense` | `armeabi-v7a` | 海信 32 位电视 | 独立海信专用版本 |
 
-## 0.2.3 这次重点修了什么
+## 0.2.4 这次重点修了什么
 
-- 修复播放/快进/拖动时视频卡死不动最终报“播放超时”的根因：本地代理转发原始流的 OkHttp 客户端此前继承了无限读取超时，源站 CDN 接受连接后中途停发数据时，转发线程会永久阻塞、已有的断点重连恢复逻辑永远不触发，把原生播放器活活饿死。现在给本地代理直连流、HLS/直播分片（`ts`）转发、外部 `go=stream` 透传和 m3u8 播放列表抓取统一加了 20 秒“单次读取无数据”超时——只判定连接是否僵死，不限制总下载时长，卡死的连接会被及时放弃并自动重连恢复。
-- 修复缓冲期间被误判为卡死：外层 45 秒安全网超时此前只靠“缓冲百分比上涨”刷新，而 HDR 大码率直连播放的百分比按已收字节数计算，原生播放器缓冲够了改去解码首帧时收字节会停住、百分比冻结，导致健康的播放被误杀。现在把“原生播放器持续缓冲中”本身当作存活信号刷新超时（上限 180 秒），真正的准备卡死仍会正常超时。
-- 以上修复覆盖 java32 / java64 / Hisense 三端同一套播放与代理核心，快进、拖动进度条、切集换源在慢速或不稳定源上更不易卡死。
-- 三端保持 java64 触控/手势/焦点行为和 Hisense 独立包名/ABI；版本统一为 `0.2.3`（`versionCode 2027`），沿用原签名，可覆盖安装 `0.2.2` 及更早的 `0.2.1.x`。
+- 修复 Java64 直播“有声音、黑屏”：旧系统播放器释放前会先断开渲染 Surface，重试、换台也不会重复释放；系统播放器保留系统播放地址，兼容播放器才走兼容地址。
+- 主 32 位和海信版的普通非 Dolby Vision 点播固定使用 Android `MediaPlayer` 系统硬解，不再静默切到兼容播放器；Dolby Vision 仍按原有专用链路播放。
+- 恢复进度启动获得独立的范围 seek 等待时间；原生播放器持续缓冲可在 180 秒上限内延长外层安全网，避免首帧解码或连续快进时被误判超时。
+- 三端保持 java64 触控/手势/焦点行为、字幕和音频链路，以及 Hisense 独立包名/ABI；版本统一为 `0.2.4`（`versionCode 2031`），沿用原签名，可覆盖安装 `0.2.3` 及更早版本。
 
 ## 核心特性
 
@@ -156,9 +156,9 @@ $env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 
 仓库内置基础 Android 构建工作流，可直接产出：
 
-- `TVBox_v0.2.3_java32.apk`
-- `TVBox_v0.2.3_java64.apk`
-- `TVBox_v0.2.3_hisense32.apk`
+- `TVBox_v0.2.4_java32.apk`
+- `TVBox_v0.2.4_java64.apk`
+- `TVBox_v0.2.4_hisense32.apk`
 
 ## 社区协作
 
@@ -189,4 +189,5 @@ $env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 - `0.2.1`：修复“文采”HLS 源黑屏有声音/假首帧/误报错，统一 `SurfaceView` 硬解链路，对不支持硬解的 `H.264 High10` 直接提示不支持。
 - `0.2.2`：重构预缓冲和 seek 状态机，恢复稳定音频/字幕/进度保存，增加缓冲百分比、全屏字幕开关和详情页文件名，并同步三端。
 - `0.2.3`：修复本地代理转发流因无限读取超时导致播放/快进/拖动卡死最终报“播放超时”的根因，给直连流、HLS 分片、外部透传和 m3u8 抓取统一加有限读取超时；并把原生持续缓冲当作存活信号，避免缓冲期间误杀健康播放。
+- `0.2.4`：修复 Java64 直播黑屏有声和释放时 Surface 生命周期冲突；主 32 位和海信版普通非 Dolby Vision 点播固定走系统硬解；恢复进度和连续拖动时为健康的原生缓冲保留受限等待时间，避免误超时。
 - 后续：继续按设备日志收敛播放器、字幕、HDR 与音频链路。

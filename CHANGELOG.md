@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.4
+
+### 中文
+
+- 修复 64 位直播重试/切台时的渲染面释放竞争：先解除旧 `Surface` 与系统播放器的绑定，再移除渲染视图并释放播放器；重试链不会重复释放同一个播放器。系统播放器继续使用系统供流地址，兼容播放器才使用兼容供流地址，修复“有声音但黑屏”。
+- 普通非杜比视界点播在 32 位主版和海信版强制使用 Android 系统 `MediaPlayer` 硬件解码；不再被旧兼容播放器配置或失败回退覆盖。真实杜比视界仍保留独立的原生/兼容路由。
+- 恢复历史进度的首个 range seek 获得独立启动窗口；系统播放器处于活跃原生缓冲时，外层超时仅在 180 秒上限内延期，不会在解码首帧或连续快进后错误释放健康播放器。真正准备挂死、原生错误和超过上限仍会正常报错恢复。
+- 三端继续保留字幕、音频输出、Java64 触控/手势/焦点链，以及海信独立包名和 32 位 ABI。
+
+### English
+
+- Fixed the Java64 live retry/channel-switch surface-release race: detach the old `Surface` from the system player before removing the render view and releasing the player; the retry path no longer releases the same player twice. System playback keeps the system URL route and only the compatibility player uses the compatibility URL, fixing audio-only black video.
+- Ordinary non-Dolby-Vision VOD is pinned to Android `MediaPlayer` hardware decoding on the main 32-bit and Hisense variants, so stale compatibility-player settings and failure fallback cannot override it. Real Dolby Vision keeps its dedicated native/compatibility route.
+- Saved-progress startup has its own initial range-seek allowance. While the native player is actively buffering, the outer watchdog defers only within a 180-second ceiling, so first-frame decoding and repeated seeks are not released prematurely. Genuine prepare hangs, native errors, and the ceiling still fail normally.
+- All variants retain subtitle and audio behavior, the Java64 touch/gesture/focus chain, and the independent Hisense package and 32-bit ABI.
+
 ## 0.2.3
 
 ### 中文
@@ -10,7 +26,7 @@
 - 修复 64 位直播"有声音无画面"：系统播放器解码出音频却始终没有视频输出时，会上报 `MEDIA_INFO_VIDEO_NOT_PLAYING`（805）。此前 `0.2.3` 一度把 805 改为"交给首帧看门狗判定"，但当原生缓冲一直为真时看门狗会无限期推迟，导致直播永久停在有声音无画面。本版恢复到已验证的处理：805 直接触发 `onError`，驱动直播界面的自动换源/重播恢复（`shouldTreatAsVideoStartupFailure` 已排除启播瞬时 805 和纯音频轨，只有真正"有音频无视频"才会走到这里），不再永久黑屏。
 - 修复点播全屏"画面比例"按钮点击无效：此前被写死为 `SCREEN_SCALE_DEFAULT`，永远停在默认比例、无法切换。现在按 默认→16:9→4:3→填充→原始→裁剪 循环切换并保存。
 - 修复点播全屏切换到杜比视界/HDR 兼容（MPV）播放器时"切换音轨"始终显示"没有音轨"：全屏音轨逻辑此前只识别系统播放器，现在与小窗一致地同时支持系统播放器和 MPV 兼容播放器，多音轨影片可正常切换。
-- 三端（java32、java64、Hisense）共用同一套修复。版本统一为 `0.2.3`（`versionCode 2029`），沿用原签名证书，可覆盖安装 `0.2.2` 及更早的 `0.2.1.x`。
+- 三端（java32、java64、Hisense）共用同一套修复。版本统一为 `0.2.3`（`versionCode 2030`），沿用原签名证书，可覆盖安装 `0.2.2` 及更早的 `0.2.1.x`。
 
 ### English
 
@@ -20,7 +36,7 @@
 - Fixed 64-bit live "audio but no video": when the system player decodes audio but never produces video output, it reports `MEDIA_INFO_VIDEO_NOT_PLAYING` (805). An earlier `0.2.3` attempt changed 805 to "defer to the first-frame watchdog", but while native buffering stayed true the watchdog deferred indefinitely and the channel stayed audio-only with a black screen forever. This restores the proven handling: 805 fails into `onError`, driving the live UI's automatic source-switch / replay recovery (`shouldTreatAsVideoStartupFailure` already excludes transient startup 805 and audio-only track lists, so only genuine audio-without-video reaches here) instead of a permanent black screen.
 - Fixed the VOD fullscreen "画面比例" (aspect-ratio) button, which was hardcoded to `SCREEN_SCALE_DEFAULT` and could never reach any other mode. It now cycles 默认 → 16:9 → 4:3 → 填充 → 原始 → 裁剪.
 - Fixed the fullscreen audio-track switch for HDR / Dolby Vision playback routed to the compatibility player: `PlayActivity.selectMyAudioTrack` only handled the system player, so multi-audio files on the compat player showed "没有音轨". It now resolves and switches tracks for the compatibility player too, matching the embedded-preview behavior.
-- Shipped across all three variants (java32, java64, Hisense). Unified under `0.2.3` (`versionCode 2029`) with the existing signing certificate for in-place updates from `0.2.2` and earlier `0.2.1.x`.
+- Shipped across all three variants (java32, java64, Hisense). Unified under `0.2.3` (`versionCode 2030`) with the existing signing certificate for in-place updates from `0.2.2` and earlier `0.2.1.x`.
 
 ## 0.2.2
 

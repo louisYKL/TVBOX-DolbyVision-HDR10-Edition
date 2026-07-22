@@ -34,6 +34,7 @@ public final class DolbyVisionPlaybackRouter {
         public final boolean requiresHdrOutput;
         public final int playerType;
         public final String reason;
+        public final boolean forcePlayerType;
 
         private Decision(boolean looksLikeDolbyVision,
                          boolean useCompatPlayer,
@@ -44,6 +45,21 @@ public final class DolbyVisionPlaybackRouter {
                          boolean requiresHdrOutput,
                          int playerType,
                          String reason) {
+            this(looksLikeDolbyVision, useCompatPlayer, preferHdrFallback, preferSdrFallback,
+                    needsBuiltInMapping, compatMode, requiresHdrOutput, playerType, reason,
+                    useCompatPlayer);
+        }
+
+        private Decision(boolean looksLikeDolbyVision,
+                         boolean useCompatPlayer,
+                         boolean preferHdrFallback,
+                         boolean preferSdrFallback,
+                         boolean needsBuiltInMapping,
+                         String compatMode,
+                         boolean requiresHdrOutput,
+                         int playerType,
+                         String reason,
+                         boolean forcePlayerType) {
             this.looksLikeDolbyVision = looksLikeDolbyVision;
             this.useCompatPlayer = useCompatPlayer;
             this.preferHdrFallback = preferHdrFallback;
@@ -53,6 +69,7 @@ public final class DolbyVisionPlaybackRouter {
             this.requiresHdrOutput = requiresHdrOutput;
             this.playerType = playerType;
             this.reason = reason;
+            this.forcePlayerType = forcePlayerType;
         }
     }
 
@@ -79,6 +96,19 @@ public final class DolbyVisionPlaybackRouter {
 
         // HDR/DV 只能由视频流探测结果决定，禁止根据标题/文件名里的 DV/HDR/10Bit 字样判断。
         boolean looksLikeDolbyVision = streamDetectedDv;
+
+        // TV32 and Hisense use Android MediaPlayer for ordinary VOD so decoding stays on
+        // the vendor hardware decoder. Keep real DV on its dedicated compatibility/native
+        // decision tree below, where profile and display capability still matter.
+        if (SystemDecoderRoutePolicy.shouldForceSystemDecoder(
+                App.isJava64Build(),
+                looksLikeDolbyVision)) {
+            LOG.i("echo-dolby-route route=tv-system-hardware player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
+                    + " probe=" + streamProbe.summary + " url=" + safeSnippet(url));
+            return new Decision(false, false, false, false, false, "", streamProbe.hasHdr10
+                    || streamProbe.hasHdr10Plus, PlayerHelper.PLAYER_TYPE_SYSTEM,
+                    "tv-system-hardware", true);
+        }
 
         boolean requiresHdrOutput = streamProbe.hasDolbyVision
                 || streamProbe.hasHdr10

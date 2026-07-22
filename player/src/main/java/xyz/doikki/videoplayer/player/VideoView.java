@@ -541,17 +541,28 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             // remain a deliberate skip instead of being mistaken for the last cached position
             // after mMediaPlayer has been cleared.
             saveProgress();
+            // Detach the Surface before releasing MediaPlayer. Some vendor implementations
+            // recreate the Surface asynchronously; releasing first leaves the old player
+            // attached to a destroyed Surface and can produce audio-only live playback.
+            if (mRenderView != null) {
+                mRenderView.setSurfaceListener(null);
+            }
+            if (mMediaPlayer != null) {
+                try {
+                    mMediaPlayer.setDisplay(null);
+                } catch (Throwable ignored) {
+                }
+            }
+            //释放renderView
+            if (mRenderView != null) {
+                mPlayerContainer.removeView(mRenderView.getView());
+                mRenderView.release();
+                mRenderView = null;
+            }
             //释放播放器
             if (mMediaPlayer != null) {
                 mMediaPlayer.release();
                 mMediaPlayer = null;
-            }
-            //释放renderView
-            if (mRenderView != null) {
-                mRenderView.setSurfaceListener(null);
-                mPlayerContainer.removeView(mRenderView.getView());
-                mRenderView.release();
-                mRenderView = null;
             }
             //释放Assets资源
             if (mAssetFileDescriptor != null) {

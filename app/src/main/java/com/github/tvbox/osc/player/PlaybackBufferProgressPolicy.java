@@ -67,4 +67,10 @@ public final class PlaybackBufferProgressPolicy {
                 && elapsedSinceBufferingStartMs < Math.max(0L, maxBufferingEpisodeMs)
                 && elapsedSinceRefreshMs >= Math.max(0L, minimumRefreshIntervalMs);
     }
+
+    public static boolean shouldDeferTimeoutForActiveBuffering(long elapsedSinceBufferingStartMs,
+                                                               long maxBufferingEpisodeMs) {
+        return elapsedSinceBufferingStartMs >= 0L
+                && elapsedSinceBufferingStartMs < Math.max(0L, maxBufferingEpisodeMs);
+    }
 }
