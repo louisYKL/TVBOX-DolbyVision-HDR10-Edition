@@ -37,13 +37,9 @@ public final class SystemDecoderRoutePolicy {
     public static boolean shouldForceSystemDecoder(boolean java64Build,
                                                    boolean confirmedSingleLayerDolbyVision,
                                                    boolean requiresCompatPcmAudioDecoder) {
-        // 0.2.4 product decision: the compatibility (MPV) decoder is removed entirely across
-        // all three variants (java32 / java64 / Hisense). Every stream — SDR, HDR10, HDR10+,
-        // HLG and Dolby Vision — decodes on the vendor system hardware decoder, and the system
-        // player decodes all audio (including AC-3/E-AC-3/DTS/TrueHD/Atmos) to PCM. HDR still
-        // activates from the real stream probe (via the forced-system Decision's requiresHdrOutput
-        // flag); playback never leaves the system decoder for any content type.
-        return true;
+        return !java64Build
+                && !confirmedSingleLayerDolbyVision
+                && !requiresCompatPcmAudioDecoder;
     }
 
     public static boolean shouldRetryWithCompatPcmAfterSystemFailure(boolean java64Build,
@@ -51,9 +47,11 @@ public final class SystemDecoderRoutePolicy {
                                                                        boolean confirmedSingleLayerDolbyVision,
                                                                        boolean nativeAudioDecoderFailure,
                                                                        boolean alreadyTried) {
-        // 0.2.4 product decision: the compatibility (MPV) player is removed entirely. Playback
-        // never falls back off the system decoder, so this retry is disabled unconditionally.
-        return false;
+        // A weak container probe can miss a compressed track. Some TV firmwares then report
+        // MEDIA_INFO_AUDIO_NOT_PLAYING (804) without a fatal MediaPlayer error. Retry exactly
+        // once on the PCM compatibility route; its video path still uses MediaCodec hardware
+        // decoding, while audio is decoded to stereo PCM for the external output route.
+        return activeSystemPlayer && nativeAudioDecoderFailure && !alreadyTried;
     }
 
     public static int resolvePlayerType(int requestedPlayerType,

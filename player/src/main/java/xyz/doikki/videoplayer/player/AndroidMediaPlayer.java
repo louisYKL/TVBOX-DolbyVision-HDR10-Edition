@@ -1087,6 +1087,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         // temporarily detached the Surface. Publish the real position before gating start so
         // progress persistence never falls back to the pre-seek value.
         mPlayerEventListener.onSeekComplete(completion.completedTarget);
+        if (mAudioDecoderFailureSeen) {
+            failBeforeFirstVideoFrame("audio-decoder-failed-after-seek");
+            return;
+        }
         finishAfterFinalSeek(completion.completedTarget, completion.shouldResume);
     }
 
@@ -2443,14 +2447,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private boolean shouldUseProxyBackedDataSource(String normalizedUrl, Map<String, String> headers) {
-        // 0.2.4: all VOD plays via a direct URI to the local proxy. The system player owns its
-        // own native playback buffer while the proxy layer independently caches large chunks
-        // from the origin. The two never share a lock, which removes the "cache fights playback
-        // -> infinite loading / stall" class of bugs that the proxy-fd / MediaDataSource feeding
-        // bridge could cause. HLS keeps its dedicated segment pipeline (handled before here).
-        if (true) {
-            return false;
-        }
         if (TextUtils.isEmpty(normalizedUrl) || isHlsLike(normalizedUrl)) {
             return false;
         }

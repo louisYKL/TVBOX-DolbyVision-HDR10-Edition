@@ -43,8 +43,8 @@ public class SystemDecoderRoutePolicyTest {
     }
 
     @Test
-    public void tv32DoesNotFallbackToCompatForOrdinaryAudioFailures() {
-        assertFalse(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+    public void nativeAudioDecoderFailureRetriesCompatExactlyOnce() {
+        assertTrue(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
                 false, true, false, true, false));
         assertTrue(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
                 false, true, true, true, false));
@@ -52,6 +52,10 @@ public class SystemDecoderRoutePolicyTest {
                 false, true, true, true, true));
         assertTrue(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
                 true, true, false, true, false));
+        assertFalse(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                false, false, false, true, false));
+        assertFalse(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                false, true, false, false, false));
     }
 
     @Test
