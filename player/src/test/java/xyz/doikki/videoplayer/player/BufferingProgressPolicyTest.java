@@ -36,6 +36,21 @@ public class BufferingProgressPolicyTest {
     }
 
     @Test
+    public void rangeStartupProgressUsesTheActualPrebufferAndNeverClaimsCompletionEarly() {
+        long mb = 1024L * 1024L;
+        assertEquals(0, BufferingProgressPolicy.resolveRangePrebufferDisplayedPercent(
+                true, 0L, 24L * mb, 0));
+        assertEquals(50, BufferingProgressPolicy.resolveRangePrebufferDisplayedPercent(
+                true, 12L * mb, 24L * mb, 0));
+        assertEquals(99, BufferingProgressPolicy.resolveRangePrebufferDisplayedPercent(
+                true, 25L * mb, 24L * mb, 50));
+        assertEquals(0, BufferingProgressPolicy.resolveRangePrebufferDisplayedPercent(
+                true, 25L * mb, 0L, 50));
+        assertFalse(BufferingProgressPolicy.isRangePrebufferReady(23L * mb, 24L * mb));
+        assertTrue(BufferingProgressPolicy.isRangePrebufferReady(24L * mb, 24L * mb));
+    }
+
+    @Test
     public void nativeBufferIsTheOnlyReasonToHoldBufferingEnd() {
         assertTrue(BufferingProgressPolicy.shouldHoldBufferingEnd(true));
         assertFalse(BufferingProgressPolicy.shouldHoldBufferingEnd(false));

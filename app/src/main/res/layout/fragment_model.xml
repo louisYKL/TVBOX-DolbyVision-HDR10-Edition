@@ -392,7 +392,7 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="音频透传"
+                        android:text="PCM 音频直通"
                         android:textColor="@color/apple_tv_text_primary"
                         android:textSize="@dimen/ts_22"
                         android:textStyle="bold" />

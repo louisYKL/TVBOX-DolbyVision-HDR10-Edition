@@ -31,6 +31,10 @@ final class NativePlayerOperationPolicy {
 
     static boolean shouldStartAfterSeekCompletion(boolean logicallyStarted,
                                                   boolean nativePlayerIsPlaying) {
-        return !logicallyStarted && !nativePlayerIsPlaying;
+        // The vendor player can report a completed initial seek after its pre-seek start
+        // was discarded internally. The logical state is then STARTED while the native
+        // player is not running. Preserve the v0.2.1 behavior and re-arm playback from
+        // the actual native state, otherwise the UI remains stuck at buffering forever.
+        return !nativePlayerIsPlaying;
     }
 }

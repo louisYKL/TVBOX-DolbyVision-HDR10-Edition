@@ -21,4 +21,10 @@ public class AudioOutputRoutePolicyTest {
         assertFalse(AudioOutputRoutePolicy.isEncodedPassthroughTransport(
                 AudioDeviceInfo.TYPE_BUILTIN_SPEAKER));
     }
+
+    @Test
+    public void compressedAudioAlwaysRequestsSystemPcm() {
+        assertTrue(AudioOutputRoutePolicy.shouldRequestSystemPcm(true));
+        assertFalse(AudioOutputRoutePolicy.shouldRequestSystemPcm(false));
+    }
 }

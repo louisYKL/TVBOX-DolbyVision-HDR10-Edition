@@ -9,13 +9,12 @@ import java.util.Map;
 
 /**
  * 三路由策略（依据真实探测的设备能力，见 {@link HdrDeviceSupport}）：
- *  路由1：DV 源 + 设备无 DV 解码器 → 兼容播放器(MPV) 把 DV 映射成 HDR10/HDR10+（显示端不支持 HDR 时降级 SDR），并激发 HDR。
- *  路由2：DV 源 + 设备有 DV 解码器且显示端支持 DV → 系统播放器走原生解码器，激发杜比视界。
- *  路由3：普通 SDR/HDR10/HDR10+ 的 MKV/MP4 → 系统播放器原生硬解（最强性能），由设备自身解码器激活 HDR。
+ *  路由1：TV32 除已确认的单层 DV 或已识别的编码环绕音轨外，走系统播放器原生硬解。
+ *  路由2：单层 DV 与编码环绕音轨由兼容播放器处理；后者仍使用 MediaCodec 硬件视频解码并输出 PCM。
  *
  * 关键纠错：HDR10/HDR10+/DV 只能由视频流探测结果触发，禁止根据标题、文件名里的 DV/HDR/10Bit 字样判断。
  * 容器类型（MKV/WebM）可以根据 URL/容器探测决定播放器兼容链，但不参与 HDR/DV 类型判断。
- * 在无 DV 解码器的设备上，真实探测到的 DV 源绝不能交给系统播放器。
+ * 单层 DV 和编码环绕音轨之外的容器或音频格式不能改变 TV32 的系统视频解码路线。
  *
  * 双层 DV / Profile 8 纠错：这类流带 HDR10 基础层时，不做重映射；直接用硬解播放 HDR10 基础层并请求 HDR 输出。
  * 只有 Profile 5 或探测不到 HDR10 基础层的 DV 才走兼容映射链。
@@ -96,23 +95,36 @@ public final class DolbyVisionPlaybackRouter {
 
         // HDR/DV 只能由视频流探测结果决定，禁止根据标题/文件名里的 DV/HDR/10Bit 字样判断。
         boolean looksLikeDolbyVision = streamDetectedDv;
-
-        // TV32 and Hisense use Android MediaPlayer for ordinary VOD so decoding stays on
-        // the vendor hardware decoder. Keep real DV on its dedicated compatibility/native
-        // decision tree below, where profile and display capability still matter.
-        if (SystemDecoderRoutePolicy.shouldForceSystemDecoder(
-                App.isJava64Build(),
-                looksLikeDolbyVision)) {
-            LOG.i("echo-dolby-route route=tv-system-hardware player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
-                    + " probe=" + streamProbe.summary + " url=" + safeSnippet(url));
-            return new Decision(false, false, false, false, false, "", streamProbe.hasHdr10
-                    || streamProbe.hasHdr10Plus, PlayerHelper.PLAYER_TYPE_SYSTEM,
-                    "tv-system-hardware", true);
-        }
-
+        boolean confirmedSingleLayerDolbyVision = SystemDecoderRoutePolicy
+                .isConfirmedSingleLayerDolbyVision(streamDetectedDv,
+                        streamProbe.dolbyVisionProfile, streamProbe.hasHdr10BaseLayer);
         boolean requiresHdrOutput = streamProbe.hasDolbyVision
                 || streamProbe.hasHdr10
                 || streamProbe.hasHdr10Plus;
+        // Android MediaPlayer cannot be instructed to decode encoded surround tracks to PCM
+        // rather than hand a bitstream to the vendor output path. Route every identified
+        // AC3/E-AC3/Atmos/DTS/TrueHD track before start so the compatibility path decodes
+        // stereo PCM; its video path remains MediaCodec hardware decode.
+        boolean requiresCompatPcmAudioDecoder = SystemDecoderRoutePolicy.requiresCompatPcmOutput(
+                streamProbe.hasAc3Audio,
+                streamProbe.hasEac3Audio,
+                streamProbe.hasDtsAudio,
+                streamProbe.hasTrueHdAudio,
+                streamProbe.hasAtmosLikeAudio);
+
+        // On TV32, Android MediaPlayer is the one real system decoder and compositor.
+        // Do not let a Matroska container silently replace it with MPV/GPU playback. The
+        // only exceptions are confirmed single-layer DV and system-unsupported audio that
+        // must be decoded to PCM before reaching the external audio route.
+        if (SystemDecoderRoutePolicy.shouldForceSystemDecoder(
+                App.isJava64Build(),
+                confirmedSingleLayerDolbyVision,
+                requiresCompatPcmAudioDecoder)) {
+            LOG.i("echo-dolby-route route=tv-system-all-non-single-dv player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
+                    + " probe=" + streamProbe.summary + " url=" + safeSnippet(url));
+            return new Decision(looksLikeDolbyVision, false, false, false, false, "", requiresHdrOutput,
+                    PlayerHelper.PLAYER_TYPE_SYSTEM, "tv-system-all-non-single-dv", true);
+        }
 
         // 原生 DV 路由必须以“真实存在 DV 解码器 + 显示端支持 DV”为前提。
         // 仅有系统属性/XML 宣称支持，但 MediaCodecList 没有 video/dolby-vision 解码器时，
@@ -123,7 +135,8 @@ public final class DolbyVisionPlaybackRouter {
                 && url.contains("/proxy/play/")
                 && (!streamProbe.hasHdr10BaseLayer || streamProbe.dolbyVisionProfile <= 0);
         boolean java64TouchPhone = context != null && App.isJava64Build() && !ScreenUtils.isTv(context);
-        boolean nativeDolbyVisionRouteDevice = caps.supportsNativeDolbyVisionRoute(java64TouchPhone);
+        boolean nativeDolbyVisionRouteDevice = caps.supportsNativeDolbyVisionRoute(java64TouchPhone)
+                && !requiresCompatPcmAudioDecoder;
         if (nativeDolbyVisionRouteDevice) {
             // 真实具备原生杜比视界解码器 + 显示能力的设备，不应因为 local proxy / Matroska
             // 预探测缺少 hdr10Base/profile 就被错误压到兼容链。这里统一保留系统原生 DV。
@@ -179,6 +192,7 @@ public final class DolbyVisionPlaybackRouter {
                     || streamProbe.dolbyVisionProfile == 7
                     || streamProbe.dolbyVisionProfile == 8;
             boolean canPreferSystemHdr10BaseLayer = !App.isJava64Build()
+                    && !requiresCompatPcmAudioDecoder
                     && !nativeDolbyVisionRouteDevice
                     && canUseHdr10BaseLayer
                     && caps.displaySupportsHdr()
@@ -225,7 +239,8 @@ public final class DolbyVisionPlaybackRouter {
                     PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT, reason);
         }
 
-        if (shouldRouteTv32LocalProxyHevcToSystemHdr(context, url, streamProbe, extraHints)
+        if (!requiresCompatPcmAudioDecoder
+                && shouldRouteTv32LocalProxyHevcToSystemHdr(context, url, streamProbe, extraHints)
                 && caps.displaySupportsHdr()
                 && caps.hevcMain10Decoder) {
             LOG.i("echo-dolby-route route=tv32-local-proxy-hevc-system-hdr player="
@@ -244,7 +259,7 @@ public final class DolbyVisionPlaybackRouter {
         }
 
         // 路由3：普通 SDR/HDR10/HDR10+ 且容器系统播放器能打开（MP4/TS）→ 系统播放器原生硬解 + 原生 HDR。
-        if (systemCanOpenContainer) {
+        if (systemCanOpenContainer && !requiresCompatPcmAudioDecoder) {
             LOG.i("echo-dolby-route route=system-native player=" + nativeRequestedPlayerType
                     + " caps=" + caps.summary
                     + " nativeHdrSystem=" + preferNativeHdrSystem
@@ -261,6 +276,7 @@ public final class DolbyVisionPlaybackRouter {
         boolean mkvPreferHdr = (streamProbe.hasHdr10 || streamProbe.hasHdr10Plus)
                 && caps.displaySupportsHdr();
         if (matroskaLike
+                && !requiresCompatPcmAudioDecoder
                 && !looksLikeDolbyVision
                 && !streamProbe.hasHdr10
                 && !streamProbe.hasHdr10Plus
@@ -274,15 +290,20 @@ public final class DolbyVisionPlaybackRouter {
             return new Decision(false, false, false, false, false, "", false,
                     PlayerHelper.PLAYER_TYPE_SYSTEM, "system-matroska-probe-timeout");
         }
-        LOG.i("echo-dolby-route route=mkv-compat player=" + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
+        String compatibilityReason = requiresCompatPcmAudioDecoder
+                ? "pcm-audio-compat"
+                : (mkvPreferHdr ? "matroska-compat-hdr" : "matroska-compat-sdr");
+        LOG.i("echo-dolby-route route=" + compatibilityReason
+                + " player=" + PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT
                 + " caps=" + caps.summary + " preferHdr=" + mkvPreferHdr
                 + " hdr10=" + streamProbe.hasHdr10 + " hdr10Plus=" + streamProbe.hasHdr10Plus
+                + " pcmAudio=" + requiresCompatPcmAudioDecoder
                 + " matroska=" + matroskaLike
                 + " probe=" + streamProbe.summary + " url=" + safeSnippet(url));
         return new Decision(false, true, mkvPreferHdr, !mkvPreferHdr, false,
                 mkvPreferHdr ? "base-hdr" : "sdr", mkvPreferHdr,
                 PlayerHelper.PLAYER_TYPE_DOLBY_VISION_COMPAT,
-                mkvPreferHdr ? "matroska-compat-hdr" : "matroska-compat-sdr");
+                compatibilityReason);
     }
 
     private static boolean shouldRouteTv32LocalProxyHevcToSystemHdr(Context context,

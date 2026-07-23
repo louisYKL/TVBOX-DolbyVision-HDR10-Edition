@@ -215,7 +215,8 @@ public class PlayFragment extends BaseLazyFragment {
     private boolean systemFallbackTried;
     private String pendingCompatFallbackSourceUrl;
     private HashMap<String, String> pendingCompatFallbackHeaders;
-    private boolean compatFallbackTried;
+    private int compatFallbackGeneration = -1;
+    private int forceNextPlaybackCompatRouteGeneration = -1;
     private int subtitleTextStyle = 0;
     private boolean subtitleEnabled = true;
 
@@ -454,6 +455,8 @@ public class PlayFragment extends BaseLazyFragment {
         pendingSystemFallbackSourceUrl = null;
         pendingSystemFallbackHeaders = null;
         systemFallbackTried = false;
+        compatFallbackGeneration = -1;
+        forceNextPlaybackCompatRouteGeneration = -1;
         clearCurrentPlaybackProbe();
         LOG.i("echo-play-generation begin gen=" + generation + " progress=" + activeProgressKey);
         return generation;
@@ -629,7 +632,8 @@ public class PlayFragment extends BaseLazyFragment {
                         pendingCompatFallbackSourceUrl = null;
                         pendingCompatFallbackHeaders = null;
                         systemFallbackTried = false;
-                        compatFallbackTried = false;
+                        compatFallbackGeneration = -1;
+                        forceNextPlaybackCompatRouteGeneration = -1;
                         playbackRenderedFirstFrame = false;
                         errorWithRetry("播放超时", false);
                         break;
@@ -1741,8 +1745,21 @@ public class PlayFragment extends BaseLazyFragment {
             } catch (JSONException e) {
                 LOG.e("echo-dolby-route put compat mode failed: " + e.getMessage());
             }
-            final int resolvedPlayerType = SystemDecoderRoutePolicy.resolvePlayerType(
+            int routedPlayerType = SystemDecoderRoutePolicy.resolvePlayerType(
                     requestedPlayerType, dvDecision.playerType, dvDecision.forcePlayerType);
+            if (forceNextPlaybackCompatRouteGeneration == requestGeneration) {
+                forceNextPlaybackCompatRouteGeneration = -1;
+                routedPlayerType = PlayerHelper.getHdrCompatiblePlayerType();
+                try {
+                    playbackPlayerCfg.put("pl", routedPlayerType);
+                    playbackPlayerCfg.put("dvm", "sdr");
+                } catch (JSONException e) {
+                    LOG.e("echo-player-fallback compat-route config failed: " + e.getMessage());
+                }
+                LOG.i("echo-player-fallback compat-route generation=" + requestGeneration
+                        + " player=" + routedPlayerType);
+            }
+            final int resolvedPlayerType = routedPlayerType;
             if (resolvedPlayerType != playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM)) {
                 try {
                     playbackPlayerCfg.put("pl", resolvedPlayerType);
@@ -1823,14 +1840,12 @@ public class PlayFragment extends BaseLazyFragment {
                 pendingCompatFallbackSourceUrl = null;
                 pendingCompatFallbackHeaders = null;
                 systemFallbackTried = false;
-                compatFallbackTried = false;
             } else {
                 pendingSystemFallbackSourceUrl = null;
                 pendingSystemFallbackHeaders = null;
                 pendingCompatFallbackSourceUrl = url;
                 pendingCompatFallbackHeaders = activeHeaders == null ? null : new HashMap<>(activeHeaders);
                 systemFallbackTried = false;
-                compatFallbackTried = false;
             }
             LOG.i("echo-system-route player=" + activePlayerType
                     + " source=" + safeLogSnippet(url)
@@ -2227,6 +2242,7 @@ public class PlayFragment extends BaseLazyFragment {
         boolean audioPassthroughAllowed = isAudioPassthroughAllowed(probe);
         headers.put("X-TVBox-Probe-AudioPassthrough", audioPassthroughRequested ? "1" : "0");
         headers.put("X-TVBox-Probe-AudioPassthroughAllowed", audioPassthroughAllowed ? "1" : "0");
+        headers.put("X-TVBox-Probe-CompressedAudio", hasPassthroughAudio(probe) ? "1" : "0");
         if (probe.hasDolbyVision) {
             headers.put("X-TVBox-Probe-DolbyVision", "1");
         }
@@ -2259,7 +2275,12 @@ public class PlayFragment extends BaseLazyFragment {
                 || probe.hasHdr10
                 || probe.hasHdr10Plus
                 || shouldForceTv32SystemSafePcm(playbackUrl, probe)
-                || (Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false) && hasPassthroughAudio(probe)))
+                // Compressed tracks must always carry the capability conclusion: PCM is the
+                // default unless an enabled passthrough route has an explicit codec match.
+                || hasPassthroughAudio(probe)
+                // When passthrough is enabled, unknown probe metadata must still reach the
+                // system player so it can choose the conservative PCM fallback.
+                || Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false))
                 || isMatroskaPlaybackUrl(playbackUrl);
     }
 
@@ -2294,24 +2315,13 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private boolean isAudioPassthroughAllowed(VideoStreamProbe.Result probe) {
-        if (probe == null) {
-            return false;
+        if (Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false) && hasPassthroughAudio(probe)) {
+            LOG.i("echo-audio-passthrough pcm-only audioMime="
+                    + (probe == null ? "unknown" : probe.primaryAudioMime));
         }
-        if (!Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false)) {
-            return false;
-        }
-        if (!hasPassthroughAudio(probe)) {
-            return false;
-        }
-        boolean supported = PlayerCapability.supportsAudioPassthrough(probe);
-        if (!supported) {
-            LOG.i("echo-audio-passthrough blocked unsupported-output audioMime=" + probe.primaryAudioMime
-                    + " ac3=" + probe.hasAc3Audio
-                    + " eac3=" + probe.hasEac3Audio
-                    + " dts=" + probe.hasDtsAudio
-                    + " capability=" + PlayerCapability.describeAudioPassthrough(probe));
-        }
-        return supported;
+        // The external-route setting only keeps the PCM route at its fixed music volume.
+        // It never permits AC3/E-AC3/DTS/TrueHD bitstream output.
+        return false;
     }
 
     private boolean hasPassthroughAudio(VideoStreamProbe.Result probe) {
@@ -2347,25 +2357,24 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private boolean tryInternalPlayerFallback(String reason) {
-        if (mVideoView == null || mVodPlayerCfg == null || TextUtils.isEmpty(webPlayUrl)) {
+        if (mVideoView == null || TextUtils.isEmpty(webPlayUrl)) {
             return false;
         }
         try {
-            int currentPlayerType = mVodPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
+            int currentPlayerType = activePlaybackPlayerType;
             if (PlayerHelper.isSystemPlayerType(currentPlayerType)) {
-                if (!shouldUseCompatFallbackForCurrentPlayback() || compatFallbackTried) {
+                if (!shouldUseCompatFallbackForCurrentPlayback()) {
                     return false;
                 }
                 int compatPlayerType = PlayerHelper.getHdrCompatiblePlayerType();
                 if (!PlayerHelper.getPlayerExist(compatPlayerType)) {
                     return false;
                 }
-                compatFallbackTried = true;
+                int generation = currentPlayGeneration();
+                compatFallbackGeneration = generation;
+                forceNextPlaybackCompatRouteGeneration = generation;
                 pendingCompatFallbackSourceUrl = webPlayUrl;
                 pendingCompatFallbackHeaders = webHeaderMap == null ? null : new HashMap<>(webHeaderMap);
-                mVodPlayerCfg.put("pl", compatPlayerType);
-                mVodPlayerCfg.put("dvm", "sdr");
-                PlayerHelper.updateCfg(mVideoView, mVodPlayerCfg);
                 LOG.i("echo-player-fallback system->compat reason=" + reason
                         + " player=" + compatPlayerType
                         + " url=" + safeLogSnippet(webPlayUrl));
@@ -2386,10 +2395,17 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private boolean shouldUseCompatFallbackForCurrentPlayback() {
-        // Ordinary TV VOD is deliberately pinned to Android MediaPlayer hardware decoding.
-        // A silent system-to-MPV retry contradicts that route and can re-enter the same URL with
-        // different buffering semantics. Dolby Vision has its own explicit compatibility route.
-        return false;
+        VideoStreamProbe.Result probe = getCurrentPlaybackProbe();
+        AbstractPlayer player = mVideoView == null ? null : mVideoView.getMediaPlayer();
+        boolean nativeAudioDecoderFailure = player instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) player).hasAudioDecoderFailure();
+        return SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                App.isJava64Build(),
+                PlayerHelper.isSystemPlayerType(activePlaybackPlayerType),
+                probe != null && SystemDecoderRoutePolicy.isConfirmedSingleLayerDolbyVision(
+                        probe.hasDolbyVision, probe.dolbyVisionProfile, probe.hasHdr10BaseLayer),
+                nativeAudioDecoderFailure,
+                compatFallbackGeneration == currentPlayGeneration());
     }
 
     private boolean isTv32LocalProxySdrVod(String playbackUrl, VideoStreamProbe.Result probe) {

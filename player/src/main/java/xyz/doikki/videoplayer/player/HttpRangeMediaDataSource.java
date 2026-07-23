@@ -50,7 +50,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .build();
-    private static final ExecutorService PREFETCH_EXECUTOR = Executors.newFixedThreadPool(2);
+    // Keep one background fill-ahead task. Foreground decoder reads cancel that task when
+    // they need a different range, so metadata parsing and seeks never wait behind preload.
+    private static final ExecutorService PREFETCH_EXECUTOR = Executors.newSingleThreadExecutor();
 
     private final String url;
     private final HashMap<String, String> headers = new HashMap<>();
@@ -60,7 +62,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private final boolean prefetchEnabled;
     private final boolean interruptForegroundReadOnSeek;
     private volatile boolean closed;
-    private long totalSize = -1L;
+    private volatile long totalSize = -1L;
     private long windowStart = -1L;
     private long windowEnd = -1L;
     private byte[] windowData = new byte[0];
@@ -89,6 +91,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     // AppFuse can request a missing range for tens of seconds. Keep UI-side cache polling
     // out of that blocking read so loading a video never stalls the Android main thread.
     private final ReentrantLock blockingReadLock = new ReentrantLock();
+    // Keep foreground decoder reads and fill-ahead reads mutually exclusive per source.
+    // Overlapping requests compete for the same proxy stream and cause severe frame drops.
+    private final ReentrantLock rangeRequestLock = new ReentrantLock();
     private static Method sRuntimeLogInfoMethod;
     private static boolean sRuntimeLogLookupDone;
 
@@ -301,7 +306,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         if (prefetchEnabled) {
             RangeWindowPolicy.Window foregroundWindow = RangeWindowPolicy.resolveForegroundWindow(
                     position, requestedSize, defaultWindowSize, maxWindowSize);
-            alignedStart = foregroundWindow.start;
+            // A cache miss occurs at the decoder cursor. Reusing the aligned block start
+            // would download the already cached prefix for a second time.
+            alignedStart = Math.max(0L, position);
             windowSize = foregroundWindow.size;
         } else {
             alignedStart = Math.max(0L, position);
@@ -313,7 +320,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     }
 
     private void loadWindow(long start, long minWindowSize, long requestedPosition) throws IOException {
-        cancelInflightPrefetchForPositionLocked(requestedPosition);
+        cancelInflightPrefetchForForegroundReadLocked();
         WindowData loaded = requestWindowData(start, minWindowSize);
         if (closed) {
             throw new IOException("MediaDataSource closed during range read");
@@ -332,7 +339,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         }
     }
 
-    private synchronized long getKnownTotalSizeSnapshot() {
+    private long getKnownTotalSizeSnapshot() {
         return totalSize;
     }
 
@@ -470,11 +477,21 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     }
 
     private boolean isAuxiliaryTailProbeLocked(long position) {
-        return !playbackSeekInProgress
-                && totalSize > 0L
-                && playbackAnchorPosition >= 0L
-                && position >= totalSize - (defaultWindowSize * 4L)
-                && playbackAnchorPosition < totalSize - (defaultWindowSize * 8L);
+        if (playbackSeekInProgress
+                || totalSize <= 0L
+                || position < totalSize - (defaultWindowSize * 4L)) {
+            return false;
+        }
+        // Matroska parsers may inspect the tail before any playback read. Keep the
+        // initial byte-zero fill-ahead lane intact until start/seek establishes an anchor.
+        if (playbackAnchorPosition < 0L) {
+            return !playbackPrebufferRequested;
+        }
+        // Container parsing can read an index from the tail before it touches video data.
+        // Do not let that metadata probe replace the actual playback anchor; its foreground
+        // read remains free to cancel fill-ahead traffic through loadWindow().
+        long anchor = resolveBufferAnchorLocked(playbackAnchorPosition);
+        return anchor >= 0L && anchor < totalSize - (defaultWindowSize * 8L);
     }
 
     private WindowData findCachedWindowLocked(long position) {
@@ -556,10 +573,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         }
     }
 
-    private void cancelInflightPrefetchForPositionLocked(long position) {
+    private void cancelInflightPrefetchForForegroundReadLocked() {
         boolean prefetchActive = prefetchFuture != null && !prefetchFuture.isDone();
-        if (!RangeWindowPolicy.shouldCancelPrefetchForMissingPosition(
-                scheduledPrefetchStart, prefetchWindowSize, prefetchActive, position)) {
+        if (!RangeWindowPolicy.shouldYieldPrefetchToForeground(prefetchActive)) {
             return;
         }
         cancelActivePrefetchLocked();
@@ -644,9 +660,11 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private void scheduleFillAheadLocked(long position) {
         if (!prefetchEnabled
                 || closed
-                || playbackSeekInProgress
-                || totalSize <= 0L
-                || windowData.length <= 0) {
+                || playbackSeekInProgress) {
+            return;
+        }
+        if (totalSize <= 0L || windowData.length <= 0) {
+            scheduleInitialPrefetchLocked();
             return;
         }
         long anchor = resolvePrefetchAnchorLocked(position);
@@ -673,7 +691,25 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         prefetchFuture = PREFETCH_EXECUTOR.submit(() -> runPrefetch(prefetchId, prefetchStart));
     }
 
+    private void scheduleInitialPrefetchLocked() {
+        if (prefetchFuture != null && !prefetchFuture.isDone()) {
+            return;
+        }
+        final long prefetchId = ++nextPrefetchId;
+        activePrefetchId = prefetchId;
+        scheduledPrefetchStart = 0L;
+        prefetchFuture = PREFETCH_EXECUTOR.submit(() -> runPrefetch(prefetchId, 0L));
+    }
+
     private void maybeSchedulePrefetchLocked(long nextPosition, int requestedSize) {
+        if (isAuxiliaryTailProbeLocked(nextPosition)) {
+            // A metadata tail read can preempt the initial request, but must not permanently
+            // abandon byte-zero fill-ahead before actual playback begins.
+            if (playbackAnchorPosition < 0L && !playbackSeekInProgress) {
+                scheduleFillAheadLocked(0L);
+            }
+            return;
+        }
         scheduleFillAheadLocked(nextPosition);
     }
 
@@ -689,22 +725,33 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                     if (playbackSeekInProgress) {
                         return;
                     }
-                    long anchor = resolvePrefetchAnchorLocked(nextStart);
-                    if (getBufferedAheadBytesLocked(anchor) >= STREAMING_TARGET_BUFFER_SIZE
-                            || cachedBytes >= STREAMING_MAX_CACHE_SIZE) {
-                        return;
-                    }
-                    nextStart = getNextMissingWindowStartLocked(anchor);
-                    if (nextStart >= totalSize) {
-                        return;
+                    if (totalSize <= 0L || windowData.length <= 0) {
+                        nextStart = 0L;
+                    } else {
+                        long anchor = resolvePrefetchAnchorLocked(nextStart);
+                        if (getBufferedAheadBytesLocked(anchor) >= STREAMING_TARGET_BUFFER_SIZE
+                                || cachedBytes >= STREAMING_MAX_CACHE_SIZE) {
+                            return;
+                        }
+                        nextStart = getNextMissingWindowStartLocked(anchor);
+                        if (nextStart >= totalSize) {
+                            return;
+                        }
                     }
                 }
-                WindowData loaded = requestWindowData(nextStart, prefetchWindowSize, prefetchId);
+                long requestSize = getKnownTotalSizeSnapshot() > 0L
+                        ? prefetchWindowSize
+                        : PROBE_WINDOW_SIZE;
+                WindowData loaded = requestWindowData(nextStart, requestSize, prefetchId);
                 synchronized (this) {
                     if (closed || prefetchId != activePrefetchId) {
                         return;
                     }
                     storeWindowLocked(loaded);
+                    if (totalSize <= 0L) {
+                        logInfo("echo-range-source prefetch-no-content-length start=" + loaded.start);
+                        return;
+                    }
                     scheduledPrefetchStart = loaded.end + 1L;
                     if (debugPrefetchCount < 16) {
                         debugPrefetchCount++;
@@ -756,6 +803,24 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private WindowData requestWindowData(long start,
                                          long minWindowSize,
                                          long prefetchId) throws IOException {
+        boolean locked = false;
+        try {
+            rangeRequestLock.lockInterruptibly();
+            locked = true;
+            return requestWindowDataLocked(start, minWindowSize, prefetchId);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Range request interrupted before network read", interrupted);
+        } finally {
+            if (locked) {
+                rangeRequestLock.unlock();
+            }
+        }
+    }
+
+    private WindowData requestWindowDataLocked(long start,
+                                               long minWindowSize,
+                                               long prefetchId) throws IOException {
         long knownTotalSize = getKnownTotalSizeSnapshot();
         if (knownTotalSize >= 0L && start >= knownTotalSize) {
             return new WindowData(start, start - 1L, new byte[0], knownTotalSize,
@@ -974,17 +1039,20 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
             }
             return true;
         }
-        synchronized (this) {
-            if (closed || prefetchId != activePrefetchId || Thread.currentThread().isInterrupted()) {
-                call.cancel();
-                return false;
-            }
-            activePrefetchCalls.put(prefetchId, call);
-            return true;
+        if (closed || prefetchId != activePrefetchId || Thread.currentThread().isInterrupted()) {
+            call.cancel();
+            return false;
         }
+        activePrefetchCalls.put(prefetchId, call);
+        if (closed || prefetchId != activePrefetchId || Thread.currentThread().isInterrupted()) {
+            activePrefetchCalls.remove(prefetchId, call);
+            call.cancel();
+            return false;
+        }
+        return true;
     }
 
-    private synchronized boolean isPrefetchActive(long prefetchId) {
+    private boolean isPrefetchActive(long prefetchId) {
         return !closed && prefetchId >= 0L && prefetchId == activePrefetchId;
     }
 

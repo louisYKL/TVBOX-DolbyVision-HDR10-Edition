@@ -13,6 +13,7 @@ import android.view.SurfaceHolder;
 
 import androidx.annotation.Nullable;
 
+import com.github.tvbox.osc.util.AudioPassthroughVolumePolicy;
 import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
@@ -1371,6 +1372,7 @@ public class MPVCompatPlayer extends AbstractPlayer implements MPVLib.EventObser
     }
 
     private void forceMaxVolume() {
+        AudioPassthroughVolumePolicy.enforceMaximum(appContext);
         MPVCompatManager.applyAudioOutputOptions();
         MPVLib.setPropertyDouble("volume", 100d);
         MPVLib.setPropertyBoolean("mute", false);

@@ -22,8 +22,6 @@ import is.xyz.mpv.MPVLib;
 
 public final class MPVCompatManager {
     private static final String TAG = "MPVCompatManager";
-    private static final String SPDIF_CODECS_FULL = "ac3,eac3,dts,dts-hd,truehd";
-    private static final String SPDIF_CODECS_TV32 = "ac3,eac3,dts,truehd";
     private static final AtomicBoolean INITIALIZED = new AtomicBoolean(false);
     private static final AtomicBoolean CREATED = new AtomicBoolean(false);
     private static volatile boolean preferHdrOutput = true;
@@ -364,12 +362,14 @@ public final class MPVCompatManager {
         appendFileOption(builder, "video-sync", "audio");
         appendFileOption(builder, "framedrop", "vo");
         appendFileOption(builder, "interpolation", "no");
+        // This must be part of every loadfile request, rather than only being a
+        // runtime property from a prior session. Optical receivers are PCM endpoints.
+        appendFileOption(builder, "ao", "audiotrack");
+        appendFileOption(builder, "audio-spdif", "");
+        appendFileOption(builder, "audio-exclusive", "no");
+        appendFileOption(builder, "audio-channels", "stereo");
+        appendFileOption(builder, "audio-normalize-downmix", "yes");
         if (currentFileForcesTv32LocalProxyPcm) {
-            appendFileOption(builder, "ao", "audiotrack");
-            appendFileOption(builder, "audio-spdif", "");
-            appendFileOption(builder, "audio-exclusive", "no");
-            appendFileOption(builder, "audio-channels", "stereo");
-            appendFileOption(builder, "audio-normalize-downmix", "yes");
             appendFileOption(builder, "audio-buffer", "1.0");
             appendFileOption(builder, "audio-stream-silence", "no");
         }
@@ -413,19 +413,8 @@ public final class MPVCompatManager {
 
     public static void applyAudioOutputOptions() {
         boolean passthrough = Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false);
-        if (java64PhoneAudioSafeMode) {
-            passthrough = false;
-        }
-        if (currentFileForcesTv32LocalProxyPcm) {
-            passthrough = false;
-        }
-        boolean effectivePassthrough = passthrough
-                && currentFileAllowsPassthrough
-                && !java64PhoneAudioSafeMode;
-        // File-level capability gating has already rejected unsupported output formats.
-        // The probe does not yet distinguish DTS core from DTS-HD, so TV32 keeps DTS-HD on
-        // software decode while allowing capability-verified TrueHD passthrough.
-        String spdifCodecs = tv32AudioSafeMode ? SPDIF_CODECS_TV32 : SPDIF_CODECS_FULL;
+        // The user-facing passthrough control retains fixed system volume, but playback itself
+        // always decodes to stereo PCM for optical speakers. Never open mpv's raw SPDIF path.
         setRuntimeString("ao", "audiotrack");
         setRuntimeDouble("volume", 100d);
         setRuntimeBoolean("mute", false);
@@ -440,9 +429,8 @@ public final class MPVCompatManager {
         if (java64PhoneAudioSafeMode) {
             // java64 触屏设备的核心问题不是“软件音量”，而是系统原生 MKV+EAC3
             // 提取不到音轨时需要由 mpv 自己完整 demux+decode 音频。
-            // 这里尽量贴近 mpv-android 的稳定默认值，只禁用 raw/passthrough 分支，
-            // 避免我们额外锁死声道/格式导致 AudioTrack 持续输出 mute data。
-            setRuntimeString("audio-channels", "auto");
+            // Keep the Android AudioTrack route in a format optical receivers can decode.
+            setRuntimeString("audio-channels", "stereo");
             setRuntimeString("ad", "auto");
             setRuntimeString("audio-file-auto", "all");
             setRuntimeString("audio-exclusive", "no");
@@ -451,36 +439,35 @@ public final class MPVCompatManager {
             setRuntimeString("audio-fallback-to-null", "no");
             setRuntimeString("alang", "");
         } else if (tv32AudioSafeMode) {
-            // tv32 must only passthrough when probe already confirmed a supported
-            // compressed track. If probe metadata is incomplete, stay on PCM decode
-            // to avoid the repeated "video ok but no sound" regressions.
-            setRuntimeString("audio-channels", currentFileForcesTv32LocalProxyPcm ? "stereo" : "auto");
+            setRuntimeString("audio-channels", "stereo");
             setRuntimeString("ad", "auto");
             setRuntimeString("audio-file-auto", "all");
-            setRuntimeString("audio-exclusive", effectivePassthrough ? "yes" : "no");
-            setRuntimeString("audio-spdif", effectivePassthrough ? spdifCodecs : "");
-            setRuntimeString("audio-normalize-downmix", effectivePassthrough ? "no" : "yes");
+            setRuntimeString("audio-exclusive", "no");
+            setRuntimeString("audio-spdif", "");
+            setRuntimeString("audio-normalize-downmix", "yes");
             setRuntimeString("audio-buffer", currentFileForcesTv32LocalProxyPcm ? "1.0" : "0.2");
             setRuntimeString("audio-stream-silence", "no");
             setRuntimeString("audio-fallback-to-null", "no");
             // 保持容器默认音轨，用户手动切换时再改。
             setRuntimeString("alang", "");
         } else {
-            setRuntimeString("audio-channels", "auto");
+            setRuntimeString("audio-channels", "stereo");
             setRuntimeString("ad", "auto");
             setRuntimeString("audio-file-auto", "all");
-            setRuntimeString("audio-exclusive", effectivePassthrough ? "yes" : "no");
-            setRuntimeString("audio-spdif", effectivePassthrough ? spdifCodecs : "");
+            setRuntimeString("audio-exclusive", "no");
+            setRuntimeString("audio-spdif", "");
+            setRuntimeString("audio-normalize-downmix", "yes");
+            setRuntimeString("audio-fallback-to-null", "no");
         }
-        LOG.i("echo-mpv-audio passthrough=" + passthrough
-                + " effectivePassthrough=" + effectivePassthrough
+        LOG.i("echo-mpv-audio passthroughSetting=" + passthrough
+                + " pcm=true"
                 + " fileAllowed=" + currentFileAllowsPassthrough
                 + " volume=100 safePhoneMode=" + java64PhoneAudioSafeMode
                 + " safeTv32Mode=" + tv32AudioSafeMode
                 + " tv32LocalProxyPcm=" + currentFileForcesTv32LocalProxyPcm
-                + " exclusive=" + (effectivePassthrough && !java64PhoneAudioSafeMode)
-                + " spdif=" + (effectivePassthrough ? spdifCodecs : "")
-                + " channels=" + (currentFileForcesTv32LocalProxyPcm ? "stereo" : "auto"));
+                + " exclusive=false"
+                + " spdif="
+                + " channels=stereo");
     }
 
     private static boolean isJava64Phone(@NonNull Context context) {

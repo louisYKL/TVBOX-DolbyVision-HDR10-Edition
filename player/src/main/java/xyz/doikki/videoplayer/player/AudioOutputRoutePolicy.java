@@ -19,4 +19,13 @@ public final class AudioOutputRoutePolicy {
                 || type == AudioDeviceInfo.TYPE_HDMI_EARC
                 || type == AudioDeviceInfo.TYPE_LINE_DIGITAL;
     }
+
+    /**
+     * TV optical output is treated as a PCM endpoint. Do not expose compressed AC3/E-AC3/DTS
+     * bitstreams to the vendor offload route, even when the application passthrough setting is
+     * enabled: that setting only keeps the PCM system route at fixed volume.
+     */
+    public static boolean shouldRequestSystemPcm(boolean compressedAudio) {
+        return compressedAudio;
+    }
 }

@@ -39,8 +39,8 @@ public class NativePlayerOperationPolicyTest {
     }
 
     @Test
-    public void seekCompletionNeverRestartsAnAlreadyPlayingNativePlayer() {
-        assertFalse(NativePlayerOperationPolicy.shouldStartAfterSeekCompletion(true, false));
+    public void seekCompletionRestartsAStoppedNativePlayerEvenWhenLogicallyStarted() {
+        assertTrue(NativePlayerOperationPolicy.shouldStartAfterSeekCompletion(true, false));
         assertFalse(NativePlayerOperationPolicy.shouldStartAfterSeekCompletion(false, true));
         assertTrue(NativePlayerOperationPolicy.shouldStartAfterSeekCompletion(false, false));
     }
