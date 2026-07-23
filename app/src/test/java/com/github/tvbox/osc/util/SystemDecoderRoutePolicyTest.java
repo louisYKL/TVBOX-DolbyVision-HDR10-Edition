@@ -8,23 +8,27 @@ import static org.junit.Assert.assertTrue;
 public class SystemDecoderRoutePolicyTest {
     @Test
     public void ordinaryTvVodForcesSystemHardwareDecoder() {
-        assertTrue(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, false, false));
-        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, true, false));
+        assertTrue(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, false, false, true));
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, true, false, true));
     }
 
     @Test
     public void java64RemainsOnItsOwnRoutePolicy() {
-        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(true, false, false));
-        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(true, true, false));
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(true, false, false, true));
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(true, true, false, true));
     }
 
     @Test
     public void tvDtsAndTrueHdUseHardwareVideoPcmAudioCompatibilityPath() {
-        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, true, false));
-        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, true));
-        assertFalse(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, false));
-        assertFalse(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(true, true, true));
-        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, false, true));
+        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, true, false, false, false, false));
+        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, true, false, false, false));
+        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, false, true, false, false));
+        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, false, false, true, false));
+        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, false, false, false, true));
+        assertFalse(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, false, false, false, false));
+        assertFalse(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(true, true, true, true, true, true));
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, false, true, true));
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, false, false, false));
     }
 
     @Test

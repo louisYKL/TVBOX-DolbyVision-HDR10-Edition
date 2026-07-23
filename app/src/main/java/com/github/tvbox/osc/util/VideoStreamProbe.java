@@ -168,7 +168,7 @@ public final class VideoStreamProbe {
             return cached;
         }
         if (shouldUseTv32LocalProxyMatroskaFastProbe(context, url)) {
-            Result fastPreflight = probeTv32LocalProxyMatroskaPlaybackPreflight(url, headers);
+            Result fastPreflight = probeFastLocalProxyPlaybackPreflight(context, url, headers);
             if (fastPreflight == null) {
                 fastPreflight = Result.unknownContainer("tv32-startup-direct:null", true);
             }
@@ -240,7 +240,7 @@ public final class VideoStreamProbe {
             return null;
         }
         Result byteResult = probeContainerBytes(url, headers, "tv32-preflight-byte",
-                TV32_LOCAL_PROXY_STARTUP_PROBE_BYTES, false, false);
+                TV32_LOCAL_PROXY_STARTUP_PROBE_BYTES, false, true);
         if (byteResult == null || !byteResult.probed) {
             // Native MediaPlayer owns real prebuffering for this route. If the tiny
             // warm-up cannot finish, begin direct playback instead of replacing it with
@@ -249,10 +249,39 @@ public final class VideoStreamProbe {
             return Result.unknownContainer("tv32-startup-direct:" + detail,
                     containsMatroskaMarkerInUrl(url));
         }
-        return copyResult(byteResult,
+        Result preflight = copyResult(byteResult,
                 true,
                 byteResult.isMatroska || containsMatroskaMarkerInUrl(url),
                 "tv32-preflight:" + byteResult.summary);
+        if (hasReliableTv32StartupAudioMetadata(preflight)) {
+            return preflight;
+        }
+
+        Result safeResult = probeTv32LocalProxyMatroskaSafe(context, url, headers);
+        if (safeResult != null && safeResult.probed) {
+            return copyResult(safeResult,
+                    true,
+                    safeResult.isMatroska || containsMatroskaMarkerInUrl(url),
+                    "tv32-preflight-safe:" + safeResult.summary);
+        }
+        return preflight;
+    }
+
+    static boolean hasReliableTv32StartupAudioMetadata(String primaryAudioMime,
+                                                        int audioTrackCount,
+                                                        boolean compressedAudioDetected) {
+        return (primaryAudioMime != null && !primaryAudioMime.trim().isEmpty())
+                || audioTrackCount > 0
+                || compressedAudioDetected;
+    }
+
+    private static boolean hasReliableTv32StartupAudioMetadata(@Nullable Result result) {
+        return result != null
+                && result.probed
+                && hasReliableTv32StartupAudioMetadata(
+                result.primaryAudioMime,
+                result.audioTrackCount,
+                result.hasImmersiveOrCompressedAudio());
     }
 
     @Nullable
@@ -530,25 +559,6 @@ public final class VideoStreamProbe {
                 merged.probed,
                 merged.isMatroska || containsMatroskaMarkerInUrl(url),
                 "tv32-local-proxy-safe:" + merged.summary);
-    }
-
-    @Nullable
-    private static Result probeTv32LocalProxyMatroskaPlaybackPreflight(String url,
-                                                                       Map<String, String> headers) {
-        Result byteResult = probeContainerBytes(url, headers, "tv32-preflight-byte",
-                TV32_LOCAL_PROXY_STARTUP_PROBE_BYTES, false, false);
-        if (byteResult == null || !byteResult.probed) {
-            return byteResult;
-        }
-        Result preflight = copyResult(byteResult,
-                true,
-                byteResult.isMatroska || containsMatroskaMarkerInUrl(url),
-                "tv32-preflight:" + byteResult.summary);
-        if (TextUtils.isEmpty(preflight.primaryAudioMime)
-                && !TextUtils.isEmpty(byteResult.primaryAudioMime)) {
-            return preflight;
-        }
-        return preflight;
     }
 
     @Nullable

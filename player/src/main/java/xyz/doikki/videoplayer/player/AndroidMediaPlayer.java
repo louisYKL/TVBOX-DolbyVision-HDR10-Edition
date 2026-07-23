@@ -1125,6 +1125,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         // temporarily detached the Surface. Publish the real position before gating start so
         // progress persistence never falls back to the pre-seek value.
         mPlayerEventListener.onSeekComplete(completion.completedTarget);
+        if (mAudioDecoderFailureSeen) {
+            failBeforeFirstVideoFrame("audio-decoder-failed-after-seek");
+            return;
+        }
         finishAfterFinalSeek(completion.completedTarget, completion.shouldResume);
     }
 

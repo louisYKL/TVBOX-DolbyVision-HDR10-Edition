@@ -98,7 +98,11 @@ public final class DolbyVisionPlaybackRouter {
         boolean looksLikeDolbyVision = streamDetectedDv;
         boolean requiresCompatPcmAudioDecoder = SystemDecoderRoutePolicy
                 .requiresCompatPcmAudioDecoder(App.isJava64Build(),
-                        streamProbe.hasDtsAudio, streamProbe.hasTrueHdAudio);
+                        streamProbe.hasAc3Audio,
+                        streamProbe.hasEac3Audio,
+                        streamProbe.hasDtsAudio,
+                        streamProbe.hasTrueHdAudio,
+                        streamProbe.hasAtmosLikeAudio);
 
         // TV32 and Hisense keep ordinary VOD on Android MediaPlayer so decoding stays on
         // the vendor hardware path and local proxy prebuffering remains intact. DTS/TrueHD
@@ -107,7 +111,8 @@ public final class DolbyVisionPlaybackRouter {
         if (SystemDecoderRoutePolicy.shouldForceSystemDecoder(
                 App.isJava64Build(),
                 looksLikeDolbyVision,
-                requiresCompatPcmAudioDecoder)) {
+                requiresCompatPcmAudioDecoder,
+                PlayerHelper.isSystemPlayerType(requestedPlayerType))) {
             LOG.i("echo-dolby-route route=tv-system-hardware player=" + PlayerHelper.PLAYER_TYPE_SYSTEM
                     + " probe=" + streamProbe.summary + " url=" + safeSnippet(url));
             return new Decision(false, false, false, false, false, "", streamProbe.hasHdr10
