@@ -31,6 +31,24 @@ final class BufferingProgressPolicy {
                 Math.max(nativeValue, (int) networkPercent)));
     }
 
+    static int resolveRangePrebufferDisplayedPercent(boolean active,
+                                                      long bufferedBytes,
+                                                      long targetBytes,
+                                                      int previousPercent) {
+        if (!active || targetBytes <= 0L) {
+            return 0;
+        }
+        long safeBuffered = Math.max(0L, bufferedBytes);
+        long percent = safeBuffered >= targetBytes
+                ? 99L
+                : (safeBuffered * 100L) / targetBytes;
+        return Math.min(99, Math.max(clampPercent(previousPercent), (int) percent));
+    }
+
+    static boolean isRangePrebufferReady(long bufferedBytes, long targetBytes) {
+        return targetBytes > 0L && Math.max(0L, bufferedBytes) >= targetBytes;
+    }
+
     static boolean shouldHoldBufferingEnd(boolean nativeBuffering) {
         return nativeBuffering;
     }

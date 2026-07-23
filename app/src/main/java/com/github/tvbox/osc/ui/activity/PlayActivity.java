@@ -2131,24 +2131,13 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean isAudioPassthroughAllowed(VideoStreamProbe.Result probe) {
-        if (probe == null) {
-            return false;
-        }
-        if (!Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false)) {
-            return false;
-        }
-        if (!hasPassthroughAudio(probe)) {
-            return false;
-        }
-        boolean supported = PlayerCapability.supportsAudioPassthrough(probe);
-        if (!supported) {
-            LOG.i("echo-audio-passthrough blocked unsupported-output audioMime=" + probe.primaryAudioMime
-                    + " ac3=" + probe.hasAc3Audio
-                    + " eac3=" + probe.hasEac3Audio
-                    + " dts=" + probe.hasDtsAudio
-                    + " capability=" + PlayerCapability.describeAudioPassthrough(probe));
-        }
-        return supported;
+        // 0.2.4 product decision: never bitstream encoded audio (AC-3/E-AC-3/DTS/TrueHD/Atmos)
+        // to the external device. Most speakers/soundbars only accept PCM, so encoded passthrough
+        // left many setups silent or with audio-only. The system player must always decode audio
+        // to PCM and output PCM. Encoded passthrough is therefore disabled unconditionally; the
+        // "音频直通" setting only affects whether the (already decoded) PCM is routed out, not
+        // whether a compressed bitstream is sent.
+        return false;
     }
 
     private boolean hasPassthroughAudio(VideoStreamProbe.Result probe) {
@@ -2223,6 +2212,11 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean shouldUseCompatFallbackForCurrentPlayback() {
+        AbstractPlayer player = mVideoView == null ? null : mVideoView.getMediaPlayer();
+        if (player instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) player).hasAudioDecoderFailure()) {
+            return true;
+        }
         if (!isTvDevice()) {
             return false;
         }
