@@ -8,13 +8,39 @@ import static org.junit.Assert.assertTrue;
 public class SystemDecoderRoutePolicyTest {
     @Test
     public void ordinaryTvVodForcesSystemHardwareDecoder() {
-        assertTrue(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, false));
+        assertTrue(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, false, false));
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, true, false));
     }
 
     @Test
-    public void java64AndDolbyVisionRemainOnTheirOwnRoutePolicies() {
-        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(true, false));
-        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, true));
+    public void java64RemainsOnItsOwnRoutePolicy() {
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(true, false, false));
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(true, true, false));
+    }
+
+    @Test
+    public void tvDtsAndTrueHdUseHardwareVideoPcmAudioCompatibilityPath() {
+        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, true, false));
+        assertTrue(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, true));
+        assertFalse(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(false, false, false));
+        assertFalse(SystemDecoderRoutePolicy.requiresCompatPcmAudioDecoder(true, true, true));
+        assertFalse(SystemDecoderRoutePolicy.shouldForceSystemDecoder(false, false, true));
+    }
+
+    @Test
+    public void unsupportedAudioRetriesOnceOnlyAfterSystemFailure() {
+        assertTrue(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                false, true, true, false, false, false));
+        assertTrue(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                false, true, false, true, false, false));
+        assertTrue(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                false, true, false, false, true, false));
+        assertFalse(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                false, true, false, false, false, false));
+        assertFalse(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                false, true, true, false, true, true));
+        assertTrue(SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
+                true, true, false, false, true, false));
     }
 
     @Test

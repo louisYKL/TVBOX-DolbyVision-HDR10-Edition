@@ -109,6 +109,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private ProxyFdHttpDataSource mCurrentProxyFdDataSource;
     private ParcelFileDescriptor mCurrentProxyFileDescriptor;
     private boolean mForceSafePcmAudio;
+    private boolean mAudioPassthroughVolumeLocked;
+    private boolean mStartupPrebufferStartPending;
+    private int mStartupPrebufferProgressPercent;
     private String mLastDispatchedSubtitleText;
     private int mSubtitleDispatchGeneration;
     private Object mSubtitleDataListenerProxy;
@@ -142,6 +145,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private static final int NETWORK_SOURCE_MODE_AUTO = 0;
     private static final int NETWORK_SOURCE_MODE_FORCE_URI = 1;
     private static final int NETWORK_SOURCE_MODE_FORCE_PROXY = 2;
+    private static final int MEDIA_INFO_AUDIO_NOT_PLAYING = 804;
     private static final int MEDIA_INFO_VIDEO_NOT_PLAYING = 805;
     private static final long VIDEO_RENDER_START_TIMEOUT_MS = 5500L;
     private static final long TV32_DIRECT_HDR_MATROSKA_RENDER_START_TIMEOUT_MS = 30_000L;
@@ -159,7 +163,14 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private static final String HEADER_PROBE_JAVA64_LOCAL_PROXY_FAST = "X-TVBox-Probe-Java64LocalProxyFast";
     private int mNetworkSourceMode = NETWORK_SOURCE_MODE_AUTO;
     private boolean mJava64MissingAudioRecoveryAttempted;
+    private boolean mAudioDecoderFailureSeen;
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mStartupPrebufferRunnable = new Runnable() {
+        @Override
+        public void run() {
+            pollStartupPrebuffer();
+        }
+    };
 
     public AndroidMediaPlayer(Context context) {
         mAppContext = context.getApplicationContext();
@@ -167,6 +178,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
 
     @Override
     public void initPlayer() {
+        clearStartupPrebufferStartPending();
+        mStartupPrebufferProgressPercent = 0;
+        mAudioDecoderFailureSeen = false;
         resetPostSeekCompletionGuardState();
         mMediaPlayer = new MediaPlayer();
         mState = STATE_IDLE;
@@ -205,6 +219,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     @Override
     public void setDataSource(String path, Map<String, String> headers) {
         try {
+            clearStartupPrebufferStartPending();
+            mStartupPrebufferProgressPercent = 0;
+            mAudioDecoderFailureSeen = false;
             PlaybackUrlNormalizer.UrlWithHeaders parsed = PlaybackUrlNormalizer.splitUrlAndHeaders(path, headers);
             String resolvedUrl = parsed.url;
             String playbackUrl = resolvedUrl;
@@ -246,6 +263,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
             resetPostSeekCompletionGuardState();
             clearSeekState();
+            mAudioPassthroughVolumeLocked = hasInternalHeaderValue(parsed.headers,
+                    HEADER_PROBE_AUDIO_PASSTHROUGH, "1");
             setDataSourceInternal(playbackUrl, parsed.headers);
             mState = STATE_INITIALIZED;
             mLastDataSourceSucceeded = true;
@@ -294,6 +313,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     public void setDataSource(AssetFileDescriptor fd) {
         try {
             closeCustomDataSourceQuietly();
+            clearStartupPrebufferStartPending();
+            mStartupPrebufferProgressPercent = 0;
+            mAudioDecoderFailureSeen = false;
+            mAudioPassthroughVolumeLocked = false;
             mPlaybackHasStarted = false;
             resetDirectUriProgress();
             mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
@@ -320,6 +343,12 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return;
         }
         mSeekCoordinator.requestResume();
+        if (!mPlaybackHasStarted
+                && !isNativeSeekTransitionActive()
+                && beginStartupPrebuffer()) {
+            scheduleStartupPrebufferStart();
+            return;
+        }
         if (!mPlaybackHasStarted || isNativeSeekTransitionActive()) {
             requestPlaybackPrebuffer();
         }
@@ -327,6 +356,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private void startNow() {
+        clearStartupPrebufferStartPending();
         if (mMediaPlayer == null) {
             return;
         }
@@ -352,6 +382,14 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     @Override
     public void pause() {
         if (mMediaPlayer == null) {
+            return;
+        }
+        if (mStartupPrebufferStartPending) {
+            mSeekCoordinator.cancelResume();
+            finishPlaybackPrebuffer();
+            mNativeBuffering = false;
+            dispatchBufferingEndIfIdle(0, "startup-prebuffer-paused");
+            mState = STATE_PAUSED;
             return;
         }
         if (!NativePlayerOperationPolicy.canPause(isNativeSeekTransitionActive())) {
@@ -465,6 +503,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mForceSafePcmAudio = false;
             mNetworkSourceMode = NETWORK_SOURCE_MODE_AUTO;
             mJava64MissingAudioRecoveryAttempted = false;
+            mAudioDecoderFailureSeen = false;
             mPendingStartAfterDisplayReady = false;
             mIsBuffering = false;
             mNativeBuffering = false;
@@ -554,6 +593,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         finishPlaybackPrebuffer();
         resetPostSeekCompletionGuardState();
         mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
+        mAudioDecoderFailureSeen = false;
         clearSeekState();
         // MediaPlayer is looper-affine on several TV firmwares. Detach callbacks on the
         // owning thread before clearing the field so the old instance cannot retain the
@@ -638,6 +678,15 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
 
     @Override
     public int getBufferedPercentage() {
+        if (mStartupPrebufferStartPending) {
+            mStartupPrebufferProgressPercent = BufferingProgressPolicy
+                    .resolveRangePrebufferDisplayedPercent(
+                            true,
+                            getStartupPrebufferedBytes(),
+                            getStartupPrebufferTargetBytes(),
+                            mStartupPrebufferProgressPercent);
+            return mStartupPrebufferProgressPercent;
+        }
         mDirectUriProgressPercent = BufferingProgressPolicy.resolveDirectUriDisplayedPercent(
                 mDirectUriProgressActive,
                 mDirectUriProgressStartRxBytes,
@@ -811,13 +860,21 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         Log.e(TAG, "onError what=" + what + " extra=" + extra);
         finishPlaybackPrebuffer();
+        // A terminal native-player failure must not leave the direct-URI progress estimator
+        // active. Otherwise a final native 99% is displayed as an endless buffering state.
+        finishDirectUriProgress();
         clearSeekState();
         mIsBuffering = false;
         mNativeBuffering = false;
+        boolean notifyBufferingEnd = mBufferingInfoVisible;
         mBufferingInfoVisible = false;
+        mBufferedPercent = 0;
         mAvoidPositionQueryUntilMs = 0L;
         mState = STATE_ERROR;
         mIsPreparing = false;
+        if (notifyBufferingEnd) {
+            mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_BUFFERING_END, 0);
+        }
         mPlayerEventListener.onError();
         return true;
     }
@@ -942,6 +999,15 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mAvoidPositionQueryUntilMs = 0L;
             restartVideoRenderWatchdogAfterBuffering("native-buffering-end");
             dispatchBufferingEndIfIdle(extra, "native");
+            return true;
+        }
+        if (what == MEDIA_INFO_AUDIO_NOT_PLAYING) {
+            // TV32 reports an unavailable codec as info 804 rather than onError. Mark it
+            // terminal so the activity can release this system player and retry once on
+            // the PCM compatibility route instead of waiting for a fake buffering timeout.
+            mAudioDecoderFailureSeen = true;
+            logInfo("echo-system-audio decoder-failed info=804 extra=" + extra);
+            failBeforeFirstVideoFrame("media-info-804:" + extra);
             return true;
         }
         //解决MEDIA_INFO_VIDEO_RENDERING_START多次回调问题
@@ -1369,7 +1435,105 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
     }
 
+    private boolean beginStartupPrebuffer() {
+        if (mCurrentProxyFdDataSource != null) {
+            return mCurrentProxyFdDataSource.beginStartupPrebuffer();
+        }
+        if (mCurrentMediaDataSource instanceof HttpRangeMediaDataSource) {
+            return ((HttpRangeMediaDataSource) mCurrentMediaDataSource).beginStartupPrebuffer();
+        }
+        return false;
+    }
+
+    private boolean isStartupPrebufferReady() {
+        if (mCurrentProxyFdDataSource != null) {
+            return mCurrentProxyFdDataSource.isStartupPrebufferReady();
+        }
+        return mCurrentMediaDataSource instanceof HttpRangeMediaDataSource
+                && ((HttpRangeMediaDataSource) mCurrentMediaDataSource).isStartupPrebufferReady();
+    }
+
+    private boolean hasStartupPrebufferFailed() {
+        if (mCurrentProxyFdDataSource != null) {
+            return mCurrentProxyFdDataSource.hasStartupPrebufferFailed();
+        }
+        return mCurrentMediaDataSource instanceof HttpRangeMediaDataSource
+                && ((HttpRangeMediaDataSource) mCurrentMediaDataSource).hasStartupPrebufferFailed();
+    }
+
+    private long getStartupPrebufferedBytes() {
+        if (mCurrentProxyFdDataSource != null) {
+            return mCurrentProxyFdDataSource.getBufferedAheadBytes();
+        }
+        return mCurrentMediaDataSource instanceof HttpRangeMediaDataSource
+                ? ((HttpRangeMediaDataSource) mCurrentMediaDataSource).getBufferedAheadBytes() : 0L;
+    }
+
+    private long getStartupPrebufferTargetBytes() {
+        if (mCurrentProxyFdDataSource != null) {
+            return mCurrentProxyFdDataSource.getPlaybackStartBufferTargetBytes();
+        }
+        return mCurrentMediaDataSource instanceof HttpRangeMediaDataSource
+                ? ((HttpRangeMediaDataSource) mCurrentMediaDataSource).getPlaybackStartBufferTargetBytes() : 0L;
+    }
+
+    private void scheduleStartupPrebufferStart() {
+        if (mStartupPrebufferStartPending) {
+            return;
+        }
+        mStartupPrebufferStartPending = true;
+        mStartupPrebufferProgressPercent = 0;
+        dispatchBufferingStart(0, "startup-prebuffer");
+        mMainHandler.post(mStartupPrebufferRunnable);
+    }
+
+    private void pollStartupPrebuffer() {
+        if (!mStartupPrebufferStartPending) {
+            return;
+        }
+        if (mMediaPlayer == null || mState == STATE_ERROR || mState == STATE_RELEASED) {
+            clearStartupPrebufferStartPending();
+            return;
+        }
+        if (hasStartupPrebufferFailed()) {
+            failStartupPrebuffer();
+            return;
+        }
+        if (isStartupPrebufferReady()) {
+            clearStartupPrebufferStartPending();
+            mStartupPrebufferProgressPercent = 99;
+            dispatchBufferingEndIfIdle(0, "startup-prebuffer-ready");
+            startNow();
+            return;
+        }
+        mMainHandler.postDelayed(mStartupPrebufferRunnable, 100L);
+    }
+
+    private void failStartupPrebuffer() {
+        clearStartupPrebufferStartPending();
+        finishPlaybackPrebuffer();
+        mIsBuffering = false;
+        mNativeBuffering = false;
+        boolean notifyBufferingEnd = mBufferingInfoVisible;
+        mBufferingInfoVisible = false;
+        mAvoidPositionQueryUntilMs = 0L;
+        mState = STATE_ERROR;
+        mIsPreparing = false;
+        if (notifyBufferingEnd && mPlayerEventListener != null) {
+            mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_BUFFERING_END, 0);
+        }
+        if (mPlayerEventListener != null) {
+            mPlayerEventListener.onError();
+        }
+    }
+
+    private void clearStartupPrebufferStartPending() {
+        mStartupPrebufferStartPending = false;
+        mMainHandler.removeCallbacks(mStartupPrebufferRunnable);
+    }
+
     private void finishPlaybackPrebuffer() {
+        clearStartupPrebufferStartPending();
         if (mCurrentProxyFdDataSource != null) {
             mCurrentProxyFdDataSource.finishPlaybackPrebuffer();
         } else if (mCurrentMediaDataSource instanceof HttpRangeMediaDataSource) {
@@ -1408,7 +1572,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         if (isAudioOnlyTrackList()) {
             clearVideoRenderGate("audio-only");
-            start();
+            requestPlaybackPrebuffer();
+            startNow();
             finishPlaybackPrebuffer();
             mPlayerEventListener.onInfo(AbstractPlayer.MEDIA_INFO_RENDERING_START, 0);
             return;
@@ -1532,6 +1697,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             try {
                 AudioManager audioManager = (AudioManager) mAppContext.getSystemService(Context.AUDIO_SERVICE);
                 if (audioManager != null) {
+                    enforcePassthroughMediaStreamVolume(audioManager);
                     logCurrentStreamState(audioManager, "config");
                 }
             } catch (Throwable volumeError) {
@@ -1549,11 +1715,12 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         try {
             applyRequestedVolume();
+            AudioManager audioManager = (AudioManager) mAppContext.getSystemService(Context.AUDIO_SERVICE);
+            enforcePassthroughMediaStreamVolume(audioManager);
             long now = System.currentTimeMillis();
             if (now - mLastVolumeStateLogAtMs >= 5000L) {
                 mLastVolumeStateLogAtMs = now;
                 logInfo("echo-system-audio volume=100");
-                AudioManager audioManager = (AudioManager) mAppContext.getSystemService(Context.AUDIO_SERVICE);
                 if (audioManager != null) {
                     logCurrentStreamState(audioManager, "restore");
                 }
@@ -2032,6 +2199,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         return shouldAvoidBlockingPositionQuery();
     }
 
+    public boolean hasAudioDecoderFailure() {
+        return mAudioDecoderFailureSeen;
+    }
+
     public boolean isStartPending() {
         if (mMediaPlayer == null || mState == STATE_ERROR || mState == STATE_RELEASED) {
             return false;
@@ -2345,17 +2516,12 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         String effectiveUrl = resolveEffectiveSystemDataSourceUrl(normalizedUrl, headers);
         boolean probedMatroska = hasInternalHeaderValue(headers, HEADER_PROBE_CONTAINER, "matroska");
         boolean probedDolbyVision = hasInternalHeaderValue(headers, HEADER_PROBE_DOLBY_VISION, "1");
+        boolean audioPassthrough = hasInternalHeaderValue(headers, HEADER_PROBE_AUDIO_PASSTHROUGH, "1");
         boolean tvSafeRemoteNetworkPath = shouldForceTvSafeRemoteNetworkPath(effectiveUrl, headers);
         mForceSafePcmAudio = shouldForceSafePcmAudio(headers) || tvSafeRemoteNetworkPath;
         applyAudioOutputConfiguration();
-        boolean audioPassthrough = hasInternalHeaderValue(headers, HEADER_PROBE_AUDIO_PASSTHROUGH, "1");
-        boolean audioPassthroughAllowed = hasInternalHeaderValue(headers, HEADER_PROBE_AUDIO_PASSTHROUGH_ALLOWED, "1");
-        boolean audioPassthroughEnabled = audioPassthrough && audioPassthroughAllowed;
         logInfo("echo-system-audio route safePcm=" + mForceSafePcmAudio
-                + " passthroughRequested=" + audioPassthrough
-                + " passthroughAllowed=" + audioPassthroughAllowed
-                + " passthroughEffective=" + audioPassthroughEnabled
-                + " decodeRequired=" + !audioPassthroughEnabled
+                + " passthroughSetting=" + audioPassthrough
                 + " tv32=" + isLikely32BitTvDevice()
                 + " tvLike=" + isLikelyTvOffloadRiskDevice()
                 + " tvSafe=" + tvSafeRemoteNetworkPath
@@ -2455,12 +2621,12 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private boolean shouldBypassProxyBackedSourceForTv32LocalProxyVod(String normalizedUrl) {
-        // 32-bit TV local /proxy/play VOD used to be forced onto a direct URI path,
-        // but that bypassed the larger proxy-backed buffering window and caused
-        // repeated mid-playback BUFFERING_START/END stalls on MP4 VOD.
-        // Keep non-HLS local proxy VOD on proxy-fd / MediaDataSource unless one of
-        // the narrower HDR/DV-specific bypass rules below explicitly applies.
-        return false;
+        // Preserve the established proxy-backed VOD prebuffer. HDR/DV-specific direct URI
+        // decisions are evaluated separately below and remain deliberately narrow.
+        return Tv32LocalProxyRoutePolicy.shouldUseDirectSystemUri(
+                isLikely32BitTvDevice(),
+                isLocalProxyPlayUrl(normalizedUrl),
+                isHlsLike(normalizedUrl));
     }
 
     private boolean isTv32WrappedLocalProxyVodUrl(String normalizedUrl) {
@@ -2587,6 +2753,9 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 ProxyFdHttpDataSource proxyFdDataSource = new ProxyFdHttpDataSource(normalizedUrl, headers);
                 ParcelFileDescriptor proxyFd = null;
                 try {
+                    // Start the fixed byte-zero warm-up before native preparation can issue
+                    // container/tail reads that would otherwise move the buffer anchor.
+                    proxyFdDataSource.beginStartupPrebuffer();
                     proxyFd = storageManager.openProxyFileDescriptor(
                             ParcelFileDescriptor.MODE_READ_ONLY,
                             proxyFdDataSource,
@@ -2615,6 +2784,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             HttpRangeMediaDataSource mediaDataSource = HttpRangeMediaDataSource.createForStreamingPlayback(normalizedUrl, headers);
             try {
+                // The asynchronous warm-up owns no UI lock and becomes the first-start gate.
+                mediaDataSource.beginStartupPrebuffer();
                 mMediaPlayer.setDataSource(mediaDataSource);
                 mCurrentMediaDataSource = mediaDataSource;
                 mResolvedDataSourceMode = DATA_SOURCE_MEDIA_DATA_SOURCE;
@@ -3094,6 +3265,21 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private static void writeRuntimeLog(String message) {
+    }
+
+    private void enforcePassthroughMediaStreamVolume(AudioManager audioManager) {
+        if (!mAudioPassthroughVolumeLocked || audioManager == null) {
+            return;
+        }
+        try {
+            int maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            if (maxVolume > 0 && audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != maxVolume) {
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0);
+            }
+        } catch (Throwable volumeError) {
+            writeRuntimeLog("echo-system-audio passthrough-volume-failed err="
+                    + volumeError.getClass().getSimpleName());
+        }
     }
 
 }

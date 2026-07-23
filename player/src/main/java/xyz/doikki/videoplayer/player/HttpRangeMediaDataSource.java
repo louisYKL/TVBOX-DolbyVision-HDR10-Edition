@@ -71,6 +71,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private volatile boolean playbackPrebufferRequested;
     private volatile boolean playbackPrebufferActive;
     private volatile long playbackPrebufferAnchorPosition = -1L;
+    private volatile boolean startupPrebufferRequested;
+    private volatile boolean startupPrebufferFailed;
+    private volatile Future<?> startupPrebufferFuture;
     private volatile long bufferedAheadBytesSnapshot;
     private volatile long playbackStartBufferTargetSnapshot;
     private volatile long cachedBytesSnapshot;
@@ -241,6 +244,11 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         closed = true;
         cancelActivePlaybackCall();
         cancelAllPrefetchCalls();
+        Future<?> startupTask = startupPrebufferFuture;
+        startupPrebufferFuture = null;
+        if (startupTask != null) {
+            startupTask.cancel(true);
+        }
         // Never wait for an in-flight network read on the activity thread during release.
         // The read observes closed after its request and the object can then be collected.
         if (!blockingReadLock.tryLock()) {
@@ -261,6 +269,8 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 playbackPrebufferRequested = false;
                 playbackPrebufferActive = false;
                 playbackPrebufferAnchorPosition = -1L;
+                startupPrebufferRequested = false;
+                startupPrebufferFailed = false;
                 cancelActivePrefetchLocked();
             }
         } finally {
@@ -401,8 +411,76 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         }
     }
 
+    /**
+     * Pins initial playback to byte zero and fills it off the caller thread. A native
+     * decoder must wait for the resulting volatile snapshot before its first start.
+     */
+    public boolean beginStartupPrebuffer() {
+        if (!prefetchEnabled || closed) {
+            return false;
+        }
+        if (startupPrebufferRequested) {
+            return true;
+        }
+        startupPrebufferRequested = true;
+        startupPrebufferFailed = false;
+        playbackPrebufferRequested = true;
+        playbackPrebufferActive = true;
+        playbackPrebufferAnchorPosition = 0L;
+        // Unknown content length is deliberately not ready. A stale probe snapshot must
+        // not allow the decoder to start before the worker establishes the real target.
+        playbackStartBufferTargetSnapshot = -1L;
+        startupPrebufferFuture = PREFETCH_EXECUTOR.submit(this::activateStartupPrebuffer);
+        return true;
+    }
+
+    private void activateStartupPrebuffer() {
+        blockingReadLock.lock();
+        try {
+            synchronized (this) {
+                if (closed || !startupPrebufferRequested) {
+                    return;
+                }
+                try {
+                    // Discard a probe/tail lane before filling the actual first-play range.
+                    cancelActivePrefetchLocked();
+                    ensureSizeKnown();
+                    if (totalSize <= 0L) {
+                        throw new IOException("Unable to initialize startup prebuffer size");
+                    }
+                    refreshBufferSnapshotsLocked();
+                    scheduleFillAheadLocked(0L);
+                } catch (Throwable failure) {
+                    startupPrebufferFailed = true;
+                    logInfo("echo-range-source startup-prebuffer-failed err="
+                            + failure.getClass().getSimpleName() + ":" + failure.getMessage());
+                }
+            }
+        } finally {
+            blockingReadLock.unlock();
+        }
+    }
+
+    public boolean isStartupPrebufferReady() {
+        return startupPrebufferRequested
+                && !startupPrebufferFailed
+                && BufferingProgressPolicy.isRangePrebufferReady(
+                bufferedAheadBytesSnapshot, playbackStartBufferTargetSnapshot);
+    }
+
+    public boolean hasStartupPrebufferFailed() {
+        return startupPrebufferRequested && startupPrebufferFailed;
+    }
+
     public void finishPlaybackPrebuffer() {
         playbackPrebufferRequested = false;
+        startupPrebufferRequested = false;
+        startupPrebufferFailed = false;
+        Future<?> startupTask = startupPrebufferFuture;
+        startupPrebufferFuture = null;
+        if (startupTask != null) {
+            startupTask.cancel(true);
+        }
         if (!blockingReadLock.tryLock()) {
             return;
         }
@@ -427,6 +505,13 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         playbackPrebufferRequested = false;
         playbackPrebufferActive = false;
         playbackPrebufferAnchorPosition = -1L;
+        startupPrebufferRequested = false;
+        startupPrebufferFailed = false;
+        Future<?> startupTask = startupPrebufferFuture;
+        startupPrebufferFuture = null;
+        if (startupTask != null) {
+            startupTask.cancel(true);
+        }
         bufferedAheadBytesSnapshot = 0L;
         if (interruptForegroundReadOnSeek) {
             playbackSeekGeneration.incrementAndGet();
@@ -724,6 +809,10 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                     logInfo("echo-range-source prefetch-failed start=" + nextStart
                             + " err=" + failure.getClass().getSimpleName()
                             + ":" + failure.getMessage());
+                }
+                if (failure != null && prefetchId == activePrefetchId
+                        && startupPrebufferRequested) {
+                    startupPrebufferFailed = true;
                 }
                 if (prefetchId == activePrefetchId) {
                     scheduledPrefetchStart = -1L;

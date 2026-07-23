@@ -2386,7 +2386,9 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private boolean shouldUseCompatFallbackForCurrentPlayback() {
-        return false;
+        AbstractPlayer player = mVideoView == null ? null : mVideoView.getMediaPlayer();
+        return player instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) player).hasAudioDecoderFailure();
     }
 
     private boolean isTv32LocalProxySdrVod(String playbackUrl, VideoStreamProbe.Result probe) {

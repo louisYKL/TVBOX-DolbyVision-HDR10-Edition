@@ -27,6 +27,18 @@ final class ProxyFdHttpDataSource extends ProxyFileDescriptorCallback {
         }
     }
 
+    boolean beginStartupPrebuffer() {
+        return !released && delegate.beginStartupPrebuffer();
+    }
+
+    boolean isStartupPrebufferReady() {
+        return !released && delegate.isStartupPrebufferReady();
+    }
+
+    boolean hasStartupPrebufferFailed() {
+        return !released && delegate.hasStartupPrebufferFailed();
+    }
+
     void finishPlaybackPrebuffer() {
         if (!released) {
             delegate.finishPlaybackPrebuffer();
