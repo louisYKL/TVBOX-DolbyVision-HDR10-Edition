@@ -1125,6 +1125,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         // temporarily detached the Surface. Publish the real position before gating start so
         // progress persistence never falls back to the pre-seek value.
         mPlayerEventListener.onSeekComplete(completion.completedTarget);
+        if (mAudioDecoderFailureSeen) {
+            failBeforeFirstVideoFrame("audio-decoder-failed-after-seek");
+            return;
+        }
         finishAfterFinalSeek(completion.completedTarget, completion.shouldResume);
     }
 
@@ -2580,17 +2584,44 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     }
 
     private boolean shouldUseProxyBackedDataSource(String normalizedUrl, Map<String, String> headers) {
-        // 0.2.4 product decision: never feed the system player through the app-side proxy-fd /
-        // HttpRangeMediaDataSource bridge. That bridge shared a lock between the foreground read and
-        // the background prefetch threads, so a slow foreground range fetch starved prefetch and the
-        // app-side buffer monitor mistook it for a stall — the "缓存与播放打架→无限加载/卡死" failure.
-        //
-        // All playback now uses a direct URI. The system player owns its own native buffering, and
-        // the local proxy layer (ReconnectingRangeInputStream in Proxy.java) independently large-block
-        // prefetches from the origin. The two caches never share a lock, so they cannot deadlock or
-        // livelock each other: buffer-before-play, keep-buffering-while-playing, big cache, no fight.
-        logInfo("echo-system-data-source direct-uri-only url=" + normalizedUrl);
-        return false;
+        if (TextUtils.isEmpty(normalizedUrl) || isHlsLike(normalizedUrl)) {
+            return false;
+        }
+        boolean localProxyPlay = isLocalProxyPlayUrl(normalizedUrl);
+        boolean tv32WrappedLocalProxyVod = isTv32WrappedLocalProxyVodUrl(normalizedUrl);
+        if (shouldBypassProxyBackedSourceForTv32LocalProxyVod(normalizedUrl)) {
+            logInfo("echo-system-data-source tv32-localplay-direct-uri url=" + normalizedUrl);
+            return false;
+        }
+        if (mNetworkSourceMode == NETWORK_SOURCE_MODE_FORCE_URI) {
+            return false;
+        }
+        if (mNetworkSourceMode == NETWORK_SOURCE_MODE_FORCE_PROXY) {
+            if (tv32WrappedLocalProxyVod) {
+                logInfo("echo-system-data-source tv32-app-stream-force-proxy url=" + normalizedUrl);
+            }
+            return localProxyPlay || tv32WrappedLocalProxyVod;
+        }
+        if (shouldBypassProxyBackedSourceForJava64HdrMatroska(headers, normalizedUrl)) {
+            logInfo("echo-system-data-source java64-hdr-direct-localplay url=" + normalizedUrl);
+            return false;
+        }
+        if (shouldBypassProxyBackedSourceForNativeDv(headers, normalizedUrl)) {
+            logInfo("echo-system-data-source native-dv-direct-localplay url=" + normalizedUrl);
+            return false;
+        }
+        if (shouldBypassProxyBackedSourceForTv32Hdr(headers, normalizedUrl)) {
+            logInfo("echo-system-data-source tv32-matroska-direct-localplay url=" + normalizedUrl);
+            return false;
+        }
+        if (shouldForceTvSafeRemoteNetworkPath(normalizedUrl, headers)) {
+            logInfo("echo-system-data-source tv-safe-remote-network proxy-backed url=" + normalizedUrl);
+            return true;
+        }
+        if (tv32WrappedLocalProxyVod) {
+            logInfo("echo-system-data-source tv32-app-stream-proxy-backed url=" + normalizedUrl);
+        }
+        return localProxyPlay || tv32WrappedLocalProxyVod;
     }
 
     private boolean shouldBypassProxyBackedSourceForTv32LocalProxyVod(String normalizedUrl) {

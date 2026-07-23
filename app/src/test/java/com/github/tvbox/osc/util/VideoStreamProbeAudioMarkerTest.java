@@ -26,4 +26,13 @@ public class VideoStreamProbeAudioMarkerTest {
         assertTrue(VideoStreamProbe.containsAtmosAudioMarker("E-AC-3 JOC"));
         assertFalse(VideoStreamProbe.containsAtmosAudioMarker("A_EAC3"));
     }
+
+    @Test
+    public void tv32StartupProbeRequiresUsableAudioRouteMetadata() {
+        assertFalse(VideoStreamProbe.hasReliableTv32StartupAudioMetadata(null, 0, false));
+        assertFalse(VideoStreamProbe.hasReliableTv32StartupAudioMetadata("", 0, false));
+        assertTrue(VideoStreamProbe.hasReliableTv32StartupAudioMetadata("audio/mp4a-latm", 0, false));
+        assertTrue(VideoStreamProbe.hasReliableTv32StartupAudioMetadata(null, 1, false));
+        assertTrue(VideoStreamProbe.hasReliableTv32StartupAudioMetadata(null, 0, true));
+    }
 }
