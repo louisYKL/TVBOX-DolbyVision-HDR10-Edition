@@ -130,9 +130,11 @@ public class ModelSettingFragment extends BaseLazyFragment {
         tvRender.setText(PlayerHelper.getRenderName(1));
         tvAudioPassthrough.setText(Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false) ? "开启" : "关闭");
         HdrDeviceSupport.Capabilities hdrCapabilities = HdrDeviceSupport.query(mContext);
-        String hdrRouteSummary = hdrCapabilities.supportsHdrButNotDolbyVision()
-                ? hdrCapabilities.summary + " | 杜比视界: 自动回退HDR兼容播放器"
-                : hdrCapabilities.summary + " | 杜比视界: 原生/SDR自动回退";
+        String hdrRouteSummary = hdrCapabilities.supportsNativeDolbyVision()
+                ? hdrCapabilities.summary + " | 杜比视界: 原生硬解"
+                : hdrCapabilities.supportsHdrButNotDolbyVision()
+                ? hdrCapabilities.summary + " | 杜比视界: HDR基础层硬解"
+                : hdrCapabilities.summary + " | 杜比视界: 设备能力路由";
         tvHdrSupport.setText(hdrRouteSummary);
         tvHomeDefaultShow = findViewById(R.id.tvHomeText);
         tvHomeDefaultShow.setText(Hawk.get(HawkConfig.DEFAULT_LOAD_LIVE, false) ? "直播" : "点播");

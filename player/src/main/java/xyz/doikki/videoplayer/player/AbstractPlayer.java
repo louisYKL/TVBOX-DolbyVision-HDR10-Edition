@@ -91,6 +91,15 @@ public abstract class AbstractPlayer {
     public abstract void seekTo(long time);
 
     /**
+     * Supplies a resume position before the first prepare. Players that can pass the position to
+     * their media source should return {@code true}; the generic implementation keeps the legacy
+     * prepare-then-seek flow used by older player implementations.
+     */
+    public boolean setInitialPosition(long time) {
+        return false;
+    }
+
+    /**
      * 释放播放器
      */
     public abstract void release();

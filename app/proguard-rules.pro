@@ -211,19 +211,6 @@
 # Nano
 -keep class fi.iki.elonen.** { *; }
 
-# MPV/libplayer JNI bridge. libplayer.so looks up these exact callback names
-# with GetStaticMethodID during create(); stripping them aborts ART on Android TV.
--keep class is.xyz.mpv.MPVLib { *; }
--keep class is.xyz.mpv.MPVLib$* { *; }
--keepclassmembers class is.xyz.mpv.MPVLib {
-    public static void event*(...);
-    public static void log*(...);
-    public static void *Property*(...);
-    public static native <methods>;
-}
--keepclassmembers interface is.xyz.mpv.MPVLib$EventObserver { *; }
--keepclassmembers interface is.xyz.mpv.MPVLib$LogObserver { *; }
-
 # Python支持
 #-keep public class com.undcover.freedom.pyramid.** { *; }
 #-dontwarn com.undcover.freedom.pyramid.**

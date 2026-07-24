@@ -101,7 +101,7 @@ public final class HdrDeviceSupport {
             this.summary = summary;
             this.hdr10 = displayHdr10;
             this.hdr10Plus = displayHdr10Plus;
-            this.dolbyVision = dolbyVisionDecoder && displayDolbyVision;
+            this.dolbyVision = codecListDolbyVisionDecoder && displayDolbyVision;
         }
 
         /** 显示端能进 HDR（HDR10/HDR10+/HLG 任一），是“能否激发电视 HDR 模式”的依据。 */
@@ -116,16 +116,13 @@ public final class HdrDeviceSupport {
 
         /** 端到端原生杜比视界：既能解 DV 又能显示 DV。 */
         public boolean supportsNativeDolbyVision() {
-            return codecListDolbyVisionDecoder && displayDolbyVision;
+            return SystemDecoderRoutePolicy.supportsNativeDolbyVision(
+                    codecListDolbyVisionDecoder, displayDolbyVision);
         }
 
-        /**
-         * 和播放路由保持一致的“原生 DV 系统播放”判定。
-         * java64 手机/平板优先信任真实解码器能力，避免因为 display 能力上报不完整，
-         * 前面被路由到原生 DV，后面又因为 header 判定不一致退回坏链路。
-         */
+        /** 和播放路由保持一致：所有端都必须同时具备真实硬解码器和 DV 输出能力。 */
         public boolean supportsNativeDolbyVisionRoute(boolean java64TouchPhone) {
-            return java64TouchPhone ? dolbyVisionDecoder : supportsNativeDolbyVision();
+            return supportsNativeDolbyVision();
         }
 
         /** 仅表示系统声明/配置里存在杜比能力，不足以作为原生 DV 路由依据。 */
@@ -133,10 +130,7 @@ public final class HdrDeviceSupport {
             return declaredDolbyVisionDecoder;
         }
 
-        /**
-         * MPV/libplacebo 的 HDR 目标峰值亮度。优先使用系统公开的显示端 HDR
-         * 亮度参数，避免把所有电视都粗暴映射到 1000nit。
-         */
+        /** 使用系统公开的显示端 HDR 亮度参数，避免固定映射到 1000nit。 */
         public int hdrTargetPeakNits() {
             float peak = sanitizeLuminance(desiredMaxLuminance);
             float average = sanitizeLuminance(desiredMaxAverageLuminance);
@@ -235,7 +229,24 @@ public final class HdrDeviceSupport {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && type == 4;
     }
 
-    /** MediaCodecList 中是否存在某 mime 的（非编码器）解码器。 */
+    /** 判断单个 MediaCodec 是否为硬件视频解码器。 */
+    private static boolean isHardwareVideoDecoder(MediaCodecInfo info) {
+        if (info == null || info.isEncoder()) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                return SystemDecoderRoutePolicy.isLikelyHardwareCodec(
+                        Build.VERSION.SDK_INT, info.getName(),
+                        info.isHardwareAccelerated(), info.isSoftwareOnly());
+            } catch (Throwable ignored) {
+                // Fall through to the codec-name classification used on older Android.
+            }
+        }
+        return SystemDecoderRoutePolicy.isLikelyHardwareCodec(
+                Build.VERSION_CODES.P, info.getName(), false, false);
+    }
+
     private static boolean hasDecoderForType(String mimeType) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
             return false;
@@ -243,7 +254,7 @@ public final class HdrDeviceSupport {
         try {
             MediaCodecList list = new MediaCodecList(MediaCodecList.ALL_CODECS);
             for (MediaCodecInfo info : list.getCodecInfos()) {
-                if (info.isEncoder()) {
+                if (!isHardwareVideoDecoder(info)) {
                     continue;
                 }
                 for (String type : info.getSupportedTypes()) {
@@ -265,7 +276,7 @@ public final class HdrDeviceSupport {
         try {
             MediaCodecList list = new MediaCodecList(MediaCodecList.ALL_CODECS);
             for (MediaCodecInfo info : list.getCodecInfos()) {
-                if (info.isEncoder()) {
+                if (!isHardwareVideoDecoder(info)) {
                     continue;
                 }
                 for (String type : info.getSupportedTypes()) {
@@ -302,7 +313,7 @@ public final class HdrDeviceSupport {
         try {
             MediaCodecList list = new MediaCodecList(MediaCodecList.ALL_CODECS);
             for (MediaCodecInfo info : list.getCodecInfos()) {
-                if (info.isEncoder()) {
+                if (!isHardwareVideoDecoder(info)) {
                     continue;
                 }
                 for (String type : info.getSupportedTypes()) {

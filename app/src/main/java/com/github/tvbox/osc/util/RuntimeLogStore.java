@@ -6,7 +6,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 
-/** Optional two-generation diagnostic log store with a strict 1 MB total budget. */
+/** Two-generation diagnostic log store with a strict 512 KB total budget. */
 final class RuntimeLogStore {
     private static final String ACTIVE_FILE = "runtime.log";
     private static final String ARCHIVE_FILE = "runtime.1.log";

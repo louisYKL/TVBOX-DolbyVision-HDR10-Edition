@@ -8,8 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.text.TextUtils;
 
-import com.github.tvbox.osc.player.MPVCompatManager;
-import com.github.tvbox.osc.player.MPVCompatPlayerFactory;
+import com.github.tvbox.osc.player.SystemCodecPlayerFactory;
 import com.github.tvbox.osc.player.render.SurfaceRenderViewFactory;
 import com.github.tvbox.osc.player.thirdparty.JustPlayer;
 import com.github.tvbox.osc.player.thirdparty.MXPlayer;
@@ -25,14 +24,12 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
 
-import xyz.doikki.videoplayer.player.AndroidMediaPlayerFactory;
 import xyz.doikki.videoplayer.player.VideoView;
 import xyz.doikki.videoplayer.render.RenderViewFactory;
 
 public class PlayerHelper {
-    private static final int[] ORDERED_PLAYER_TYPES = new int[]{0, 6, 10, 11, 12, 13};
+    private static final int[] ORDERED_PLAYER_TYPES = new int[]{0, 10, 11, 12, 13};
     public static final int PLAYER_TYPE_SYSTEM = 0;
-    public static final int PLAYER_TYPE_DOLBY_VISION_COMPAT = 6;
 
     private static boolean isJava64TouchPhone(@androidx.annotation.Nullable Context context) {
         if (!com.github.tvbox.osc.base.App.isJava64Build()) {
@@ -64,52 +61,35 @@ public class PlayerHelper {
         int playerType = Hawk.get(HawkConfig.PLAY_TYPE, 0);
         int renderType = Hawk.get(HawkConfig.PLAY_RENDER, 1);
         int scale = Hawk.get(HawkConfig.PLAY_SCALE, 0);
-        boolean preferHdrOutput = true;
         Context context = videoView == null ? null : videoView.getContext();
         try {
             playerType = playerCfg.getInt("pl");
             renderType = playerCfg.getInt("pr");
             scale = playerCfg.getInt("sc");
-            preferHdrOutput = !"sdr".equalsIgnoreCase(playerCfg.optString("dvm", "hdr"));
         } catch (JSONException e) {
             e.printStackTrace();
         }
         if(forcePlayerType>=0)playerType = forcePlayerType;
-        if (playerType != PLAYER_TYPE_SYSTEM && playerType != PLAYER_TYPE_DOLBY_VISION_COMPAT) {
-            playerType = PLAYER_TYPE_SYSTEM;
-        }
-        if (playerType == PLAYER_TYPE_SYSTEM) {
-            renderType = 1;
-        }
-        if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
-            renderType = 1;
-            scale = VideoView.SCREEN_SCALE_DEFAULT;
-        } else if (playerType == PLAYER_TYPE_SYSTEM) {
-            scale = VideoView.SCREEN_SCALE_DEFAULT;
-        }
+        // Legacy built-in player values and failed external-player launches converge
+        // on the one system-codec engine.
+        playerType = PLAYER_TYPE_SYSTEM;
+        renderType = 1;
+        scale = VideoView.SCREEN_SCALE_DEFAULT;
         RenderViewFactory renderViewFactory = SurfaceRenderViewFactory.create();
         if(videoView!=null){
-            if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
-                MPVCompatManager.setOutputMode(playerCfg == null ? "base-hdr" : playerCfg.optString("dvm", preferHdrOutput ? "base-hdr" : "sdr"));
-                videoView.setPlayerFactory(MPVCompatPlayerFactory.create());
-                renderViewFactory = SurfaceRenderViewFactory.create();
-            } else {
-                videoView.setPlayerFactory(AndroidMediaPlayerFactory.create());
-                renderViewFactory = SurfaceRenderViewFactory.create();
-            }
-            String routeMode = "";
+            // Video decoding stays on the device MediaCodec hardware path.
+            videoView.setPlayerFactory(SystemCodecPlayerFactory.create());
             int hdrOut = 0;
+            String outputMode = "";
             if (playerCfg != null) {
                 hdrOut = playerCfg.optInt("hro", 0);
-                if (playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT) {
-                    routeMode = playerCfg.optString("dvm", "");
-                }
+                outputMode = playerCfg.optString("dvm", "");
             }
             LOG.i("echo-player-cfg player=" + playerType
                     + " render=" + getRenderName(renderType)
                     + " java64TouchPhone=" + isJava64TouchPhone(context)
                     + " hdrOut=" + hdrOut
-                    + " dvm=" + routeMode
+                    + " dvm=" + outputMode
                     + " scale=" + scale);
             videoView.setRenderViewFactory(renderViewFactory);
             videoView.setScreenScaleType(VideoView.SCREEN_SCALE_DEFAULT);
@@ -119,7 +99,7 @@ public class PlayerHelper {
     public static void updateCfg(VideoView videoView) {
         int renderType = 1;
         RenderViewFactory renderViewFactory = SurfaceRenderViewFactory.create();
-        videoView.setPlayerFactory(AndroidMediaPlayerFactory.create());
+        videoView.setPlayerFactory(SystemCodecPlayerFactory.create());
         videoView.setRenderViewFactory(renderViewFactory);
     }
 
@@ -141,7 +121,6 @@ public class PlayerHelper {
         if (mPlayersInfo == null) {
             HashMap<Integer, String> playersInfo = new HashMap<>();
             playersInfo.put(PLAYER_TYPE_SYSTEM, "系统硬解播放器");
-            playersInfo.put(PLAYER_TYPE_DOLBY_VISION_COMPAT, "杜比视界兼容播放器");
             playersInfo.put(10, "MX播放器");
             playersInfo.put(11, "Reex播放器");
             playersInfo.put(12, "Just Player");
@@ -156,7 +135,6 @@ public class PlayerHelper {
         if (mPlayersExistInfo == null) {
             HashMap<Integer, Boolean> playersExist = new HashMap<>();
             playersExist.put(PLAYER_TYPE_SYSTEM, true);
-            playersExist.put(PLAYER_TYPE_DOLBY_VISION_COMPAT, true);
             playersExist.put(10, MXPlayer.getPackageInfo() != null);
             playersExist.put(11, ReexPlayer.getPackageInfo() != null);
             playersExist.put(12, JustPlayer.getPackageInfo() != null);
@@ -219,12 +197,8 @@ public class PlayerHelper {
         return playerType == PLAYER_TYPE_SYSTEM;
     }
 
-    public static boolean isBuiltInCompatPlayerType(int playerType) {
-        return playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT;
-    }
-
     public static boolean isInternalPlayerType(int playerType) {
-        return playerType == PLAYER_TYPE_SYSTEM || playerType == PLAYER_TYPE_DOLBY_VISION_COMPAT;
+        return playerType == PLAYER_TYPE_SYSTEM;
     }
 
     public static boolean isExternalPlayerType(int playerType) {
@@ -233,10 +207,6 @@ public class PlayerHelper {
 
     public static int getNextCompatiblePlayerType(int playerType) {
         return PLAYER_TYPE_SYSTEM;
-    }
-
-    public static int getHdrCompatiblePlayerType() {
-        return PLAYER_TYPE_DOLBY_VISION_COMPAT;
     }
 
     private static boolean runSystemPlayer(Activity activity, String url, String title, HashMap<String, String> headers) {

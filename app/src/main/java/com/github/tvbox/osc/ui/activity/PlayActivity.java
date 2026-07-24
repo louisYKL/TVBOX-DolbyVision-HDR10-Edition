@@ -52,10 +52,10 @@ import com.github.tvbox.osc.bean.Subtitle;
 import com.github.tvbox.osc.bean.VodInfo;
 import com.github.tvbox.osc.cache.CacheManager;
 import com.github.tvbox.osc.event.RefreshEvent;
-import com.github.tvbox.osc.player.MPVCompatManager;
-import com.github.tvbox.osc.player.MPVCompatPlayer;
+import com.github.tvbox.osc.player.CompatTrackSelectorPlayer;
 import com.github.tvbox.osc.player.MyVideoView;
 import com.github.tvbox.osc.player.PlaybackBufferProgressPolicy;
+import com.github.tvbox.osc.player.controller.PlaybackLoadingOverlayPolicy;
 import com.github.tvbox.osc.player.SubtitleInitializationPolicy;
 import com.github.tvbox.osc.player.SystemPlayerTrackManager;
 import com.github.tvbox.osc.player.TrackInfo;
@@ -119,7 +119,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
@@ -157,10 +156,6 @@ public class PlayActivity extends BaseActivity {
     private VodController mController;
     private SourceViewModel sourceViewModel;
     private Handler mHandler;
-    // A cancelled network probe may need time to unwind. Keep one replacement slot while
-    // playback generation checks guarantee that stale work can never start a second player.
-    private final ExecutorService playbackProbeExecutor = Executors.newFixedThreadPool(2);
-    private volatile Future<?> activePlaybackProbeTask;
     private final AtomicInteger playbackRequestSeq = new AtomicInteger(0);
     private final AtomicInteger playGeneration = new AtomicInteger(0);
     private final AtomicInteger subtitleInitSeq = new AtomicInteger(0);
@@ -206,10 +201,6 @@ public class PlayActivity extends BaseActivity {
     private String pendingSystemFallbackSourceUrl;
     private HashMap<String, String> pendingSystemFallbackHeaders;
     private boolean systemFallbackTried;
-    private String pendingCompatFallbackSourceUrl;
-    private HashMap<String, String> pendingCompatFallbackHeaders;
-    private int compatFallbackGeneration = -1;
-    private int forceNextPlaybackCompatRouteGeneration = -1;
     private int subtitleTextStyle = 0;
     private boolean subtitleEnabled = true;
     private boolean fullScreenStateSyncPending;
@@ -419,8 +410,6 @@ public class PlayActivity extends BaseActivity {
         pendingSystemFallbackSourceUrl = null;
         pendingSystemFallbackHeaders = null;
         systemFallbackTried = false;
-        compatFallbackGeneration = -1;
-        forceNextPlaybackCompatRouteGeneration = -1;
         clearCurrentPlaybackProbe();
         LOG.i("echo-play-generation activity begin gen=" + generation + " progress=" + activeProgressKey);
         return generation;
@@ -562,11 +551,7 @@ public class PlayActivity extends BaseActivity {
                         clearCurrentPlaybackProbe();
                         pendingSystemFallbackSourceUrl = null;
                         pendingSystemFallbackHeaders = null;
-                        pendingCompatFallbackSourceUrl = null;
-                        pendingCompatFallbackHeaders = null;
                         systemFallbackTried = false;
-                        compatFallbackGeneration = -1;
-                        forceNextPlaybackCompatRouteGeneration = -1;
                         playbackRenderedFirstFrame = false;
                         errorWithRetry("播放超时", false);
                         break;
@@ -740,8 +725,8 @@ public class PlayActivity extends BaseActivity {
             @Override
             public void prepared() {
                 AbstractPlayer mediaPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
-                if (mediaPlayer instanceof MPVCompatPlayer) {
-                    bindMpvSubtitleText((MPVCompatPlayer) mediaPlayer);
+                if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+                    bindBuiltInSubtitleCallbacks((CompatTrackSelectorPlayer) mediaPlayer);
                 }
                 scheduleSubtitleInitRetry(currentPlayGeneration(), 0);
             }
@@ -788,8 +773,8 @@ public class PlayActivity extends BaseActivity {
             disableSystemSubtitleOverlayPassThrough(mediaPlayer);
             if (mediaPlayer instanceof AndroidMediaPlayer) {
                 SystemPlayerTrackManager.clearSubtitleSelections((AndroidMediaPlayer) mediaPlayer, null);
-            } else if (mediaPlayer instanceof MPVCompatPlayer) {
-                ((MPVCompatPlayer) mediaPlayer).clearSubtitleTrackSelection();
+            } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+                ((CompatTrackSelectorPlayer) mediaPlayer).clearSubtitleTrackSelection();
             }
             hideOverlaySubtitleView();
             return;
@@ -819,8 +804,8 @@ public class PlayActivity extends BaseActivity {
         AbstractPlayer mediaPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
         if (mediaPlayer instanceof AndroidMediaPlayer) {
             SystemPlayerTrackManager.clearSubtitleSelections((AndroidMediaPlayer) mediaPlayer, null);
-        } else if (mediaPlayer instanceof MPVCompatPlayer) {
-            ((MPVCompatPlayer) mediaPlayer).clearSubtitleTrackSelection();
+        } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+            ((CompatTrackSelectorPlayer) mediaPlayer).clearSubtitleTrackSelection();
         }
         mController.mSubtitleView.bindToMediaPlayer(mVideoView.getMediaPlayer());
         applySubtitleToneForCurrentPlayback();
@@ -886,8 +871,8 @@ public class PlayActivity extends BaseActivity {
         int currentGeneration = currentPlayGeneration();
         TrackInfo trackInfo = mediaPlayer instanceof AndroidMediaPlayer
                 ? SystemPlayerTrackManager.getTrackInfo((AndroidMediaPlayer) mediaPlayer)
-                : mediaPlayer instanceof MPVCompatPlayer
-                ? ((MPVCompatPlayer) mediaPlayer).getTrackInfo()
+                : mediaPlayer instanceof CompatTrackSelectorPlayer
+                ? ((CompatTrackSelectorPlayer) mediaPlayer).getTrackInfo()
                 : null;
         if (mediaPlayer instanceof AndroidMediaPlayer && !TextUtils.isEmpty(currentPlaybackUrl)) {
             VideoStreamProbe.Result probe = getCurrentPlaybackProbe();
@@ -962,11 +947,20 @@ public class PlayActivity extends BaseActivity {
         if (mController == null || mController.mSubtitleView == null) {
             return;
         }
+        clearBitmapSubtitleView();
         mController.mSubtitleView.stop();
         mController.mSubtitleView.reset();
         mController.mSubtitleView.isInternal = false;
         mController.mSubtitleView.setText("");
         mController.mSubtitleView.setVisibility(View.GONE);
+    }
+
+    private void clearBitmapSubtitleView() {
+        if (mController == null || mController.mBitmapSubtitleView == null) {
+            return;
+        }
+        mController.mBitmapSubtitleView.setCues(Collections.emptyList());
+        mController.mBitmapSubtitleView.setVisibility(View.GONE);
     }
 
     private void handleBridgeSubtitleText(String text) {
@@ -1137,8 +1131,8 @@ public class PlayActivity extends BaseActivity {
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
         TrackInfo trackInfo = mediaPlayer instanceof AndroidMediaPlayer
                 ? SystemPlayerTrackManager.getTrackInfo((AndroidMediaPlayer) mediaPlayer)
-                : mediaPlayer instanceof MPVCompatPlayer
-                ? ((MPVCompatPlayer) mediaPlayer).getTrackInfo()
+                : mediaPlayer instanceof CompatTrackSelectorPlayer
+                ? ((CompatTrackSelectorPlayer) mediaPlayer).getTrackInfo()
                 : null;
         if (trackInfo == null) {
             Toast.makeText(mContext, "没有音轨", Toast.LENGTH_SHORT).show();
@@ -1160,8 +1154,8 @@ public class PlayActivity extends BaseActivity {
                     }
                     if (mediaPlayer instanceof AndroidMediaPlayer) {
                         SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
-                    } else if (mediaPlayer instanceof MPVCompatPlayer) {
-                        ((MPVCompatPlayer) mediaPlayer).selectAudioTrack(value);
+                    } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+                        ((CompatTrackSelectorPlayer) mediaPlayer).selectAudioTrack(value);
                     }
                     dialog.dismiss();
                 } catch (Exception e) {
@@ -1217,13 +1211,9 @@ public class PlayActivity extends BaseActivity {
                             enableSystemSubtitleOverlayPassThrough(mediaPlayer);
                             SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
                         }
-                    } else if (mediaPlayer instanceof MPVCompatPlayer) {
-                        if (SystemPlayerTrackManager.isBitmapSubtitleTrack(value)) {
-                            hideOverlaySubtitleView();
-                        } else {
-                            prepareInternalSubtitleOverlay(mediaPlayer);
-                        }
-                        ((MPVCompatPlayer) mediaPlayer).selectSubtitleTrack(value);
+                    } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+                        prepareInternalSubtitleOverlay(mediaPlayer);
+                        ((CompatTrackSelectorPlayer) mediaPlayer).selectSubtitleTrack(value);
                     }
 
                     dialog.dismiss();
@@ -1257,13 +1247,14 @@ public class PlayActivity extends BaseActivity {
         mController.mSubtitleView.stop();
         mController.mSubtitleView.reset();
         mController.mSubtitleView.prepareForInternalSubtitle();
+        clearBitmapSubtitleView();
         mController.mSubtitleView.bindToMediaPlayer(mediaPlayer);
         applySubtitleToneForCurrentPlayback();
         if (mediaPlayer instanceof AndroidMediaPlayer) {
             SystemPlayerTrackManager.clearSubtitleSelections((AndroidMediaPlayer) mediaPlayer, null);
         }
-        if (mediaPlayer instanceof MPVCompatPlayer) {
-            bindMpvSubtitleText((MPVCompatPlayer) mediaPlayer);
+        if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+            bindBuiltInSubtitleCallbacks((CompatTrackSelectorPlayer) mediaPlayer);
         }
     }
 
@@ -1280,7 +1271,7 @@ public class PlayActivity extends BaseActivity {
                 + " count=" + (trackInfo == null ? 0 : trackInfo.getSubtitle().size()));
     }
 
-    private void bindMpvSubtitleText(MPVCompatPlayer player) {
+    private void bindBuiltInSubtitleCallbacks(CompatTrackSelectorPlayer player) {
         if (player == null || mController == null || mController.mSubtitleView == null) {
             return;
         }
@@ -1289,6 +1280,19 @@ public class PlayActivity extends BaseActivity {
                 return;
             }
             mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
+        }));
+        player.setOnBitmapSubtitleCueListener(cues -> runOnUiThread(() -> {
+            if (mController == null || mController.mBitmapSubtitleView == null) {
+                return;
+            }
+            boolean show = subtitleEnabled
+                    && mController.mSubtitleView != null
+                    && mController.mSubtitleView.isInternal
+                    && cues != null
+                    && !cues.isEmpty();
+            mController.mBitmapSubtitleView.setCues(
+                    show ? cues : Collections.emptyList());
+            mController.mBitmapSubtitleView.setVisibility(show ? View.VISIBLE : View.GONE);
         }));
         player.setOnRuntimeVideoModeListener((hdr, dolbyVision, outputMode, reason) ->
                 runOnUiThread(() -> promoteRuntimeHdrState(hdr, dolbyVision, outputMode, "activity-" + reason)));
@@ -1367,6 +1371,16 @@ public class PlayActivity extends BaseActivity {
             LOG.i("echo-buffer-progress activity percent=" + percent
                     + " rendered=" + playbackRenderedFirstFrame);
         }
+        if (PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+                playState,
+                playbackRenderedFirstFrame,
+                mVideoView.isFullScreen())) {
+            String speed = PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true);
+            showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
+                    playState, percent, speed));
+        } else {
+            hideTipSafe();
+        }
         long now = System.currentTimeMillis();
         // Track the current native buffering episode so the outer safety-net treats sustained
         // native buffering as liveness (bounded) instead of killing a healthy player whose
@@ -1430,6 +1444,22 @@ public class PlayActivity extends BaseActivity {
         mPlayLoadTip.setVisibility(View.GONE);
         mPlayLoading.setVisibility(View.GONE);
         mPlayLoadErr.setVisibility(View.GONE);
+    }
+
+    void showBufferingTip(String msg) {
+        final int generation = currentPlayGeneration();
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (generation != currentPlayGeneration()) {
+                    return;
+                }
+                mPlayLoadTip.setText(msg);
+                mPlayLoadTip.setVisibility(View.VISIBLE);
+                mPlayLoading.setVisibility(View.VISIBLE);
+                mPlayLoadErr.setVisibility(View.GONE);
+            }
+        });
     }
 
     void hideTipSafe() {
@@ -1561,41 +1591,18 @@ public class PlayActivity extends BaseActivity {
         final HashMap<String, String> finalHeaders = headers == null ? null : new HashMap<>(headers);
         final int requestSeq = playbackRequestSeq.incrementAndGet();
         final int requestGeneration = generation;
-        cancelActivePlaybackProbe();
-        activePlaybackProbeTask = playbackProbeExecutor.submit(new Runnable() {
-            @Override
-            public void run() {
-                if (Thread.currentThread().isInterrupted()) {
-                    return;
-                }
-                if (!isCurrentPlayGeneration(requestGeneration)) {
-                    logStalePlayback("preflight-before", requestGeneration);
-                    return;
-                }
-                final PlaybackPreflight preflight = buildPlaybackPreflight(finalUrl, finalHeaders);
-                if (Thread.currentThread().isInterrupted()) {
-                    return;
-                }
-                if (isFinishing() || requestSeq != playbackRequestSeq.get() || !isCurrentPlayGeneration(requestGeneration)) {
-                    logStalePlayback("preflight-after", requestGeneration);
-                    return;
-                }
-                runOnUiThread(new Runnable() {
+        final PlaybackPreflight preflight = buildPlaybackPreflight(finalUrl, finalHeaders);
+        if (isFinishing() || requestSeq != playbackRequestSeq.get()
+                || !isCurrentPlayGeneration(requestGeneration)) {
+            logStalePlayback("preflight-local", requestGeneration);
+            return;
+        }
+        runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 startPlaybackPreflightOnMain(preflight, finalHeaders, requestSeq, requestGeneration);
             }
         });
-            }
-        });
-    }
-
-    private void cancelActivePlaybackProbe() {
-        Future<?> task = activePlaybackProbeTask;
-        activePlaybackProbeTask = null;
-        if (task != null) {
-            task.cancel(true);
-        }
     }
 
     private void startPlaybackPreflightOnMain(final PlaybackPreflight preflight,
@@ -1681,18 +1688,6 @@ public class PlayActivity extends BaseActivity {
             }
             int routedPlayerType = SystemDecoderRoutePolicy.resolvePlayerType(
                     requestedPlayerType, dvDecision.playerType, dvDecision.forcePlayerType);
-            if (forceNextPlaybackCompatRouteGeneration == requestGeneration) {
-                forceNextPlaybackCompatRouteGeneration = -1;
-                routedPlayerType = PlayerHelper.getHdrCompatiblePlayerType();
-                try {
-                    playbackPlayerCfg.put("pl", routedPlayerType);
-                    playbackPlayerCfg.put("dvm", "sdr");
-                } catch (JSONException e) {
-                    LOG.e("echo-player-fallback compat-route config failed: " + e.getMessage());
-                }
-                LOG.i("echo-player-fallback compat-route generation=" + requestGeneration
-                        + " player=" + routedPlayerType);
-            }
             final int resolvedPlayerType = routedPlayerType;
             if (resolvedPlayerType != playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM)) {
                 try {
@@ -1747,8 +1742,7 @@ public class PlayActivity extends BaseActivity {
             currentPlaybackUsesNativeJava64DolbyVision = App.isJava64Build()
                     && !isTvDevice()
                     && PlayerHelper.isSystemPlayerType(resolvedPlayerType)
-                    && ("native-dolby-vision".equals(dvDecision.reason)
-                    || "native-dolby-vision-java64".equals(dvDecision.reason));
+                    && dvDecision.nativeDolbyVision;
             applySubtitleToneForCurrentPlayback();
             int activePlayerType = playbackPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
             activePlaybackPlayerType = activePlayerType;
@@ -1764,31 +1758,14 @@ public class PlayActivity extends BaseActivity {
                 PlayerHelper.updateCfg(mVideoView, playbackPlayerCfg);
             }
             mVideoView.setProgressKey(getPlaybackProgressKeyForPersistence());
-            boolean systemPlayer = PlayerHelper.isSystemPlayerType(activePlayerType);
-            String playbackUrl = PlayerHelper.isBuiltInCompatPlayerType(activePlayerType)
-                    ? PlaybackUrlNormalizer.resolveCompatPlaybackUrl(url, activeHeaders, false)
-                    : (systemPlayer
-                    ? PlaybackUrlNormalizer.resolveSystemPlaybackUrl(url, activeHeaders, false)
-                    : PlaybackUrlNormalizer.resolvePlaybackUrl(url, activeHeaders, false));
-            if (systemPlayer) {
-                pendingSystemFallbackSourceUrl = url;
-                pendingSystemFallbackHeaders = activeHeaders == null ? null : new HashMap<>(activeHeaders);
-                pendingCompatFallbackSourceUrl = null;
-                pendingCompatFallbackHeaders = null;
-                systemFallbackTried = false;
-            } else {
-                pendingSystemFallbackSourceUrl = null;
-                pendingSystemFallbackHeaders = null;
-                pendingCompatFallbackSourceUrl = url;
-                pendingCompatFallbackHeaders = activeHeaders == null ? null : new HashMap<>(activeHeaders);
-                systemFallbackTried = false;
-            }
+            String playbackUrl = PlaybackUrlNormalizer.resolveSystemPlaybackUrl(
+                    url, activeHeaders, false);
+            pendingSystemFallbackSourceUrl = url;
+            pendingSystemFallbackHeaders = activeHeaders == null ? null : new HashMap<>(activeHeaders);
+            systemFallbackTried = false;
             LOG.i("echo-system-route player=" + activePlayerType
                     + " source=" + safeLogSnippet(url)
                     + " playback=" + safeLogSnippet(playbackUrl));
-            if (PlayerHelper.isBuiltInCompatPlayerType(activePlayerType)) {
-                com.github.tvbox.osc.player.MPVCompatManager.setCurrentPlayIsDolbyVision(dvDecision.looksLikeDolbyVision);
-            }
             if (activeHeaders != null) {
                 mVideoView.setUrl(playbackUrl, activeHeaders);
             } else {
@@ -1810,80 +1787,23 @@ public class PlayActivity extends BaseActivity {
         try {
             HashMap<String, String> activeHeaders = rawHeaders == null ? null : new HashMap<>(rawHeaders);
             PlaybackUrlNormalizer.UrlWithHeaders split = PlaybackUrlNormalizer.splitUrlAndHeaders(rawUrl, activeHeaders);
-            String probeUrl = PlaybackUrlNormalizer.normalizeHttpUrl(split.url == null ? "" : split.url.trim());
+            String playbackUrl = PlaybackUrlNormalizer.normalizeHttpUrl(split.url == null ? "" : split.url.trim());
             HashMap<String, String> mergedHeaders = new HashMap<>();
             if (split.headers != null) {
                 mergedHeaders.putAll(split.headers);
             }
             activeHeaders = mergedHeaders.isEmpty() ? null : mergedHeaders;
-            if (!TextUtils.isEmpty(probeUrl) && PlaybackUrlNormalizer.isHlsLike(probeUrl)) {
-                VideoStreamProbe.Result probe = VideoStreamProbe.probeHlsAvcProfileWithTimeout(
-                        mContext, probeUrl, activeHeaders, 1500L);
-                DolbyVisionPlaybackRouter.Decision decision = DolbyVisionPlaybackRouter.resolve(mContext,
-                        PlayerHelper.PLAYER_TYPE_SYSTEM, probeUrl, activeHeaders, probe,
-                        buildContainerHintText(rawUrl, probeUrl));
-                LOG.i("echo-probe-prefetch activity hls-light probed=" + probe.probed
-                        + " avc=" + probe.hasAvcVideo
-                        + " high10=" + VideoStreamProbe.hasUnsupportedHigh10AvcVideo(probe)
-                        + " summary=" + probe.summary
-                        + " url=" + safeLogSnippet(probeUrl));
-                return new PlaybackPreflight(rawUrl, probeUrl, activeHeaders, probe, decision);
-            }
-            String probeTargetUrl = PlaybackUrlNormalizer.resolveSystemPlaybackUrl(probeUrl, activeHeaders, false);
-            if (TextUtils.isEmpty(probeTargetUrl)) {
-                probeTargetUrl = probeUrl;
-            }
-            if (!TextUtils.equals(probeTargetUrl, probeUrl)) {
-                LOG.i("echo-probe-prefetch activity align-system-url src="
-                        + safeLogSnippet(probeUrl)
-                        + " target=" + safeLogSnippet(probeTargetUrl));
-            }
-            if (mContext != null
-                    && ScreenUtils.isTv32Device(mContext)
-                    && isLocalProxyPlayUrl(probeTargetUrl)) {
-                VideoStreamProbe.Result fastProbe = VideoStreamProbe.probeFastLocalProxyPlaybackPreflight(
-                        mContext, probeTargetUrl, activeHeaders);
-                if (fastProbe != null) {
-                    DolbyVisionPlaybackRouter.Decision fastDecision = DolbyVisionPlaybackRouter.resolve(mContext,
-                            PlayerHelper.PLAYER_TYPE_SYSTEM, probeUrl, activeHeaders, fastProbe,
-                            buildContainerHintText(rawUrl, probeUrl, probeTargetUrl));
-                    LOG.i("echo-probe-prefetch activity fast-tv32 mode="
-                            + (fastProbe.probed ? "metadata" : "direct-fallback")
-                            + " target="
-                            + safeLogSnippet(probeTargetUrl)
-                            + " summary=" + fastProbe.summary);
-                    return new PlaybackPreflight(rawUrl, probeUrl, activeHeaders, fastProbe, fastDecision);
-                }
-            }
-            VideoStreamProbe.Result probe = VideoStreamProbe.probeForPlaybackPreflight(
-                    mContext,
-                    probeTargetUrl,
-                    activeHeaders,
-                    resolveProbeTimeoutMs(probeTargetUrl));
+            boolean matroska = isMatroskaPlaybackUrl(rawUrl) || isMatroskaPlaybackUrl(playbackUrl);
+            VideoStreamProbe.Result probe = VideoStreamProbe.Result.unknownContainer(
+                    "unified-system-runtime", matroska);
             DolbyVisionPlaybackRouter.Decision decision = DolbyVisionPlaybackRouter.resolve(mContext,
-                    PlayerHelper.PLAYER_TYPE_SYSTEM, probeUrl, activeHeaders, probe,
-                    buildContainerHintText(rawUrl, probeUrl, probeTargetUrl));
-            LOG.i("echo-probe-prefetch activity probed=" + probe.probed
-                + " dv=" + probe.hasDolbyVision
-                + " hdr10=" + probe.hasHdr10
-                + " hdr10Plus=" + probe.hasHdr10Plus
-                + " dvProfile=" + probe.dolbyVisionProfile
-                + " hdr10Base=" + probe.hasHdr10BaseLayer
-                + " matroska=" + probe.isMatroska
-                + " videoMime=" + probe.primaryVideoMime
-                + " audioMime=" + probe.primaryAudioMime
-                + " avc=" + probe.hasAvcVideo
-                + " hevc=" + probe.hasHevcVideo
-                + " eac3=" + probe.hasEac3Audio
-                + " ac3=" + probe.hasAc3Audio
-                + " dts=" + probe.hasDtsAudio
-                + " truehd=" + probe.hasTrueHdAudio
-                + " atmos=" + probe.hasAtmosLikeAudio
-                + " target=" + safeLogSnippet(probeTargetUrl)
-                + " summary=" + probe.summary);
-            return new PlaybackPreflight(rawUrl, probeUrl, activeHeaders, probe, decision);
+                    PlayerHelper.PLAYER_TYPE_SYSTEM, playbackUrl, activeHeaders, probe,
+                    buildContainerHintText(rawUrl, playbackUrl));
+            LOG.i("echo-probe-prefetch activity skipped-network route=unified-system-runtime"
+                    + " matroska=" + matroska + " url=" + safeLogSnippet(playbackUrl));
+            return new PlaybackPreflight(rawUrl, playbackUrl, activeHeaders, probe, decision);
         } catch (Throwable th) {
-            LOG.e("echo-probe-prefetch activity failed: " + th.getMessage());
+            LOG.e("echo-playback-local-preflight activity failed: " + th.getMessage());
             VideoStreamProbe.Result probe = VideoStreamProbe.Result.unknown("preflight-" + th.getClass().getSimpleName());
             DolbyVisionPlaybackRouter.Decision decision = DolbyVisionPlaybackRouter.resolve(mContext,
                     PlayerHelper.PLAYER_TYPE_SYSTEM, rawUrl, rawHeaders, probe,
@@ -1947,11 +1867,6 @@ public class PlayActivity extends BaseActivity {
             } catch (Throwable th) {
                 LOG.e("echo-player-force-release view failed " + reason + ": " + th.getMessage());
             }
-        }
-        try {
-            MPVCompatManager.hardResetForNextPlayback();
-        } catch (Throwable th) {
-            LOG.e("echo-player-force-release mpv failed " + reason + ": " + th.getMessage());
         }
         currentPlaybackUrl = null;
         currentPlaybackHeaders = null;
@@ -2196,55 +2111,8 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean tryInternalPlayerFallback(String reason) {
-        if (mVideoView == null || TextUtils.isEmpty(webPlayUrl)) {
-            return false;
-        }
-        try {
-            int currentPlayerType = activePlaybackPlayerType;
-            if (PlayerHelper.isSystemPlayerType(currentPlayerType)) {
-                if (!shouldUseCompatFallbackForCurrentPlayback()) {
-                    return false;
-                }
-                int compatPlayerType = PlayerHelper.getHdrCompatiblePlayerType();
-                if (!PlayerHelper.getPlayerExist(compatPlayerType)) {
-                    return false;
-                }
-                int generation = currentPlayGeneration();
-                compatFallbackGeneration = generation;
-                forceNextPlaybackCompatRouteGeneration = generation;
-                pendingCompatFallbackSourceUrl = webPlayUrl;
-                pendingCompatFallbackHeaders = webHeaderMap == null ? null : new HashMap<>(webHeaderMap);
-                LOG.i("echo-player-fallback system->compat reason=" + reason
-                        + " player=" + compatPlayerType
-                        + " url=" + safeLogSnippet(webPlayUrl));
-                goPlayUrl(webPlayUrl, webHeaderMap == null ? null : new HashMap<>(webHeaderMap), currentPlayGeneration());
-                return true;
-            }
-            if (PlayerHelper.isBuiltInCompatPlayerType(currentPlayerType)) {
-                String hardwareFailure = getCurrentPlaybackHardwareFailureMessage();
-                LOG.i("echo-player-fallback compat-stop reason=" + reason
-                        + " msg=" + (TextUtils.isEmpty(hardwareFailure) ? "none" : hardwareFailure)
-                        + " url=" + safeLogSnippet(currentPlaybackUrl));
-                return false;
-            }
-        } catch (Throwable th) {
-            LOG.e("echo-player-fallback failed reason=" + reason + " err=" + th.getMessage());
-        }
+        LOG.i("echo-player-fallback disabled unified-system-codec reason=" + reason);
         return false;
-    }
-
-    private boolean shouldUseCompatFallbackForCurrentPlayback() {
-        VideoStreamProbe.Result probe = getCurrentPlaybackProbe();
-        AbstractPlayer player = mVideoView == null ? null : mVideoView.getMediaPlayer();
-        boolean nativeAudioDecoderFailure = player instanceof AndroidMediaPlayer
-                && ((AndroidMediaPlayer) player).hasAudioDecoderFailure();
-        return SystemDecoderRoutePolicy.shouldRetryWithCompatPcmAfterSystemFailure(
-                App.isJava64Build(),
-                PlayerHelper.isSystemPlayerType(activePlaybackPlayerType),
-                probe != null && SystemDecoderRoutePolicy.isConfirmedSingleLayerDolbyVision(
-                        probe.hasDolbyVision, probe.dolbyVisionProfile, probe.hasHdr10BaseLayer),
-                nativeAudioDecoderFailure,
-                compatFallbackGeneration == currentPlayGeneration());
     }
 
     private boolean isTv32LocalProxySdrVod(String playbackUrl, VideoStreamProbe.Result probe) {
@@ -2362,38 +2230,9 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean tryDolbyVisionFallback() {
-        if (!lastPlayLooksLikeDolbyVision || dolbyVisionFallbackTried) {
-            return false;
-        }
         dolbyVisionFallbackTried = true;
-        if (!useHdrFallbackPlayer && !useSdrFallbackPlayer) {
-            return false;
-        }
-        try {
-            int fallbackPlayerType = PlayerHelper.getHdrCompatiblePlayerType();
-            if (!PlayerHelper.getPlayerExist(fallbackPlayerType)) {
-                return false;
-            }
-            int currentPlayerType = mVodPlayerCfg.optInt("pl", PlayerHelper.PLAYER_TYPE_SYSTEM);
-            String currentMapping = mVodPlayerCfg.optString("dvm", "base-hdr");
-            String targetMapping = useHdrFallbackPlayer ? "base-hdr" : "sdr";
-            if (currentPlayerType == fallbackPlayerType && targetMapping.equalsIgnoreCase(currentMapping)) {
-                LOG.i("echo-dolby-vision-fallback skipped same compat player");
-                return false;
-            }
-            mVodPlayerCfg.put("pl", fallbackPlayerType);
-            mVodPlayerCfg.put("dvm", targetMapping);
-            PlayerHelper.updateCfg(mVideoView, mVodPlayerCfg);
-            LOG.i("echo-dolby-vision-fallback use player=" + fallbackPlayerType
-                    + " hdr=" + useHdrFallbackPlayer + " sdr=" + useSdrFallbackPlayer);
-            if (!TextUtils.isEmpty(webPlayUrl)) {
-                goPlayUrl(webPlayUrl, webHeaderMap == null ? null : new HashMap<>(webHeaderMap));
-            }
-            return true;
-        } catch (Throwable th) {
-            LOG.e("echo-dolby-vision-fallback failed: " + th.getMessage());
-            return false;
-        }
+        LOG.i("echo-dolby-vision-fallback disabled unified-system-codec");
+        return false;
     }
 
     void startPlayTimeout(String playbackUrl) {
@@ -2527,12 +2366,12 @@ public class PlayActivity extends BaseActivity {
         if (userSelectedExternalSubtitle || attempt >= SUBTITLE_INIT_MAX_ATTEMPTS) {
             return false;
         }
-        if (mediaPlayer instanceof MPVCompatPlayer) {
-            MPVCompatPlayer mpvPlayer = (MPVCompatPlayer) mediaPlayer;
+        if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+            CompatTrackSelectorPlayer builtInPlayer = (CompatTrackSelectorPlayer) mediaPlayer;
             if (trackInfo == null || trackInfo.getSubtitle().isEmpty()) {
-                return mpvPlayer.shouldDelaySubtitleSelection(attempt);
+                return builtInPlayer.shouldDelaySubtitleSelection(attempt);
             }
-            return mpvPlayer.shouldDelaySubtitleSelection(trackInfo.getSubtitle().size(), attempt);
+            return builtInPlayer.shouldDelaySubtitleSelection(trackInfo.getSubtitle().size(), attempt);
         }
         if (mediaPlayer instanceof AndroidMediaPlayer) {
             int subtitleCount = trackInfo == null ? 0 : trackInfo.getSubtitle().size();
@@ -2558,15 +2397,11 @@ public class PlayActivity extends BaseActivity {
             } else {
                 ((AndroidMediaPlayer) mediaPlayer).selectTrack(preferredTrack.trackId);
             }
-        } else if (mediaPlayer instanceof MPVCompatPlayer) {
-            if (SystemPlayerTrackManager.isBitmapSubtitleTrack(preferredTrack)) {
-                hideOverlaySubtitleView();
-            } else {
-                prepareInternalSubtitleOverlay(mediaPlayer);
-            }
-            LOG.i("echo-subtitle select mpv internal activity track=" + preferredTrack.trackId
+        } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+            prepareInternalSubtitleOverlay(mediaPlayer);
+            LOG.i("echo-subtitle select built-in internal activity track=" + preferredTrack.trackId
                     + " name=" + preferredTrack.name + " lang=" + preferredTrack.language);
-            ((MPVCompatPlayer) mediaPlayer).selectSubtitleTrack(preferredTrack);
+            ((CompatTrackSelectorPlayer) mediaPlayer).selectSubtitleTrack(preferredTrack);
         }
     }
 
@@ -2603,8 +2438,8 @@ public class PlayActivity extends BaseActivity {
         }
         if (mediaPlayer instanceof AndroidMediaPlayer) {
             disableSystemSubtitleOverlayPassThrough(mediaPlayer);
-        } else if (mediaPlayer instanceof MPVCompatPlayer) {
-            bindMpvSubtitleText((MPVCompatPlayer) mediaPlayer);
+        } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+            bindBuiltInSubtitleCallbacks((CompatTrackSelectorPlayer) mediaPlayer);
         }
         mController.mSubtitleView.bindToMediaPlayer(mediaPlayer);
         mController.mSubtitleView.setPlaySubtitleCacheKey(subtitleCacheKey);
@@ -3059,8 +2894,6 @@ public class PlayActivity extends BaseActivity {
     protected void onDestroy() {
         super.onDestroy();
         playbackRequestSeq.incrementAndGet();
-        cancelActivePlaybackProbe();
-        playbackProbeExecutor.shutdownNow();
         stopBufferingProgressMonitor();
         cancelPlayTimeout();
         if (mVideoView != null) {
@@ -3283,7 +3116,7 @@ public class PlayActivity extends BaseActivity {
         }else{
             try{
                 int playerType = mVodPlayerCfg.getInt("pl");
-                if(subtitleEnabled && PlayerHelper.isBuiltInCompatPlayerType(playerType)){
+                if(subtitleEnabled && PlayerHelper.isInternalPlayerType(playerType)){
                     mController.mSubtitleView.setVisibility(View.VISIBLE);
                 }else {
                     mController.mSubtitleView.setVisibility(View.GONE);

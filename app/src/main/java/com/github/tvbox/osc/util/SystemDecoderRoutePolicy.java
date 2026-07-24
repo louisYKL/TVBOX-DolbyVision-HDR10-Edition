@@ -1,62 +1,88 @@
 package com.github.tvbox.osc.util;
 
-/** Selects the hardware-backed Android MediaPlayer path for TV VOD. */
+import java.util.Locale;
+
+/** Keeps every built-in VOD route on the unified device-codec player. */
 public final class SystemDecoderRoutePolicy {
     private SystemDecoderRoutePolicy() {
-    }
-
-    public static boolean isConfirmedSingleLayerDolbyVision(boolean hasDolbyVision,
-                                                            int dolbyVisionProfile,
-                                                            boolean hasHdr10BaseLayer) {
-        if (!hasDolbyVision || hasHdr10BaseLayer) {
-            return false;
-        }
-        // Profile 5 is the normal single-layer DV form. A probe with no profile
-        // and no HDR10 base layer remains conservative because it can be the same
-        // format behind a local proxy.
-        return dolbyVisionProfile == 5 || dolbyVisionProfile <= 0;
-    }
-
-    /**
-     * Android MediaPlayer does not expose a reliable "decode this track to PCM" output
-     * switch. For every identified encoded surround format, use the compatibility player:
-     * it retains MediaCodec video decoding and sends decoded stereo PCM to AudioTrack.
-     */
-    public static boolean requiresCompatPcmOutput(boolean hasAc3Audio,
-                                                   boolean hasEac3Audio,
-                                                   boolean hasDtsAudio,
-                                                   boolean hasTrueHdAudio,
-                                                   boolean hasAtmosLikeAudio) {
-        return hasAc3Audio
-                || hasEac3Audio
-                || hasDtsAudio
-                || hasTrueHdAudio
-                || hasAtmosLikeAudio;
-    }
-
-    public static boolean shouldForceSystemDecoder(boolean java64Build,
-                                                   boolean confirmedSingleLayerDolbyVision,
-                                                   boolean requiresCompatPcmAudioDecoder) {
-        return !java64Build
-                && !confirmedSingleLayerDolbyVision
-                && !requiresCompatPcmAudioDecoder;
-    }
-
-    public static boolean shouldRetryWithCompatPcmAfterSystemFailure(boolean java64Build,
-                                                                       boolean activeSystemPlayer,
-                                                                       boolean confirmedSingleLayerDolbyVision,
-                                                                       boolean nativeAudioDecoderFailure,
-                                                                       boolean alreadyTried) {
-        // A weak container probe can miss a compressed track. Some TV firmwares then report
-        // MEDIA_INFO_AUDIO_NOT_PLAYING (804) without a fatal MediaPlayer error. Retry exactly
-        // once on the PCM compatibility route; its video path still uses MediaCodec hardware
-        // decoding, while audio is decoded to stereo PCM for the external output route.
-        return activeSystemPlayer && nativeAudioDecoderFailure && !alreadyTried;
     }
 
     public static int resolvePlayerType(int requestedPlayerType,
                                         int routedPlayerType,
                                         boolean forceRoutedPlayerType) {
-        return forceRoutedPlayerType ? routedPlayerType : requestedPlayerType;
+        return PlayerHelper.PLAYER_TYPE_SYSTEM;
+    }
+
+    public static boolean supportsNativeDolbyVision(boolean hardwareDolbyVisionDecoder,
+                                                     boolean dolbyVisionOutput) {
+        return hardwareDolbyVisionDecoder && dolbyVisionOutput;
+    }
+
+    public static boolean shouldUseNativeDolbyVision(boolean dolbyVisionStream,
+                                                     boolean hardwareDolbyVisionDecoder,
+                                                     boolean dolbyVisionOutput) {
+        return dolbyVisionStream
+                && supportsNativeDolbyVision(hardwareDolbyVisionDecoder, dolbyVisionOutput);
+    }
+
+    public static boolean shouldUseHdr10BaseLayer(boolean dolbyVisionStream,
+                                                  boolean hardwareDolbyVisionDecoder,
+                                                  boolean dolbyVisionOutput) {
+        return dolbyVisionStream
+                && !supportsNativeDolbyVision(hardwareDolbyVisionDecoder, dolbyVisionOutput);
+    }
+
+    public static boolean isEligibleHardwareVideoDecoder(boolean softwareOnly) {
+        return !softwareOnly;
+    }
+
+    /**
+     * Mirrors Android/ExoPlayer's pre-API 29 codec classification without treating every
+     * platform audio decoder as software. Older Android releases do not expose
+     * MediaCodecInfo.isHardwareAccelerated(), so vendor OMX/C2/ARC codec names are the only
+     * reliable public signal available there.
+     */
+    public static boolean isLikelyHardwareCodec(int sdkInt,
+                                                String codecName,
+                                                boolean hardwareAccelerated,
+                                                boolean softwareOnly) {
+        if (sdkInt >= 29) {
+            return hardwareAccelerated && !softwareOnly;
+        }
+        String normalized = codecName == null
+                ? "" : codecName.trim().toLowerCase(Locale.US);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        if (normalized.startsWith("arc.")) {
+            return true;
+        }
+        if (normalized.startsWith("omx.google.")
+                || normalized.startsWith("omx.ffmpeg.")
+                || normalized.startsWith("c2.android.")
+                || normalized.startsWith("c2.google.")
+                || normalized.startsWith("sw.")
+                || normalized.contains(".sw.")
+                || normalized.contains("software")) {
+            return false;
+        }
+        return normalized.startsWith("omx.") || normalized.startsWith("c2.");
+    }
+
+    public static int platformAudioDecoderPriority(boolean softwareOnly) {
+        return softwareOnly ? 1 : 0;
+    }
+
+    public static int platformAudioDecoderPriority(int sdkInt,
+                                                   String codecName,
+                                                   boolean hardwareAccelerated,
+                                                   boolean softwareOnly) {
+        return isLikelyHardwareCodec(
+                sdkInt, codecName, hardwareAccelerated, softwareOnly) ? 0 : 1;
+    }
+
+    public static boolean shouldUseFfmpegAudioFallback(boolean platformDecoderAvailable,
+                                                       boolean ffmpegAvailable) {
+        return !platformDecoderAvailable && ffmpegAvailable;
     }
 }

@@ -8,9 +8,10 @@ import static org.junit.Assert.assertTrue;
 
 public class InternalLogPolicyTest {
     @Test
-    public void totalDiagnosticStorageNeverExceedsOneMegabyte() {
-        assertEquals(1024L * 1024L, InternalLogPolicy.MAX_TOTAL_BYTES);
-        assertEquals(512L * 1024L, InternalLogPolicy.MAX_FILE_BYTES);
+    public void totalDiagnosticStorageNeverExceeds512Kilobytes() {
+        assertEquals(2, InternalLogPolicy.POLICY_VERSION);
+        assertEquals(512L * 1024L, InternalLogPolicy.MAX_TOTAL_BYTES);
+        assertEquals(256L * 1024L, InternalLogPolicy.MAX_FILE_BYTES);
     }
 
     @Test

@@ -16,6 +16,8 @@ public class HawkConfig {
     public static final String HOME_API = "home_api";
     public static final String DEFAULT_PARSE = "parse_default";
     public static final String DEBUG_OPEN = "debug_open";
+    public static final String INTERNAL_LOG_ENABLED = "internal_log_enabled";
+    public static final String INTERNAL_LOG_POLICY_VERSION = "internal_log_policy_version";
     public static final String PARSE_WEBVIEW = "parse_webview"; // true 系统 false xwalk
     public static final String PLAY_TYPE = "play_type";//0 系统 10+ 外部播放器
     public static final String LIVE_PLAY_TYPE = "live_play_type";//0 系统

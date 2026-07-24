@@ -16,8 +16,7 @@ public final class LOG {
 
     private static void write(String level, String msg) {
         try {
-            // Persistent diagnostic logs are opt-in only. Normal playback never writes them.
-            if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) {
+            if (Hawk.get(HawkConfig.INTERNAL_LOG_ENABLED, true)) {
                 RuntimeLogStore.append(level, msg);
             }
         } catch (Throwable ignored) {

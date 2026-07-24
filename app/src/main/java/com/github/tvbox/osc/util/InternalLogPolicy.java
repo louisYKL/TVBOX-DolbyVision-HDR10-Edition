@@ -1,8 +1,9 @@
 package com.github.tvbox.osc.util;
 
-/** Bounds optional diagnostic storage without affecting normal playback. */
+/** Bounds diagnostic storage without affecting normal playback. */
 public final class InternalLogPolicy {
-    public static final long MAX_TOTAL_BYTES = 1024L * 1024L;
+    public static final int POLICY_VERSION = 2;
+    public static final long MAX_TOTAL_BYTES = 512L * 1024L;
     public static final long MAX_FILE_BYTES = MAX_TOTAL_BYTES / 2L;
 
     private InternalLogPolicy() {

@@ -41,7 +41,7 @@ public final class StorageBudgetManager {
     }
 
     public static void trimLogs() {
-        deleteRecursively(getLogDir());
+        trimDirectoryToBudget(getLogDir(), MAX_INTERNAL_LOG_BYTES, true);
     }
 
     public static void trimCaches() {

@@ -13,7 +13,7 @@ import android.view.ViewParent;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import com.github.tvbox.osc.player.MPVCompatPlayer;
+import com.github.tvbox.osc.player.SystemCodecPlayer;
 
 import xyz.doikki.videoplayer.player.AbstractPlayer;
 import xyz.doikki.videoplayer.player.VideoView;
@@ -44,7 +44,10 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
         mMeasureHelper = new MeasureHelper();
         SurfaceHolder surfaceHolder = getHolder();
         surfaceHolder.addCallback(this);
-        // Keep the video surface opaque so TV firmware can promote it to the hardware video plane.
+        // Default SurfaceView z-order: the video surface stays behind the app window so the
+        // Novatek(OMX.NVT) TV chip promotes it to the hardware video plane, which is how this
+        // chip is designed to show video. This is the original, proven configuration that
+        // produced a visible picture; forcing media-overlay caused a black screen on this chip.
         setZOrderOnTop(false);
         setZOrderMediaOverlay(false);
     }
@@ -142,9 +145,8 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        if (mMediaPlayer != null) {
-            mMediaPlayer.setDisplay(holder);
-        }
+        // ExoPlayer already receives size changes from its SurfaceHolder callback. Rebinding
+        // here makes affected vendor codecs try MediaCodec.setOutputSurface() unnecessarily.
         notifySurfaceAvailableIfReady("changed");
     }
 
@@ -155,17 +157,19 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
             listener.onSurfaceDestroyed(this);
         }
         if (mMediaPlayer != null) {
-            if (mMediaPlayer instanceof MPVCompatPlayer) {
-                if (isParentVideoViewMovingFullScreen()) {
-                    return;
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !isAttachedToWindow()) {
-                    return;
-                }
-                mMediaPlayer.setDisplay(null);
+            // A fullscreen move briefly destroys the old Surface after the new one has
+            // already been attached. Do not let that stale callback detach the live decoder.
+            if (isParentVideoViewMovingFullScreen()) {
                 return;
             }
-            mMediaPlayer.setDisplay(null);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !isAttachedToWindow()) {
+                return;
+            }
+            if (mMediaPlayer instanceof SystemCodecPlayer) {
+                ((SystemCodecPlayer) mMediaPlayer).detachDisplay(holder);
+            } else {
+                mMediaPlayer.setDisplay(null);
+            }
         }
     }
 
