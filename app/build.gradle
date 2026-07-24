@@ -15,8 +15,8 @@ android {
     defaultConfig {
         applicationId 'com.github.tvbox.osc'
         targetSdkVersion 34
-        versionCode 2031
-        versionName '0.2.4'
+        versionCode 2050
+        versionName '0.2.5'
         multiDexEnabled true
         //设置room的Schema的位置
         javaCompileOptions {
@@ -96,8 +96,6 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Native播放器依赖 JNI 按固定方法签名回调 Java。R8 裁剪/内联会导致
-            // libplayer.so GetStaticMethodID 找不到 MPVLib.eventProperty 后直接 SIGABRT。
             minifyEnabled false
             signingConfig signingConfigs.debug
         }
@@ -174,6 +172,11 @@ dependencies {
     implementation project(":quickjs")
     pythonImplementation project(":pyramid")
     python64Implementation project(":pyramid")
+
+    // Kodi-style playback split: ExoPlayer owns demux/cache/clock, Android
+    // MediaCodec owns video decode, and FFmpeg decodes unsupported audio to PCM.
+    implementation 'com.google.android.exoplayer:exoplayer:2.19.1'
+    implementation 'org.jellyfin.exoplayer:exoplayer-ffmpeg-extension:2.19.1+1'
 
 
     implementation 'com.lzy.net:okgo:3.0.4'

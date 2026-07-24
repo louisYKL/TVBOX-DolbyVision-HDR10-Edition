@@ -19,7 +19,12 @@ public final class PlaybackBufferProgressPolicy {
     public static boolean shouldShowDetailLoadingOverlay(int playState,
                                                          boolean renderedFirstFrame,
                                                          boolean fullScreen) {
-        return !renderedFirstFrame && !fullScreen && isLoadingState(playState);
+        // Show the "正在加载/缓冲 X%" overlay whenever the player is actually preparing or
+        // buffering, regardless of whether a first frame was already rendered or whether we are
+        // fullscreen. Previously this returned false once the first frame had rendered (and in
+        // fullscreen), so a mid-playback rebuffer that freezes on the first decoded frame looked
+        // like an unexplained long black screen with no indication that it was still buffering.
+        return isLoadingState(playState);
     }
 
     public static boolean hasForwardProgress(int previousHighWaterPercent,
@@ -68,10 +73,6 @@ public final class PlaybackBufferProgressPolicy {
                 && elapsedSinceRefreshMs >= Math.max(0L, minimumRefreshIntervalMs);
     }
 
-    /**
-     * The watchdog can fire between progress polls. Keep that independent path aligned with
-     * the periodic refresh above so an active native buffer is never released early.
-     */
     public static boolean shouldDeferTimeoutForActiveBuffering(long elapsedSinceBufferingStartMs,
                                                                long maxBufferingEpisodeMs) {
         return elapsedSinceBufferingStartMs >= 0L

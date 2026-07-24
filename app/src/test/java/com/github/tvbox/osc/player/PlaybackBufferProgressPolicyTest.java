@@ -36,14 +36,14 @@ public class PlaybackBufferProgressPolicyTest {
     }
 
     @Test
-    public void detailLoadingOverlayNeverReturnsAfterTheFirstFrame() {
+    public void detailLoadingOverlayStaysVisibleDuringAnyBufferingEpisode() {
         assertTrue(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
                 VideoView.STATE_PREPARING, false, false));
         assertTrue(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
                 VideoView.STATE_BUFFERING, false, false));
-        assertFalse(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+        assertTrue(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
                 VideoView.STATE_BUFFERING, true, false));
-        assertFalse(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
+        assertTrue(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
                 VideoView.STATE_BUFFERING, false, true));
         assertFalse(PlaybackBufferProgressPolicy.shouldShowDetailLoadingOverlay(
                 VideoView.STATE_PLAYING, false, false));

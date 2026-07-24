@@ -2,16 +2,16 @@
 
 # TV BOX Dolby Vision / HDR10 Support Edition
 
-> A TV-first TVBox branch focused on native hardware playback, HDR activation, Dolby Vision fallback routing, and living-room friendly interaction.
+> A TV-first TVBox branch focused on device hardware decoding, HDR activation, capability-aware Dolby Vision routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.4"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.4-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.5"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.5-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.4">Download 0.2.4</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.5">Download 0.2.5</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -19,15 +19,15 @@
 
 ## In one line
 
-This branch is built for real living-room playback: keep native system decoding whenever the device can do it well, route unstable MKV / WebM / Dolby Vision cases to the built-in compatibility path, and keep HDR, subtitles, audio passthrough, and remote interaction working together.
+This branch is built for real living-room playback: every video uses the current device's Android `MediaCodec` hardware path, audio prefers platform decoding and ends as stereo PCM, and HDR, subtitles, sustained buffering, and remote interaction stay in one pipeline.
 
 ## Downloads
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.2.4_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, compatible with in-place updates from 0.2.3 and earlier test builds |
-| `TVBox_v0.2.4_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, compatible with in-place updates from 0.2.3 and earlier test builds |
-| `TVBox_v0.2.4_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, compatible with in-place updates from 0.2.3 |
+| `TVBox_v0.2.5_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.4 and earlier builds |
+| `TVBox_v0.2.5_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.4 and earlier builds |
+| `TVBox_v0.2.5_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.4 and earlier builds |
 
 ## Preview
 
@@ -40,23 +40,24 @@ This branch is built for real living-room playback: keep native system decoding 
 
 This is not a “just make it play somehow” TVBox fork.
 
-The branch is built around real TV use cases: native playback when the device can do it well, a compatibility path when vendor firmware cannot, proper HDR routing, subtitle handling, audio passthrough behavior, and remote-control friendly fullscreen interaction.
+The branch is built around real TV use cases: device hardware video decoding, capability-aware HDR routing, reliable stereo PCM audio, subtitle handling, and remote-control friendly fullscreen interaction.
 
 The core principle is simple:
 
-- If the device system player can handle the stream reliably, keep it on the native path.
-- If the native chain is unstable for the container or stream type, route it to the built-in compatibility player.
+- Every video stays on the platform `MediaCodec` path and only hardware video decoders are eligible.
+- Platform audio decoders run first; FFmpeg is used only when Android exposes no decoder for the audio format.
 - Detect HDR10, HDR10+, and Dolby Vision from the actual video stream, not from titles or filenames.
 
 ## What this branch focuses on
 
-- Preserve the native hardware decode path for standard HDR10 / HDR10+ playback.
-- Add a more reliable compatibility chain for MKV / WebM / difficult Dolby Vision cases.
-- Prefer HDR10 base-layer playback on devices without native Dolby Vision decoding.
-- Keep subtitles, audio passthrough, fullscreen controls, and remote focus behavior consistent for TV use.
+- Use the current device's hardware video decoders for SDR, HDR10, and HDR10+ playback.
+- Keep the complete Dolby Vision stream on devices that expose both hardware DV decoding and DV output capability.
+- Use the HDR10/HLG base layer only when end-to-end native Dolby Vision is unavailable.
+- Prefer platform decoding for Atmos, AC-3, E-AC-3/JOC, DTS, and TrueHD, then downmix all output to stereo PCM.
+- Keep subtitles, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
 
-## 0.2.4 Variants
+## 0.2.5 Variants
 
 | Variant | ABI | Target devices | Notes |
 | --- | --- | --- | --- |
@@ -64,37 +65,38 @@ The core principle is simple:
 | `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
 | `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Dedicated Hisense build |
 
-## What 0.2.4 focused on
+## What 0.2.5 focused on
 
-- Fixes Java64 live playback that could keep audio while showing a black frame: the old system player now detaches its render Surface before release, and retry/channel switching cannot release it twice. The system player retains the system URL; only the compatibility player uses the compatibility URL.
-- Ordinary non-Dolby-Vision VOD on the main 32-bit and Hisense variants now stays on Android `MediaPlayer` hardware decoding rather than silently falling back to the compatibility player. Dolby Vision keeps its dedicated native or compatibility route.
-- Saved-progress startup has its own range-seek allowance. Sustained native buffering can defer the outer safety net only up to 180 seconds, preventing healthy first-frame decoding or repeated seeks from being timed out.
-- All three variants retain the Java64 touch/gesture/focus, subtitle, and audio paths plus the Hisense package/ABI boundary. Version is `0.2.4` (`versionCode 2031`) using the existing signing certificate, installable in place over `0.2.3` and earlier builds.
+- All three variants now use one ExoPlayer clock/demux pipeline whose video renderer accepts only device hardware `MediaCodec` decoders; there is no software video fallback.
+- Dolby Vision routing is end-to-end capability based. Devices exposing both a hardware DV decoder and DV output keep the complete DV stream; other devices alone use the HDR10/HLG base layer.
+- Audio renderer order is platform `MediaCodec` first and FFmpeg second. Device-supported Atmos, AC-3, E-AC-3/JOC, DTS, and TrueHD use platform decoding, and every result is downmixed to stereo PCM.
+- Capability probing and decoder selection now share the same hardware-only classification. Declaration-only flags and software codecs cannot trigger native DV/10-bit routing, and platform playback still starts when the FFmpeg extension is absent.
+- The verified Java32 startup/seek prebuffering, live transfer speed, buffering percentage, pre-prepare resume seek, false-completion guard, and allocation-free DV RPU handling are synchronized to Java64 and Hisense.
+- Java64 touch/gesture/focus behavior and the independent Hisense package/ABI remain intact. All builds use `0.2.5` (`versionCode 2050`) and the existing signing certificate for in-place updates from `0.2.4` and earlier.
 
 ## Highlights
 
-### 1. Native system-player first
+### 1. Device hardware decoding
 
-- Standard MP4 / TS / HDR10 / HDR10+ playback prefers the native system player.
-- This keeps hardware decoding, native HDR switching, and vendor image processing in the device path whenever possible.
+- Every video format stays on Android `MediaCodec`, with software-only video decoders excluded.
+- Native HDR switching, MEMC, and vendor image processing remain in the device path.
 
 ### 2. Dolby Vision routing
 
-- The app probes the stream before playback and selects the playback path up front.
-- On devices without native DV decoding:
-- If an HDR10 base layer is available, the app prefers that path.
-- If not, it falls back to the built-in compatibility player with HDR or SDR fallback depending on device capability.
+- The app probes the stream and queries device capability before playback.
+- A complete DV stream reaches the native decoder only when both hardware DV decoding and DV output are available.
+- Other devices strip DV RPU/EL and restore HDR metadata only for the HDR10/HLG base-layer path; ordinary HEVC/HDR streams are untouched.
 
-### 3. MKV / WebM compatibility
+### 3. Audio capability routing
 
-- Some TV firmware is unreliable with HTTP HEVC MKV on the native extractor / decoder chain.
-- The built-in MPV compatibility path is used to avoid forcing those streams through a path that simply fails.
+- Platform hardware audio decoders are ordered before platform software decoders and the FFmpeg extension.
+- All decoded audio reaches one stereo PCM `AudioTrack`, preventing silence on optical/ARC outputs that cannot decode multichannel bitstreams.
 
 ### 4. Subtitles and audio
 
 - Supports internal subtitles, source subtitles, external subtitles, and local subtitles.
 - Automatically prefers Simplified Chinese / Traditional Chinese when available.
-- Audio passthrough follows the app setting while the app keeps its own volume at full scale.
+- Audio stays at full-scale stereo PCM and Android routes it to the active TV speaker, HDMI/ARC, or external digital output.
 
 ### 5. TV-first interaction
 
@@ -117,9 +119,10 @@ This repository is meant to make the playback stack and TV experience more delib
 ```text
 Stream probe
   -> identify HDR10 / HDR10+ / Dolby Vision
-  -> inspect container and device capability
-  -> choose native system player or compatibility player
-  -> apply HDR request, subtitle policy, audio passthrough, and fullscreen controls
+  -> query device video and audio decoder capability
+  -> select a device hardware MediaCodec for video
+  -> select a platform audio decoder, with FFmpeg only as fallback
+  -> output stereo PCM and apply HDR, subtitle, and fullscreen policy
 ```
 
 ## Repository layout
@@ -154,9 +157,9 @@ $env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 
 The repository includes a basic Android build workflow for:
 
-- `TVBox_v0.2.4_java32.apk`
-- `TVBox_v0.2.4_java64.apk`
-- `TVBox_v0.2.4_hisense32.apk`
+- `TVBox_v0.2.5_java32.apk`
+- `TVBox_v0.2.5_java64.apk`
+- `TVBox_v0.2.5_hisense32.apk`
 
 ## Community
 
@@ -188,4 +191,5 @@ The repository includes a basic Android build workflow for:
 - `0.2.2`: rebuild prebuffering and seek coordination, restore stable audio/subtitle/progress behavior, add buffering percentage, fullscreen subtitle controls, and the detail-page filename, then sync all three variants.
 - `0.2.3`: fix the root cause of playback/seek/scrub freezing into "播放超时" by adding a finite per-read inactivity timeout to every proxy streaming client (local direct stream, HLS/live `ts` relay, foreign `go=stream` passthrough, and m3u8 fetch), and treat active native buffering itself as a liveness signal so healthy playback is no longer killed while its byte-count percentage plateaus.
 - `0.2.4`: fix Java64 live black-screen-with-audio and the Surface lifecycle conflict during player release; keep ordinary non-Dolby-Vision VOD on the native system decoder for main 32-bit and Hisense; give saved-progress startup and repeated timeline movement a bounded native-buffer allowance to avoid false timeouts.
+- `0.2.5`: unify capability-aware routing across all variants: device hardware video decode only, complete native DV on capable devices, HDR base-layer fallback only elsewhere, platform-first audio decoding to stereo PCM, and synchronized buffering/seek/performance fixes.
 - Next: keep closing playback, subtitle, HDR, and audio behavior from device logs.

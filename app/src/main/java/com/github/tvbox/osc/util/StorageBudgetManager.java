@@ -13,6 +13,7 @@ import java.util.List;
 
 public final class StorageBudgetManager {
     public static final long MAX_CACHE_BYTES = 100L * 1024L * 1024L;
+    public static final long MAX_INTERNAL_LOG_BYTES = InternalLogPolicy.MAX_TOTAL_BYTES;
     private static final Comparator<File> OLDEST_FIRST = new Comparator<File>() {
         @Override
         public int compare(File left, File right) {
@@ -40,7 +41,7 @@ public final class StorageBudgetManager {
     }
 
     public static void trimLogs() {
-        deleteRecursively(getLogDir());
+        trimDirectoryToBudget(getLogDir(), MAX_INTERNAL_LOG_BYTES, true);
     }
 
     public static void trimCaches() {
@@ -64,7 +65,7 @@ public final class StorageBudgetManager {
         return new File(getLogDir(), "runtime.log");
     }
 
-    private static File getLogDir() {
+    static File getLogDir() {
         App app = App.getInstance();
         if (app == null) {
             return new File("logs");

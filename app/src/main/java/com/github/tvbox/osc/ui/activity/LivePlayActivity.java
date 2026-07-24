@@ -61,7 +61,6 @@ import com.github.tvbox.osc.util.DefaultConfig;
 import com.github.tvbox.osc.util.EpgUtil;
 import com.github.tvbox.osc.util.FastClickCheckUtil;
 import com.github.tvbox.osc.util.HawkConfig;
-import com.github.tvbox.osc.util.LivePlaybackRoutePolicy;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
 import com.github.tvbox.osc.util.PlayerHelper;
@@ -1459,16 +1458,9 @@ public class LivePlayActivity extends BaseActivity {
             }
             HashMap<String, String> finalHeaders = mergedHeaders.isEmpty() ? null : mergedHeaders;
             int currentPlayerType = livePlayerManager.getCurrentPlayerType();
-            boolean useCompatPlaybackUrl = LivePlaybackRoutePolicy.shouldUseCompatUrl(currentPlayerType);
-            String playbackUrl = useCompatPlaybackUrl
-                    ? PlaybackUrlNormalizer.resolveCompatPlaybackUrl(sourceUrl, finalHeaders, true)
-                    : (PlayerHelper.isSystemPlayerType(currentPlayerType)
+            String playbackUrl = PlayerHelper.isSystemPlayerType(currentPlayerType)
                     ? PlaybackUrlNormalizer.resolveSystemPlaybackUrl(sourceUrl, finalHeaders, true)
-                    : PlaybackUrlNormalizer.resolvePlaybackUrl(sourceUrl, finalHeaders, true));
-            LOG.i("echo-live-url-resolve mode=" + (useCompatPlaybackUrl ? "compat" : "system")
-                    + " player=" + currentPlayerType
-                    + " src=" + sourceUrl
-                    + " dst=" + playbackUrl);
+                    : PlaybackUrlNormalizer.resolvePlaybackUrl(sourceUrl, finalHeaders, true);
             // 连续切台/重进时直接复用当前播放器实例，避免 surface 回调落到已释放对象上。
             if (!playerReleased) {
                 mVideoView.release();

@@ -562,7 +562,7 @@ public final class SystemPlayerTrackManager {
         } else if (genericChineseOnly) {
             // A bare chi/zho/zh/cmn tag is often a container-level or firmware
             // guess. Prefer explicit Simplified/Traditional/Chinese titles
-            // when MPV exposes the full track list.
+            // when the player exposes the full track list.
             score -= 90;
         }
         if (isTextSubtitleTrack(bean)) {

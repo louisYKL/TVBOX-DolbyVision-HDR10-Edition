@@ -197,6 +197,7 @@ public class VodController extends BaseController {
     TextView mPlayLoadNetSpeed;
     TextView mVideoSize;
     public SimpleSubtitleView mSubtitleView;
+    public com.google.android.exoplayer2.ui.SubtitleView mBitmapSubtitleView;
     TextView mResumeAnchor;
     TextView mZimuBtn;
     TextView mSubtitleToggleBtn;
@@ -290,6 +291,7 @@ public class VodController extends BaseController {
         mPlayLoadNetSpeed = findViewById(R.id.tv_play_load_net_speed);
         mVideoSize = findViewById(R.id.tv_videosize);
         mSubtitleView = findViewById(R.id.subtitle_view);
+        mBitmapSubtitleView = findViewById(R.id.bitmap_subtitle_view);
         mResumeAnchor = findViewById(R.id.play_resume_anchor);
         mZimuBtn = findViewById(R.id.zimu_select);
         mSubtitleToggleBtn = findViewById(R.id.subtitle_toggle);
@@ -1065,6 +1067,11 @@ public class VodController extends BaseController {
     protected void onPlayStateChanged(int playState) {
         super.onPlayStateChanged(playState);
         videoPlayState = playState;
+        if ((playState == VideoView.STATE_PREPARING || playState == VideoView.STATE_BUFFERING)
+                && mProgressRoot != null && mProgressRoot.getVisibility() != GONE) {
+            mHandler.removeMessages(1001);
+            mProgressRoot.setVisibility(GONE);
+        }
         updatePlaybackLoadingSpeedVisibility(playState);
         switch (playState) {
             case VideoView.STATE_IDLE:
