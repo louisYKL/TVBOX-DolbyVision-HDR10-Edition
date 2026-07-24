@@ -233,7 +233,10 @@ public class PlayerCapability {
         }
         int[] encodings = device.getEncodings();
         if (encodings == null || encodings.length == 0) {
-            return "pcm";
+            // Android documents an empty array as "arbitrary encodings", not proof that an
+            // attached receiver supports every bitstream. Keep this unverified so playback
+            // falls back to the system PCM route unless a concrete format is advertised.
+            return "unspecified";
         }
         StringBuilder values = new StringBuilder();
         for (int encoding : encodings) {

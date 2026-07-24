@@ -22,6 +22,7 @@ import androidx.annotation.Nullable;
 import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.base.BaseActivity;
+import com.github.tvbox.osc.util.AudioPassthroughVolumePolicy;
 
 import java.util.Map;
 
@@ -445,6 +446,11 @@ public abstract class BaseController extends BaseVideoController implements Gest
     }
 
     protected void slideToChangeVolume(float deltaY) {
+        if (AudioPassthroughVolumePolicy.isVolumeLocked()) {
+            AudioPassthroughVolumePolicy.enforceMaximum(getContext());
+            notifyVolumeChange(100, "音频直通/系统音量");
+            return;
+        }
         int streamMaxVolume = mAudioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
         int percent = 100;
         if (shouldUseDeviceVolumeGesture()) {
@@ -473,6 +479,11 @@ public abstract class BaseController extends BaseVideoController implements Gest
             } catch (Throwable ignored) {
             }
         }
+        notifyVolumeChange(percent, shouldUseDeviceVolumeGesture()
+                ? ("音量" + percent + "%") : "音频直通/系统音量");
+    }
+
+    private void notifyVolumeChange(int percent, String message) {
         for (Map.Entry<IControlComponent, Boolean> next : mControlComponents.entrySet()) {
             IControlComponent component = next.getKey();
             if (component instanceof IGestureComponent) {
@@ -481,7 +492,7 @@ public abstract class BaseController extends BaseVideoController implements Gest
         }
         Message msg = Message.obtain();
         msg.what = 100;
-        msg.obj = shouldUseDeviceVolumeGesture() ? ("音量" + percent + "%") : "音频直通/系统音量";
+        msg.obj = message;
         mHandler.sendMessage(msg);
         mHandler.removeMessages(101);
         mHandler.sendEmptyMessageDelayed(101, 1000);

@@ -183,47 +183,6 @@ public final class PlaybackUrlNormalizer {
         return resolveSystemPlaybackUrl(normalizedPath, headers, live);
     }
 
-    public static String resolveCompatPlaybackUrl(String path, Map<String, String> headers, boolean live) {
-        if (TextUtils.isEmpty(path)) {
-            return path;
-        }
-        String normalizedPath = normalizeHttpUrl(path);
-        if (isAnyLocalProxyPlayUrl(normalizedPath)) {
-            LOG.i("echo-playback-url compat-direct-local-proxy-play -> " + safeSnippet(normalizedPath));
-            return normalizedPath;
-        }
-        if (isAppLocalProxyUrl(normalizedPath)) {
-            String nested = unwrapAppStreamProxyToForeignLocalPlay(normalizedPath);
-            String nestedAnyLocalPlay = unwrapAppStreamProxyToAnyLocalPlay(normalizedPath);
-            if (!TextUtils.isEmpty(nestedAnyLocalPlay) && !live && isMatroskaLike(nestedAnyLocalPlay)) {
-                LOG.i("echo-playback-url compat-unwrap-app-stream-any-local-matroska -> " + safeSnippet(nestedAnyLocalPlay));
-                return nestedAnyLocalPlay;
-            }
-            if (!TextUtils.isEmpty(nested)) {
-                LOG.i("echo-playback-url compat-unwrap-app-stream -> " + safeSnippet(nested));
-                return nested;
-            }
-            LOG.i("echo-playback-url compat-direct-app-local-proxy -> " + safeSnippet(normalizedPath));
-            return normalizedPath;
-        }
-        if (isForeignLocalProxyPlayUrl(normalizedPath)) {
-            LOG.i("echo-playback-url compat-direct-foreign-local-play -> " + safeSnippet(normalizedPath));
-            return normalizedPath;
-        }
-        if (isForeignLocalProxyUrl(normalizedPath)) {
-            LOG.i("echo-playback-url compat-direct-foreign-local-proxy -> " + safeSnippet(normalizedPath));
-            return normalizedPath;
-        }
-        if (!live && !isHlsLike(normalizedPath)) {
-            return normalizedPath;
-        }
-        if (!live && isHlsLike(normalizedPath) && isRemoteNetworkUrl(normalizedPath)) {
-            LOG.i("echo-playback-url compat-direct-hls -> " + safeSnippet(normalizedPath));
-            return normalizedPath;
-        }
-        return resolvePlaybackUrl(normalizedPath, headers, live);
-    }
-
     public static boolean isHlsLike(String uri) {
         if (TextUtils.isEmpty(uri)) {
             return false;

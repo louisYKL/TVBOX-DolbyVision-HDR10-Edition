@@ -2,10 +2,10 @@
 
 # TV BOX Hisense 32-bit Edition
 
-> A dedicated Hisense Android / Google TV branch synced to the `0.2.4` playback core.
+> A dedicated Hisense Android / Google TV branch synced to the `0.2.5` playback core.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.4"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.4-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.5"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.5-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Hisense%20Android%20TV-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
@@ -14,17 +14,17 @@
 ## Current build
 
 - Package name: `com.github.tvbox.osc.hisense`
-- Version: `0.2.4` (`versionCode 2031`)
+- Version: `0.2.5` (`versionCode 2050`)
 - ABI: `armeabi-v7a`
-- Output APK: `TVBox_v0.2.4_hisense32.apk`
+- Output APK: `TVBox_v0.2.5_hisense32.apk`
 - Minimum Android: 4.4 / API 19
 
-## What 0.2.4 fixed
+## What 0.2.5 fixed
 
-- Ordinary non-Dolby-Vision VOD now stays on Android `MediaPlayer` hardware decoding rather than silently falling back to the compatibility player. Dolby Vision keeps its dedicated native or compatibility route.
-- Saved-progress startup has its own range-seek allowance. Sustained native buffering can defer the outer safety net only up to 180 seconds, preventing healthy first-frame decoding or repeated seeks from being timed out.
-- The package remains `com.github.tvbox.osc.hisense`, Android 4.4 / API 19 remains the minimum, and ABI remains `armeabi-v7a`. Version `0.2.4` (`versionCode 2031`) uses the existing signing certificate and installs in place over `0.2.3` and earlier builds while remaining separate from the main package.
-- The dedicated `com.github.tvbox.osc.hisense` package, Android 4.4 minimum, and `armeabi-v7a` ABI remain unchanged for side-by-side installation.
+- Every video selects a hardware `MediaCodec` exposed by the Hisense device; native DV is kept only when both hardware DV decode and DV output are available, otherwise the HDR base layer is used.
+- Platform audio decoding runs first, FFmpeg is only a fallback, and output is always stereo PCM; startup prebuffer, sustained cache, seek, buffering percentage, and live speed fixes are synchronized.
+- Capability probing and decoder selection consistently exclude software codecs and declaration-only support; the Hisense platform codec route still works when the FFmpeg extension is unavailable.
+- The dedicated `com.github.tvbox.osc.hisense` package, Android 4.4 minimum, and `armeabi-v7a` ABI remain unchanged. Version `0.2.5` (`versionCode 2050`) uses the existing signing certificate, installs over earlier Hisense builds, and remains side-by-side installable with the main package.
 
 ## Build
 

@@ -32,8 +32,8 @@ public class PlaybackLoadingOverlayPolicyTest {
     }
 
     @Test
-    public void seekOverlaySuppressesLoadingSpeed() {
-        assertFalse(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
+    public void seekOverlayKeepsActiveLoadingStatusVisible() {
+        assertTrue(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
                 VideoView.STATE_BUFFERING, true, false));
     }
 
@@ -48,18 +48,22 @@ public class PlaybackLoadingOverlayPolicyTest {
     }
 
     @Test
-    public void bufferingStatusContainsBoundedPercentAndSpeed() {
+    public void controllerStatusContainsPhaseProgressAndCurrentSpeed() {
         org.junit.Assert.assertEquals(
-                "正在加载视频 12% · 3.1MB/s",
+                "正在加载视频 12%  3.1MB/s",
                 PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                         VideoView.STATE_PREPARING, 12, "3.1MB/s"));
         org.junit.Assert.assertEquals(
-                "正在缓冲视频 37% · 5.2MB/s",
+                "正在缓冲视频 37%  5.2MB/s",
                 PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                         VideoView.STATE_BUFFERING, 37, "5.2MB/s"));
         org.junit.Assert.assertEquals(
-                "正在缓冲视频 100% · 1MB/s",
+                "正在缓冲视频 100%  1MB/s",
                 PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                         VideoView.STATE_BUFFERING, 130, "1MB/s"));
+        org.junit.Assert.assertEquals(
+                "正在缓冲视频 0%",
+                PlaybackLoadingOverlayPolicy.formatLoadingStatus(
+                        VideoView.STATE_BUFFERING, -10, ""));
     }
 }

@@ -99,6 +99,11 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     protected long mLastConfirmedSeekPosition = -1L;
     protected long mResumePosition;//启动/重试时待恢复的目标位置
     protected long mLastKnownDuration;
+    // Completion callbacks may arrive late from a released native player. Keep enough
+    // state here to validate the callback against the player currently bound to this view.
+    protected boolean mRenderStartSeen;
+    protected boolean mSeekInFlight;
+    protected boolean mInitialPositionApplied;
     //播放器的各种状态
     public static final int STATE_ERROR = -1;
     public static final int STATE_IDLE = 0;
@@ -274,6 +279,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         //读取播放进度
         mCurrentPosition = 0L;
         mLastConfirmedSeekPosition = -1L;
+        mRenderStartSeen = false;
+        mSeekInFlight = false;
         if (mProgressManager != null && mResumePosition <= 0L) {
             mResumePosition = Math.max(0L,
                     mProgressManager.getSavedProgress(mProgressKey == null ? mUrl : mProgressKey));
@@ -416,6 +423,15 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             }
         }
         if (prepareDataSource()) {
+            long resumePosition = sanitizeResumePosition(mResumePosition);
+            mInitialPositionApplied = resumePosition > 0L
+                    && mMediaPlayer.setInitialPosition(resumePosition);
+            if (mInitialPositionApplied) {
+                mCurrentPosition = resumePosition;
+                mLastConfirmedSeekPosition = resumePosition;
+                mSeekInFlight = false;
+                L.d("initial resume position applied before prepare: " + resumePosition);
+            }
             mMediaPlayer.prepareAsync();
             setPlayState(STATE_PREPARING);
             setPlayerState(isFullScreen() ? PLAYER_FULL_SCREEN : isTinyScreen() ? PLAYER_TINY_SCREEN : PLAYER_NORMAL);
@@ -582,6 +598,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             //重置播放进度
             mCurrentPosition = 0;
             mLastConfirmedSeekPosition = -1L;
+            mRenderStartSeen = false;
+            mSeekInFlight = false;
             //切换转态
             setPlayState(STATE_IDLE);
         }
@@ -746,6 +764,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public void seekTo(long pos) {
         if (isInPlaybackState()) {
             mLastConfirmedSeekPosition = -1L;
+            mSeekInFlight = true;
             mMediaPlayer.seekTo(pos);
         }
     }
@@ -797,8 +816,12 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         if (mAudioFocusHelper != null) {
             mAudioFocusHelper.requestFocus();
         }
-        if (resumePosition > 0L) {
+        if (resumePosition > 0L && !mInitialPositionApplied) {
             seekTo(resumePosition);
+        } else if (mInitialPositionApplied) {
+            mCurrentPosition = resumePosition;
+            mLastConfirmedSeekPosition = resumePosition;
+            mSeekInFlight = false;
         }
     }
 
@@ -806,6 +829,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public void onSeekComplete(long position) {
         mLastConfirmedSeekPosition = Math.max(0L, position);
         mCurrentPosition = mLastConfirmedSeekPosition;
+        mSeekInFlight = false;
     }
 
     /**
@@ -821,6 +845,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
                 setPlayState(STATE_BUFFERED);
                 break;
             case AbstractPlayer.MEDIA_INFO_RENDERING_START: // 视频/音频开始渲染
+                mRenderStartSeen = true;
                 setPlayState(STATE_PLAYING);
                 mPlayerContainer.setKeepScreenOn(true);
                 break;
@@ -850,10 +875,51 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             L.d("ignore late completion state=" + mCurrentPlayState);
             return;
         }
+        long position = Math.max(0L, mCurrentPosition);
+        long duration = Math.max(0L, resolvePersistableDuration());
+        try {
+            long currentPosition = mMediaPlayer.getCurrentPosition();
+            if (currentPosition > 0L) {
+                position = currentPosition;
+                mCurrentPosition = currentPosition;
+            }
+        } catch (Throwable ignored) {
+        }
+        boolean audioOnly = mVideoSize[0] <= 0 || mVideoSize[1] <= 0;
+        boolean expectedCompletion = PlaybackCompletionPolicy.isExpectedCompletion(
+                mRenderStartSeen,
+                audioOnly,
+                mSeekInFlight,
+                mCurrentPlayState == STATE_BUFFERING,
+                position,
+                duration);
+        if (!expectedCompletion) {
+            boolean currentPlaybackStillActive = mCurrentPlayState == STATE_PREPARING
+                    || mCurrentPlayState == STATE_BUFFERING;
+            try {
+                currentPlaybackStillActive = currentPlaybackStillActive || mMediaPlayer.isPlaying();
+            } catch (Throwable ignored) {
+            }
+            L.d("echo-video-completion rejected position=" + position
+                    + " duration=" + duration
+                    + " rendered=" + mRenderStartSeen
+                    + " audioOnly=" + audioOnly
+                    + " seek=" + mSeekInFlight
+                    + " active=" + currentPlaybackStillActive);
+            if (currentPlaybackStillActive) {
+                return;
+            }
+            // A real core that stops before the end is a source failure, never an episode
+            // completion. Reporting an error preserves the current selection and avoids
+            // opening a second proxy stream through automatic next-episode playback.
+            onError();
+            return;
+        }
         mPlayerContainer.setKeepScreenOn(false);
         mCurrentPosition = 0;
         mLastConfirmedSeekPosition = -1L;
         mResumePosition = 0L;
+        mSeekInFlight = false;
         saveProgress(0L);
         setPlayState(STATE_PLAYBACK_COMPLETED);
     }
@@ -919,6 +985,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mLastConfirmedSeekPosition = -1L;
         mResumePosition = 0L;
         mLastKnownDuration = 0L;
+        mRenderStartSeen = false;
+        mSeekInFlight = false;
     }
 
     /**
@@ -931,6 +999,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mLastConfirmedSeekPosition = -1L;
         mResumePosition = 0L;
         mLastKnownDuration = 0L;
+        mRenderStartSeen = false;
+        mSeekInFlight = false;
     }
 
     public void setProgressKey(String key) {
@@ -944,6 +1014,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mCurrentPosition = 0L;
         mLastConfirmedSeekPosition = -1L;
         mResumePosition = Math.max(0L, position);
+        mRenderStartSeen = false;
+        mSeekInFlight = false;
     }
 
     /**

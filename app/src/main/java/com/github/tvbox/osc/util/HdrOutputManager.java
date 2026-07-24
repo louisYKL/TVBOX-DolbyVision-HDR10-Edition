@@ -40,7 +40,11 @@ public final class HdrOutputManager {
         }
         try {
             WindowManager.LayoutParams attrs = window.getAttributes();
+            float previousBrightness = attrs.screenBrightness;
             applyJava64HdrBrightness(activity, attrs, boostBrightness, reason);
+            if (Float.compare(previousBrightness, attrs.screenBrightness) == 0) {
+                return true;
+            }
             window.setAttributes(attrs);
             WindowManager.LayoutParams applied = window.getAttributes();
             LOG.i("echo-hdr-window brightness-only reason=" + reason
@@ -72,8 +76,14 @@ public final class HdrOutputManager {
         }
         try {
             WindowManager.LayoutParams attrs = window.getAttributes();
+            int previousColorMode = attrs.getColorMode();
+            float previousBrightness = attrs.screenBrightness;
             attrs.setColorMode(ActivityInfo.COLOR_MODE_HDR);
             applyJava64HdrBrightness(activity, attrs, boostBrightness, reason);
+            if (previousColorMode == attrs.getColorMode()
+                    && Float.compare(previousBrightness, attrs.screenBrightness) == 0) {
+                return true;
+            }
             window.setAttributes(attrs);
             WindowManager.LayoutParams applied = window.getAttributes();
             LOG.i("echo-hdr-window requested reason=" + reason
@@ -105,8 +115,14 @@ public final class HdrOutputManager {
         }
         try {
             WindowManager.LayoutParams attrs = window.getAttributes();
+            int previousColorMode = attrs.getColorMode();
+            float previousBrightness = attrs.screenBrightness;
             attrs.setColorMode(ActivityInfo.COLOR_MODE_DEFAULT);
             applyJava64HdrBrightness(activity, attrs, false, reason);
+            if (previousColorMode == attrs.getColorMode()
+                    && Float.compare(previousBrightness, attrs.screenBrightness) == 0) {
+                return;
+            }
             window.setAttributes(attrs);
             LOG.i("echo-hdr-window released reason=" + reason
                     + " colorMode=" + window.getAttributes().getColorMode()

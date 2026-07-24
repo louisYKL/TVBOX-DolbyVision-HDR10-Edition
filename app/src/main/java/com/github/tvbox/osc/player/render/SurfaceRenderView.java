@@ -13,7 +13,7 @@ import android.view.ViewParent;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import com.github.tvbox.osc.player.MPVCompatPlayer;
+import com.github.tvbox.osc.player.SystemCodecPlayer;
 
 import xyz.doikki.videoplayer.player.AbstractPlayer;
 import xyz.doikki.videoplayer.player.VideoView;
@@ -142,9 +142,8 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        if (mMediaPlayer != null) {
-            mMediaPlayer.setDisplay(holder);
-        }
+        // ExoPlayer already receives size changes from its SurfaceHolder callback. Rebinding
+        // here makes affected vendor codecs try MediaCodec.setOutputSurface() unnecessarily.
         notifySurfaceAvailableIfReady("changed");
     }
 
@@ -155,17 +154,19 @@ public class SurfaceRenderView extends SurfaceView implements IRenderView, Surfa
             listener.onSurfaceDestroyed(this);
         }
         if (mMediaPlayer != null) {
-            if (mMediaPlayer instanceof MPVCompatPlayer) {
-                if (isParentVideoViewMovingFullScreen()) {
-                    return;
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !isAttachedToWindow()) {
-                    return;
-                }
-                mMediaPlayer.setDisplay(null);
+            // A fullscreen move briefly destroys the old Surface after the new one has
+            // already been attached. Do not let that stale callback detach the live decoder.
+            if (isParentVideoViewMovingFullScreen()) {
                 return;
             }
-            mMediaPlayer.setDisplay(null);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !isAttachedToWindow()) {
+                return;
+            }
+            if (mMediaPlayer instanceof SystemCodecPlayer) {
+                ((SystemCodecPlayer) mMediaPlayer).detachDisplay(holder);
+            } else {
+                mMediaPlayer.setDisplay(null);
+            }
         }
     }
 

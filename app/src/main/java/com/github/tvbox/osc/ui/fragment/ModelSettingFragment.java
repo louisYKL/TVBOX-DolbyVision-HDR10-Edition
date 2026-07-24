@@ -31,12 +31,14 @@ import com.github.tvbox.osc.ui.dialog.SelectDialog;
 import com.github.tvbox.osc.ui.dialog.XWalkInitDialog;
 import com.github.tvbox.osc.util.FastClickCheckUtil;
 import com.github.tvbox.osc.util.FileUtils;
+import com.github.tvbox.osc.util.AudioPassthroughVolumePolicy;
 import com.github.tvbox.osc.util.HawkConfig;
 import com.github.tvbox.osc.util.HdrDeviceSupport;
 import com.github.tvbox.osc.util.HistoryHelper;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.OkGoHelper;
 import com.github.tvbox.osc.util.PlayerHelper;
+import com.github.tvbox.osc.util.StorageBudgetManager;
 import com.lzy.okgo.OkGo;
 import com.lzy.okgo.callback.FileCallback;
 import com.lzy.okgo.model.Progress;
@@ -128,9 +130,11 @@ public class ModelSettingFragment extends BaseLazyFragment {
         tvRender.setText(PlayerHelper.getRenderName(1));
         tvAudioPassthrough.setText(Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false) ? "开启" : "关闭");
         HdrDeviceSupport.Capabilities hdrCapabilities = HdrDeviceSupport.query(mContext);
-        String hdrRouteSummary = hdrCapabilities.supportsHdrButNotDolbyVision()
-                ? hdrCapabilities.summary + " | 杜比视界: 自动回退HDR兼容播放器"
-                : hdrCapabilities.summary + " | 杜比视界: 原生/SDR自动回退";
+        String hdrRouteSummary = hdrCapabilities.supportsNativeDolbyVision()
+                ? hdrCapabilities.summary + " | 杜比视界: 原生硬解"
+                : hdrCapabilities.supportsHdrButNotDolbyVision()
+                ? hdrCapabilities.summary + " | 杜比视界: HDR基础层硬解"
+                : hdrCapabilities.summary + " | 杜比视界: 设备能力路由";
         tvHdrSupport.setText(hdrRouteSummary);
         tvHomeDefaultShow = findViewById(R.id.tvHomeText);
         tvHomeDefaultShow.setText(Hawk.get(HawkConfig.DEFAULT_LOAD_LIVE, false) ? "直播" : "点播");
@@ -138,8 +142,12 @@ public class ModelSettingFragment extends BaseLazyFragment {
             @Override
             public void onClick(View v) {
                 FastClickCheckUtil.check(v);
-                Hawk.put(HawkConfig.DEBUG_OPEN, !Hawk.get(HawkConfig.DEBUG_OPEN, false));
-                tvDebugOpen.setText(Hawk.get(HawkConfig.DEBUG_OPEN, false) ? "已打开" : "已关闭");
+                boolean enabled = !Hawk.get(HawkConfig.DEBUG_OPEN, false);
+                Hawk.put(HawkConfig.DEBUG_OPEN, enabled);
+                if (!enabled) {
+                    StorageBudgetManager.trimLogs();
+                }
+                tvDebugOpen.setText(enabled ? "已打开" : "已关闭");
             }
         });
         findViewById(R.id.llParseWebVew).setOnClickListener(new View.OnClickListener() {
@@ -713,6 +721,7 @@ public class ModelSettingFragment extends BaseLazyFragment {
     private void onClickAudioPassthrough(View v) {
         FastClickCheckUtil.check(v);
         Hawk.put(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, !Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false));
+        AudioPassthroughVolumePolicy.enforceMaximum(getContext());
         tvAudioPassthrough.setText(Hawk.get(HawkConfig.PLAYER_AUDIO_PASSTHROUGH, false) ? "开启" : "关闭");
     }
 

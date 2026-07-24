@@ -12,6 +12,7 @@ import com.github.tvbox.osc.util.AppManager;
 import com.github.tvbox.osc.util.EpgUtil;
 import com.github.tvbox.osc.util.FileUtils;
 import com.github.tvbox.osc.util.HawkConfig;
+import com.github.tvbox.osc.util.InternalLogPolicy;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.OkGoHelper;
 import com.github.tvbox.osc.util.PlayerHelper;
@@ -66,7 +67,11 @@ public class App extends MultiDexApplication {
     private void initParams() {
         // Hawk
         Hawk.init(this).build();
-        Hawk.put(HawkConfig.DEBUG_OPEN, false);
+        int logPolicyVersion = Hawk.get(HawkConfig.INTERNAL_LOG_POLICY_VERSION, 0);
+        if (logPolicyVersion < InternalLogPolicy.POLICY_VERSION) {
+            Hawk.put(HawkConfig.INTERNAL_LOG_ENABLED, true);
+            Hawk.put(HawkConfig.INTERNAL_LOG_POLICY_VERSION, InternalLogPolicy.POLICY_VERSION);
+        }
         if (!Hawk.contains(HawkConfig.PLAY_TYPE)) {
             Hawk.put(HawkConfig.PLAY_TYPE, 0);
         }

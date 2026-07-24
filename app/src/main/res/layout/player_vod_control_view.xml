@@ -119,6 +119,16 @@
         </LinearLayout>
     </LinearLayout>
 
+    <com.google.android.exoplayer2.ui.SubtitleView
+        android:id="@+id/bitmap_subtitle_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="false"
+        android:focusable="false"
+        android:focusableInTouchMode="false"
+        android:paddingBottom="@dimen/vs_80"
+        android:visibility="gone" />
+
     <com.github.tvbox.osc.subtitle.widget.SimpleSubtitleView
         android:id="@+id/subtitle_view"
         android:layout_width="match_parent"

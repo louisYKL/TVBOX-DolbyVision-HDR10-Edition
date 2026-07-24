@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.5
+
+### 中文
+
+- 三端同步统一播放器核心：ExoPlayer 负责时钟、解封装和持续缓存，视频只从设备声明的硬件 `MediaCodec` 解码器中选择，不再走软件视频解码或 MPV 兼容播放器。
+- 新增设备能力驱动的杜比视界路由。设备同时具备 `video/dolby-vision` 硬件解码器和 Dolby Vision 输出能力时保留完整杜比视界流并直接硬解；不具备端到端能力时，才对 DV 流剥离 RPU/EL、补齐 HDR10/HLG 元数据并解码基础层。
+- 音频渲染器固定为系统 `MediaCodec` 优先、FFmpeg 后备。设备支持的 Dolby Atmos、AC-3、E-AC-3/JOC、DTS、TrueHD 等格式优先使用设备硬解；所有解码结果经过降混后以双声道 PCM 输出，避免光纤/ARC 音箱因多声道源码无声。
+- 收紧硬件能力判定：DV、HEVC Main10、AVC High10 和音频候选不再把 Google/C2 软件解码器或仅有配置声明的能力误判为硬解；FFmpeg 扩展不可用时也不会阻断设备自身可用的 `MediaCodec` 播放链。
+- 将 Java32 已验证的首播预缓冲、持续前向缓存、恢复进度前置 seek、无限次拖动保护、假播放完成保护、缓冲百分比和实时网速显示同步到 Java64 与 Hisense。
+- 保留 Java64 的触控、手势、单击和焦点链，以及 Hisense 独立包名 `com.github.tvbox.osc.hisense` 和 `armeabi-v7a` ABI；内部日志轮转上限继续保持 1 MB。
+- 版本统一为 `0.2.5`，`versionCode 2050`，沿用原签名证书，可覆盖安装 `0.2.4` 及更早版本。
+
+### English
+
+- Synchronized one playback core across all variants: ExoPlayer owns the clock, demuxer, and sustained buffering; video selects only device-declared hardware `MediaCodec` decoders, with no software video or MPV compatibility route.
+- Added capability-driven Dolby Vision routing. Devices exposing both a `video/dolby-vision` hardware decoder and Dolby Vision output keep the complete DV stream for native hardware decode; devices without end-to-end capability strip DV RPU/EL and restore HDR10/HLG metadata only for the base-layer path.
+- Audio renderer order is platform `MediaCodec` first and FFmpeg second. Device-supported Dolby Atmos, AC-3, E-AC-3/JOC, DTS, and TrueHD use platform hardware decode when available; every decoded result is downmixed to stereo PCM so optical/ARC speakers do not receive unsupported multichannel bitstreams.
+- Tightened hardware capability detection so DV, HEVC Main10, AVC High10, and audio routing do not mistake Google/C2 software codecs or declaration-only flags for hardware support. A missing FFmpeg extension no longer blocks streams the device can decode with `MediaCodec`.
+- Synchronized the verified Java32 startup prebuffer, sustained forward cache, pre-prepare resume seek, repeated-scrub protection, false-completion guard, buffering percentage, and live network speed display to Java64 and Hisense.
+- Preserved Java64 touch, gesture, single-tap, and focus behavior, plus the independent Hisense package `com.github.tvbox.osc.hisense` and `armeabi-v7a` ABI. Internal log rotation remains capped at 1 MB.
+- Unified all builds under `0.2.5` with `versionCode 2050` and the existing signing certificate for in-place updates from `0.2.4` and earlier.
+
 ## 0.2.4
 
 ### 中文
