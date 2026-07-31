@@ -132,6 +132,12 @@ public abstract class BaseController extends BaseVideoController implements Gest
     @Override
     protected void onPlayStateChanged(int playState) {
         super.onPlayStateChanged(playState);
+        // The pause artwork belongs only to an explicit paused state. Vendor players can emit
+        // PREPARED/BUFFERED while resuming (or delay PLAYING until the first frame); leaving the
+        // previous pause layer visible in those states draws the icon and timestamp over video.
+        if (mPauseRoot != null) {
+            mPauseRoot.setVisibility(playState == VideoView.STATE_PAUSED ? VISIBLE : GONE);
+        }
         switch (playState) {
             case VideoView.STATE_IDLE:
                 mHasRenderedFirstFrame = false;
@@ -149,9 +155,6 @@ public abstract class BaseController extends BaseVideoController implements Gest
                 }
                 break;
             case VideoView.STATE_PAUSED:
-                if (mPauseRoot != null) {
-                    mPauseRoot.setVisibility(VISIBLE);
-                }
                 if (mLoading != null) {
                     mLoading.setVisibility(GONE);
                 }

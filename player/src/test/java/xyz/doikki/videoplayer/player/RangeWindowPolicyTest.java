@@ -40,24 +40,13 @@ public class RangeWindowPolicyTest {
     }
 
     @Test
-    public void missingReadInsideActivePrefetchWindowKeepsPrefetchAlive() {
-        assertFalse(RangeWindowPolicy.shouldCancelPrefetchForMissingPosition(
-                8L * 1024L * 1024L, 4L * 1024L * 1024L, true,
-                10L * 1024L * 1024L));
-    }
-
-    @Test
-    public void missingReadOutsideActivePrefetchWindowCancelsOldLane() {
-        assertTrue(RangeWindowPolicy.shouldCancelPrefetchForMissingPosition(
-                8L * 1024L * 1024L, 4L * 1024L * 1024L, true,
-                64L * 1024L * 1024L));
+    public void foregroundCacheMissYieldsEvenForAnOverlappingPrefetch() {
+        assertTrue(RangeWindowPolicy.shouldYieldPrefetchToForeground(true));
     }
 
     @Test
     public void inactivePrefetchNeverNeedsCancellation() {
-        assertFalse(RangeWindowPolicy.shouldCancelPrefetchForMissingPosition(
-                8L * 1024L * 1024L, 4L * 1024L * 1024L, false,
-                64L * 1024L * 1024L));
+        assertFalse(RangeWindowPolicy.shouldYieldPrefetchToForeground(false));
     }
 
     @Test

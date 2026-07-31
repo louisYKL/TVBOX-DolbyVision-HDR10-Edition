@@ -87,6 +87,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private SimpleExoPlayer player;
     private DefaultTrackSelector trackSelector;
     private DefaultHttpDataSource.Factory httpFactory;
+    private LoopbackRangeDataSource.Factory loopbackRangeFactory;
     private DefaultBandwidthMeter bandwidthMeter;
     private RealtimeNetworkSpeedMeter networkSpeedMeter;
     private DefaultAllocator allocator;
@@ -103,6 +104,11 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private boolean selectedAudioTrackPresent;
     private boolean bufferingNotified;
     private boolean startRequested;
+    private long firstFramePositionMs = C.TIME_UNSET;
+    private long lastObservedPositionMs = C.TIME_UNSET;
+    private int renderingStartPollCount;
+    private static final long RENDERING_START_POLL_MS = 250L;
+    private static final int MAX_RENDERING_START_POLLS = 240;
     private boolean passthroughVolumeLocked;
     private long pendingInitialSeekMs = C.TIME_UNSET;
     private long pendingSeekCompleteMs = C.TIME_UNSET;
@@ -116,6 +122,15 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private int sourceRetryCount;
     private static final int MAX_SOURCE_RETRIES = 3;
     private static final long SOURCE_RETRY_BACKOFF_MS = 1_000L;
+    // This bounds inactivity without limiting the total download time. The app-level buffering
+    // watchdog remains the terminal guard, while a continuously slow/large file is allowed to
+    // stream for as long as bytes keep arriving.
+    private static final int HTTP_CONNECT_TIMEOUT_MS = 20_000;
+    // 6677 serves chunked Range entities from a remote drive. A 15-second inactivity cutoff
+    // aborts valid slow windows before the next bytes arrive and presents as a permanent 0 B/s
+    // source. The outer buffering watchdog still bounds a genuinely dead playback attempt.
+    private static final int HTTP_READ_TIMEOUT_MS = 60_000;
+    private static final String HTTP_USER_AGENT = "TVBox-SystemCodec/0.2.6";
     private TrackInfo lastTrackInfo = new TrackInfo();
     private SubtitleTextListener subtitleTextListener;
     private BitmapSubtitleCueListener bitmapSubtitleCueListener;
@@ -150,12 +165,18 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 .build();
         networkSpeedMeter = new RealtimeNetworkSpeedMeter(bandwidthMeter);
         httpFactory = new DefaultHttpDataSource.Factory()
-                .setUserAgent("TVBox-SystemCodec/0.2.5")
+                .setUserAgent(HTTP_USER_AGENT)
                 .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(20_000)
-                .setReadTimeoutMs(60_000)
+                .setConnectTimeoutMs(HTTP_CONNECT_TIMEOUT_MS)
+                .setReadTimeoutMs(HTTP_READ_TIMEOUT_MS)
                 .setDefaultRequestProperties(requestHeaders);
-        DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(appContext, httpFactory)
+        loopbackRangeFactory = new LoopbackRangeDataSource.Factory(
+                httpFactory,
+                HTTP_USER_AGENT,
+                HTTP_CONNECT_TIMEOUT_MS,
+                HTTP_READ_TIMEOUT_MS);
+        loopbackRangeFactory.setDefaultRequestHeaders(requestHeaders);
+        DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(appContext, loopbackRangeFactory)
                 .setTransferListener(networkSpeedMeter);
         DefaultMediaSourceFactory mediaSourceFactory = new DefaultMediaSourceFactory(dataSourceFactory);
 
@@ -172,7 +193,13 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                         SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS,
                         SystemCodecBufferPolicy.REBUFFER_MS)
                 .setTargetBufferBytes(targetBufferBytes)
-                .setPrioritizeTimeOverSizeThresholds(false)
+                // A track-sized byte target (the default is roughly 13 MB) is too small for a
+                // high-bitrate 50+ GB remux. With the byte-priority mode ExoPlayer stops reading
+                // as soon as that target is reached, even when the required 20-second time
+                // runway has not been filled, which causes the recurring "plays, then buffers"
+                // stall. The 50-second MAX_BUFFER_MS remains the hard time/memory bound.
+                .setPrioritizeTimeOverSizeThresholds(
+                        SystemCodecBufferPolicy.PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS)
                 .setBackBuffer(SystemCodecBufferPolicy.BACK_BUFFER_MS, true)
                 .build();
 
@@ -255,12 +282,15 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             @Override
             public void onRenderedFirstFrame() {
                 firstFrameRendered = true;
+                firstFramePositionMs = player == null ? C.TIME_UNSET : player.getCurrentPosition();
+                lastObservedPositionMs = firstFramePositionMs;
                 // Playback is proven healthy again; refresh the transient-error retry budget so a
                 // later isolated proxy stall can also recover instead of exhausting the count.
                 sourceRetryCount = 0;
                 log("echo-system-codec first-frame surface=" + describeBoundSurface());
                 dispatchRuntimeVideoModeIfNeeded("first-frame");
                 maybeNotifyRenderingStart("first-frame");
+                scheduleRenderingStartPoll();
             }
 
             @Override
@@ -369,6 +399,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             sourceRetryCount = 0;
             startRequested = true;
             httpFactory.setDefaultRequestProperties(requestHeaders);
+            loopbackRangeFactory.setDefaultRequestHeaders(requestHeaders);
             // Let ExoPlayer's LoadControl own the startup gate. Keeping playWhenReady=false
             // makes a paused player report READY before the configured playback buffer is met,
             // which deadlocks an additional application-level buffer gate on some TV firmware.
@@ -449,6 +480,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         }
         trackSelector = null;
         httpFactory = null;
+        loopbackRangeFactory = null;
         bandwidthMeter = null;
         networkSpeedMeter = null;
         allocator = null;
@@ -644,7 +676,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 completePendingSeekIfReady(seekGeneration);
             }
             maybeNotifyRenderingStart("state-ready");
-            if (renderingStartNotified && player != null && player.getPlayWhenReady()) {
+            if (renderingStartNotified && player != null && player.getPlayWhenReady()
+                    && (player.isPlaying() || hasObservedPositionAdvance(player))) {
                 notifyBufferingEnd();
             }
             dispatchRuntimeVideoModeIfNeeded("state-ready");
@@ -664,7 +697,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         long completedPosition = Math.max(0L, player.getCurrentPosition());
         pendingSeekCompleteMs = C.TIME_UNSET;
         notifySeekComplete(completedPosition);
-        if (player.getPlayWhenReady()) {
+        if (player.getPlayWhenReady()
+                && (player.isPlaying() || hasObservedPositionAdvance(player))) {
             notifyBufferingEnd();
         }
     }
@@ -950,6 +984,9 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         selectedAudioTrackPresent = false;
         bufferingNotified = false;
         startRequested = false;
+        firstFramePositionMs = C.TIME_UNSET;
+        lastObservedPositionMs = C.TIME_UNSET;
+        renderingStartPollCount = 0;
         pendingInitialSeekMs = C.TIME_UNSET;
         pendingSeekCompleteMs = C.TIME_UNSET;
         seekGeneration++;
@@ -983,14 +1020,24 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private void maybeNotifyRenderingStart(String reason) {
         SimpleExoPlayer current = player;
         if (released || renderingStartNotified || current == null
-                || current.getPlaybackState() != Player.STATE_READY
                 || !current.getPlayWhenReady()) {
             return;
         }
-        if (selectedVideoTrackPresent && !firstFrameRendered) {
-            return;
-        }
-        if (!selectedVideoTrackPresent && !selectedAudioTrackPresent && !firstFrameRendered) {
+        // Some TV firmware reports STATE_BUFFERING while its MediaCodec has already rendered
+        // the first frame. Waiting for a later STATE_READY leaves VideoView in BUFFERING forever,
+        // so its timeout watchdog tears down a healthy player. A rendered frame is the stronger
+        // readiness signal; ExoPlayer will still emit BUFFERING again if the runway is exhausted.
+        boolean nativeIsPlaying = current.isPlaying();
+        boolean positionAdvanced = hasObservedPositionAdvance(current);
+        if (!SystemCodecRenderingPolicy.shouldNotify(
+                released,
+                renderingStartNotified,
+                current.getPlayWhenReady(),
+                selectedVideoTrackPresent,
+                selectedAudioTrackPresent,
+                firstFrameRendered,
+                nativeIsPlaying,
+                positionAdvanced)) {
             return;
         }
         renderingStartNotified = true;
@@ -999,6 +1046,45 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 + " firstFrame=" + firstFrameRendered);
         notifyBufferingEnd();
         notifyInfo(MEDIA_INFO_RENDERING_START, 0);
+    }
+
+    private void scheduleRenderingStartPoll() {
+        if (released || renderingStartNotified || player == null
+                || !player.getPlayWhenReady() || renderingStartPollCount >= MAX_RENDERING_START_POLLS) {
+            return;
+        }
+        renderingStartPollCount++;
+        final int generation = seekGeneration;
+        mainHandler.postDelayed(() -> {
+            if (released || generation != seekGeneration || renderingStartNotified || player == null) {
+                return;
+            }
+            maybeNotifyRenderingStart("position-poll");
+            if (!renderingStartNotified) {
+                scheduleRenderingStartPoll();
+            }
+        }, RENDERING_START_POLL_MS);
+    }
+
+    /** A first frame can be rendered before the vendor clock starts. */
+    private boolean hasObservedPositionAdvance(SimpleExoPlayer current) {
+        if (current == null) {
+            return false;
+        }
+        long position = current.getCurrentPosition();
+        if (position == C.TIME_UNSET || position < 0L) {
+            return false;
+        }
+        if (lastObservedPositionMs == C.TIME_UNSET) {
+            lastObservedPositionMs = position;
+            return false;
+        }
+        boolean advanced = position > lastObservedPositionMs
+                && (firstFramePositionMs == C.TIME_UNSET || position > firstFramePositionMs);
+        if (position > lastObservedPositionMs) {
+            lastObservedPositionMs = position;
+        }
+        return advanced;
     }
 
     private void notifyPrepared() {
@@ -1254,10 +1340,10 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             this.nativeDvCapable = nativeDvCapable;
             Log.i(TAG, "echo-system-codec dv-route nativeDvCapable=" + nativeDvCapable);
             LOG.i("echo-system-codec dv-route nativeDvCapable=" + nativeDvCapable);
-            // EXTENSION_RENDERER_MODE_ON (not PREFER) keeps the platform MediaCodec audio
-            // renderer ahead of FFmpeg. AC-3/E-AC-3/JOC/DTS/TrueHD therefore use a device
-            // hardware decoder whenever one is exposed; FFmpeg is only the unsupported-format
-            // fallback. Both paths feed the same stereo-PCM sink below, never encoded bitstream.
+            // Let the TV's MediaCodec audio decoder run first. The affected NVT hardware can
+            // decode this route without starving the video clock; FFmpeg remains the fallback
+            // for formats the platform does not expose. Both paths feed the stereo-PCM sink
+            // below, so no encoded bitstream passthrough is enabled.
             setExtensionRendererMode(EXTENSION_RENDERER_MODE_ON);
             setMediaCodecSelector(DeviceCodecSelector.INSTANCE);
             setEnableDecoderFallback(true);

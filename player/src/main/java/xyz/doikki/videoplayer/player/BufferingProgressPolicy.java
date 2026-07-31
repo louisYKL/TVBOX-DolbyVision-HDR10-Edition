@@ -15,10 +15,19 @@ final class BufferingProgressPolicy {
                                                 int nativePercent,
                                                 int previousPercent) {
         int nativeValue = clampPercent(nativePercent);
-        if (!active
-                || receivedAtStart < 0L
-                || receivedNow < receivedAtStart
-                || targetBytes <= 0L) {
+        if (!active || targetBytes <= 0L) {
+            return nativeValue;
+        }
+        // TrafficStats is not available on a few vendor TV firmwares. A zero native
+        // percentage is not evidence that the source is idle in that case; preserve a
+        // known high-water mark and let the UI render an explicit unknown-progress state.
+        if (receivedAtStart < 0L) {
+            int knownPrevious = clampPercent(previousPercent);
+            return knownPrevious > 0 || nativeValue > 0
+                    ? Math.max(knownPrevious, nativeValue)
+                    : -1;
+        }
+        if (receivedNow < receivedAtStart) {
             return nativeValue;
         }
         long received = receivedNow - receivedAtStart;

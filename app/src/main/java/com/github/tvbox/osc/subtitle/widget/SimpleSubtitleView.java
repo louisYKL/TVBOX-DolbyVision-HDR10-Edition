@@ -77,7 +77,8 @@ public class SimpleSubtitleView extends TextView
 
     private TextView backGroundText = null;//用于描边的TextView
     private boolean hdrSubtitleMode = false;
-    private int requestedTextColor = Color.WHITE;
+    private static final int DEFAULT_SUBTITLE_COLOR = Color.WHITE;
+    private int requestedTextColor = DEFAULT_SUBTITLE_COLOR;
     private String lastRawSubtitleText = EMPTY_TEXT;
 
     public SimpleSubtitleView(final Context context) {
@@ -103,7 +104,9 @@ public class SimpleSubtitleView extends TextView
         mSubtitleEngine = new DefaultSubtitleEngine();
         mSubtitleEngine.setOnSubtitlePreparedListener(this);
         mSubtitleEngine.setOnSubtitleChangeListener(this);
-        requestedTextColor = getCurrentTextColor();
+        // Keep normal output white and let HDR mode dim it to a neutral grey. The duplicated
+        // background view remains an outline only, so it cannot turn the glyph body black.
+        requestedTextColor = DEFAULT_SUBTITLE_COLOR;
         applyEffectiveTextColor();
     }
 
@@ -141,7 +144,7 @@ public class SimpleSubtitleView extends TextView
         } else {
             spanned = Html.fromHtml(text);
         }
-        return spanned == null ? "" : applyHdrColorSpans(spanned);
+        return spanned == null ? "" : normalizeSubtitleColorSpans(spanned);
     }
 
     private boolean containsAssColor(String text) {
@@ -181,7 +184,7 @@ public class SimpleSubtitleView extends TextView
             builder.setSpan(new ForegroundColorSpan(activeColor), activeStart, builder.length(),
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
-        return applyHdrColorSpans(builder);
+        return normalizeSubtitleColorSpans(builder);
     }
 
     private Integer findAssPrimaryColor(String tag) {
@@ -297,24 +300,30 @@ public class SimpleSubtitleView extends TextView
     }
 
     private void applyEffectiveTextColor() {
-        super.setTextColor(hdrSubtitleMode ? dimForHdr(requestedTextColor) : Color.WHITE);
+        int effectiveColor = hdrSubtitleMode ? dimForHdr(requestedTextColor) : requestedTextColor;
+        // Some ASS/HTML/TTML tracks carry an alpha channel. Keep the requested RGB tone but never
+        // let the subtitle fill become transparent; the black outline alone is not readable.
+        super.setTextColor(opaque(effectiveColor));
     }
 
     private int dimForHdr(int color) {
-        int alpha = Color.alpha(color);
         int red = Math.round(Color.red(color) * 0.68f);
         int green = Math.round(Color.green(color) * 0.68f);
         int blue = Math.round(Color.blue(color) * 0.68f);
         int max = Math.max(red, Math.max(green, blue));
         if (max <= 160) {
-            return Color.argb(alpha, red, green, blue);
+            return Color.rgb(red, green, blue);
         }
         float scale = 160f / max;
-        return Color.argb(alpha, Math.round(red * scale), Math.round(green * scale), Math.round(blue * scale));
+        return Color.rgb(Math.round(red * scale), Math.round(green * scale), Math.round(blue * scale));
     }
 
-    private CharSequence applyHdrColorSpans(CharSequence text) {
-        if (!hdrSubtitleMode || !(text instanceof Spanned)) {
+    private int opaque(int color) {
+        return Color.rgb(Color.red(color), Color.green(color), Color.blue(color));
+    }
+
+    private CharSequence normalizeSubtitleColorSpans(CharSequence text) {
+        if (!(text instanceof Spanned)) {
             return text;
         }
         SpannableStringBuilder builder = new SpannableStringBuilder(text);
@@ -325,7 +334,10 @@ public class SimpleSubtitleView extends TextView
             int flags = builder.getSpanFlags(span);
             builder.removeSpan(span);
             if (start >= 0 && end > start) {
-                builder.setSpan(new ForegroundColorSpan(dimForHdr(span.getForegroundColor())), start, end, flags);
+                int color = hdrSubtitleMode
+                        ? dimForHdr(span.getForegroundColor())
+                        : opaque(span.getForegroundColor());
+                builder.setSpan(new ForegroundColorSpan(color), start, end, flags);
             }
         }
         BackgroundColorSpan[] backgroundSpans = builder.getSpans(0, builder.length(), BackgroundColorSpan.class);
@@ -335,7 +347,10 @@ public class SimpleSubtitleView extends TextView
             int flags = builder.getSpanFlags(span);
             builder.removeSpan(span);
             if (start >= 0 && end > start) {
-                builder.setSpan(new BackgroundColorSpan(dimForHdr(span.getBackgroundColor())), start, end, flags);
+                int color = hdrSubtitleMode
+                        ? dimForHdr(span.getBackgroundColor())
+                        : opaque(span.getBackgroundColor());
+                builder.setSpan(new BackgroundColorSpan(color), start, end, flags);
             }
         }
         return builder;

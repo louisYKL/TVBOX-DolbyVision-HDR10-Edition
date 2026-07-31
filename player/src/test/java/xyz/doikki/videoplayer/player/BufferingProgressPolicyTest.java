@@ -31,6 +31,10 @@ public class BufferingProgressPolicyTest {
                 true, 1_000L, 900L, 24L * 1024L * 1024L, 42, 80));
         assertEquals(80, BufferingProgressPolicy.resolveDirectUriDisplayedPercent(
                 true, 1_000L, 1_100L, 24L * 1024L * 1024L, 20, 80));
+        assertEquals(-1, BufferingProgressPolicy.resolveDirectUriDisplayedPercent(
+                true, -1L, -1L, 24L * 1024L * 1024L, 0, 0));
+        assertEquals(27, BufferingProgressPolicy.resolveDirectUriDisplayedPercent(
+                true, -1L, -1L, 24L * 1024L * 1024L, 0, 27));
         assertEquals(37, BufferingProgressPolicy.resolveDirectUriDisplayedPercent(
                 false, -1L, -1L, 0L, 37, 80));
     }

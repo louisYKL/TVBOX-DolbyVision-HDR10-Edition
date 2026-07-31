@@ -65,5 +65,9 @@ public class PlaybackLoadingOverlayPolicyTest {
                 "正在缓冲视频 0%",
                 PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                         VideoView.STATE_BUFFERING, -10, ""));
+        org.junit.Assert.assertEquals(
+                "正在加载视频  1.2MB/s",
+                PlaybackLoadingOverlayPolicy.formatLoadingStatus(
+                        VideoView.STATE_PREPARING, -1, "1.2MB/s"));
     }
 }

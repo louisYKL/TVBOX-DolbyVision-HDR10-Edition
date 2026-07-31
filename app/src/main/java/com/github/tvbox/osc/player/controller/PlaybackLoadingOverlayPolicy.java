@@ -29,6 +29,10 @@ public final class PlaybackLoadingOverlayPolicy {
         }
         String label = playState == VideoView.STATE_PREPARING
                 ? "正在加载视频 " : "正在缓冲视频 ";
+        if (bufferedPercent == -1) {
+            String unknownStatus = label.trim();
+            return safeSpeed.isEmpty() ? unknownStatus : unknownStatus + "  " + safeSpeed;
+        }
         String status = label + Math.max(0, Math.min(100, bufferedPercent)) + "%";
         return safeSpeed.isEmpty() ? status : status + "  " + safeSpeed;
     }

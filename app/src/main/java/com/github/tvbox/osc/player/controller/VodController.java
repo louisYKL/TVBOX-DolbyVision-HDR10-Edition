@@ -1063,15 +1063,26 @@ public class VodController extends BaseController {
         mHandler.sendEmptyMessageDelayed(1001, 1000);
     }
 
+    /**
+     * Clear both seek-overlay messages before changing playback state. The display message can
+     * already be queued when a seek starts buffering; removing only the delayed hide message lets
+     * that stale display message run after playback resumes and leaves the seek icon over video.
+     */
+    private void hideSeekOverlay() {
+        mHandler.removeMessages(1000);
+        mHandler.removeMessages(1001);
+        if (mProgressRoot != null) {
+            mProgressRoot.setVisibility(GONE);
+        }
+    }
+
     @Override
     protected void onPlayStateChanged(int playState) {
         super.onPlayStateChanged(playState);
         videoPlayState = playState;
-        if ((playState == VideoView.STATE_PREPARING || playState == VideoView.STATE_BUFFERING)
-                && mProgressRoot != null && mProgressRoot.getVisibility() != GONE) {
-            mHandler.removeMessages(1001);
-            mProgressRoot.setVisibility(GONE);
-        }
+        // A state callback may race the seek UI handler. Clear the pending show and hide messages
+        // for every state so the overlay cannot reappear after the first frame starts rendering.
+        hideSeekOverlay();
         updatePlaybackLoadingSpeedVisibility(playState);
         switch (playState) {
             case VideoView.STATE_IDLE:
@@ -2291,6 +2302,7 @@ public class VodController extends BaseController {
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
+        hideSeekOverlay();
         mHandler.removeCallbacks(myRunnable2);
         mHandler.removeCallbacks(seekResumeCheckRunnable);
         mHandler.removeCallbacks(pendingRemoteSeekCommitRunnable);
