@@ -61,6 +61,7 @@ import com.github.tvbox.osc.player.SystemPlayerTrackManager;
 import com.github.tvbox.osc.player.TrackInfo;
 import com.github.tvbox.osc.player.TrackInfoBean;
 import com.github.tvbox.osc.player.controller.VodController;
+import com.github.tvbox.osc.subtitle.widget.BitmapSubtitleRenderer;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.ui.adapter.SelectDialogAdapter;
 import com.github.tvbox.osc.ui.dialog.SearchSubtitleDialog;
@@ -89,6 +90,7 @@ import com.github.tvbox.osc.util.parser.SuperParse;
 import com.github.tvbox.osc.util.thunder.Jianpian;
 import com.github.tvbox.osc.util.thunder.Thunder;
 import com.github.tvbox.osc.viewmodel.SourceViewModel;
+import com.google.android.exoplayer2.text.Cue;
 import com.lzy.okgo.OkGo;
 import com.lzy.okgo.callback.AbsCallback;
 import com.lzy.okgo.model.HttpHeaders;
@@ -147,6 +149,7 @@ public class PlayFragment extends BaseLazyFragment {
     // the pre-first-frame deadline and a dead source surfaces STATE_ERROR, so this only guards a
     // fully wedged pipeline.
     private static final long ACTIVE_BUFFERING_LIVENESS_CEILING_MS = 180 * 1000L;
+    private static final long UNKNOWN_PROGRESS_LIVENESS_CEILING_MS = 120 * 1000L;
     private static final long BUFFER_PROGRESS_POLL_MS = 500L;
     private static final long BUFFER_TIMEOUT_REFRESH_MS = 5_000L;
     private static final long PLAYER_RELEASE_SETTLE_MS = 260L;
@@ -178,6 +181,7 @@ public class PlayFragment extends BaseLazyFragment {
     private int lastBufferingPercent = -1;
     private long lastBufferTimeoutRefreshAtMs;
     private long activeBufferingEpisodeStartAtMs = 0L;
+    private long loadingEpisodeStartAtMs = 0L;
     private final Runnable bufferingProgressRunnable = new Runnable() {
         @Override
         public void run() {
@@ -211,6 +215,7 @@ public class PlayFragment extends BaseLazyFragment {
     private boolean systemFallbackTried;
     private int subtitleTextStyle = 0;
     private boolean subtitleEnabled = true;
+    private List<Cue> latestBitmapSubtitleCues = Collections.emptyList();
 
     private static final class PlaybackPreflight {
         final String rawUrl;
@@ -600,6 +605,9 @@ public class PlayFragment extends BaseLazyFragment {
                             return true;
                         }
                         if (deferPlayTimeoutWhileNativeBuffering()) {
+                            return true;
+                        }
+                        if (deferPlayTimeoutWhileUnknownProgress()) {
                             return true;
                         }
                         LOG.i("echo-playTimeout exceeded, no auto source/player fallback");
@@ -1028,6 +1036,7 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private void clearBitmapSubtitleView() {
+        latestBitmapSubtitleCues = Collections.emptyList();
         if (mController == null || mController.mBitmapSubtitleView == null) {
             return;
         }
@@ -1184,7 +1193,7 @@ public class PlayFragment extends BaseLazyFragment {
     @SuppressLint("UseCompatLoadingForColorStateLists")
     void setSubtitleViewTextStyle(int style) {
         subtitleTextStyle = style;
-        mController.mSubtitleView.setSubtitleTextColor(getContext().getResources().getColor(R.color.color_FFFFFF));
+        mController.mSubtitleView.setSubtitleTextColor(android.graphics.Color.WHITE);
         applySubtitleToneForCurrentPlayback();
     }
 
@@ -1193,6 +1202,7 @@ public class PlayFragment extends BaseLazyFragment {
             return;
         }
         mController.mSubtitleView.setHdrSubtitleMode(currentPlaybackRequiresHdrOutput);
+        renderBitmapSubtitleCues();
     }
 
     private boolean isSameTrack(TrackInfoBean left, TrackInfoBean right) {
@@ -1346,7 +1356,9 @@ public class PlayFragment extends BaseLazyFragment {
         bufferingProgressGeneration = generation;
         bufferingProgressPlayState = playState;
         lastBufferingPercent = -1;
-        lastBufferTimeoutRefreshAtMs = System.currentTimeMillis();
+        long now = System.currentTimeMillis();
+        lastBufferTimeoutRefreshAtMs = now;
+        loadingEpisodeStartAtMs = now;
         if (playState == VideoView.STATE_BUFFERING) {
             activeBufferingEpisodeStartAtMs = lastBufferTimeoutRefreshAtMs;
         }
@@ -1363,6 +1375,7 @@ public class PlayFragment extends BaseLazyFragment {
         lastBufferingPercent = -1;
         lastBufferTimeoutRefreshAtMs = 0L;
         activeBufferingEpisodeStartAtMs = 0L;
+        loadingEpisodeStartAtMs = 0L;
         if (mHandler != null) {
             mHandler.removeCallbacks(bufferingProgressRunnable);
         }
@@ -1379,9 +1392,10 @@ public class PlayFragment extends BaseLazyFragment {
             return;
         }
         int playState = mVideoView.getCurrentPlayState();
-        int percent = PlaybackBufferProgressPolicy.clampPercent(
-                mVideoView.getBufferedPercentage());
-        if (PlaybackBufferProgressPolicy.hasForwardProgress(lastBufferingPercent, percent)) {
+        int rawPercent = mVideoView.getBufferedPercentage();
+        int percent = PlaybackBufferProgressPolicy.displayPercent(rawPercent);
+        int watchdogPercent = PlaybackBufferProgressPolicy.clampPercent(rawPercent);
+        if (PlaybackBufferProgressPolicy.hasForwardProgress(lastBufferingPercent, watchdogPercent)) {
             LOG.i("echo-buffer-progress percent=" + percent
                     + " rendered=" + playbackRenderedFirstFrame);
         }
@@ -1390,6 +1404,9 @@ public class PlayFragment extends BaseLazyFragment {
                 playbackRenderedFirstFrame,
                 mVideoView.isFullScreen())) {
             String speed = PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true);
+            // Use showBufferingTip (not setTip): a rebuffer after the first frame must still be
+            // shown in both the小窗 and fullscreen, whereas setTip hides itself once the first
+            // frame has rendered.
             showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                     playState, percent, speed));
         } else {
@@ -1409,7 +1426,7 @@ public class PlayFragment extends BaseLazyFragment {
         if (PlaybackBufferProgressPolicy.shouldRefreshTimeout(
                 playState,
                 lastBufferingPercent,
-                percent,
+                watchdogPercent,
                 now - lastBufferTimeoutRefreshAtMs,
                 BUFFER_TIMEOUT_REFRESH_MS)) {
             lastBufferTimeoutRefreshAtMs = now;
@@ -1428,9 +1445,20 @@ public class PlayFragment extends BaseLazyFragment {
             startPlayTimeout(currentPlaybackUrl,
                     BUFFER_STALL_TIMEOUT_MS,
                     "buffer-native-alive");
+        } else if (PlaybackBufferProgressPolicy.shouldRefreshTimeoutForUnknownProgress(
+                playState,
+                rawPercent,
+                now - lastBufferTimeoutRefreshAtMs,
+                BUFFER_TIMEOUT_REFRESH_MS,
+                loadingEpisodeStartAtMs == 0L ? -1L : now - loadingEpisodeStartAtMs,
+                UNKNOWN_PROGRESS_LIVENESS_CEILING_MS)) {
+            lastBufferTimeoutRefreshAtMs = now;
+            startPlayTimeout(currentPlaybackUrl,
+                    BUFFER_STALL_TIMEOUT_MS,
+                    "buffer-unknown-progress-alive");
         }
         lastBufferingPercent = PlaybackBufferProgressPolicy.updateHighWater(
-                lastBufferingPercent, percent);
+                lastBufferingPercent, watchdogPercent);
         mHandler.postDelayed(bufferingProgressRunnable, BUFFER_PROGRESS_POLL_MS);
     }
 
@@ -1455,12 +1483,10 @@ public class PlayFragment extends BaseLazyFragment {
         });
     }
 
-    void hideTip() {
-        mPlayLoadTip.setVisibility(View.GONE);
-        mPlayLoading.setVisibility(View.GONE);
-        mPlayLoadErr.setVisibility(View.GONE);
-    }
-
+    // Dedicated buffering tip that, unlike setTip, is NOT suppressed after the first frame has
+    // rendered. A mid-playback rebuffer (e.g. the network-drive proxy stalling on a seek) happens
+    // after the first frame, so it must still surface "正在缓冲 X%" — in both the小窗 preview and
+    // fullscreen — instead of a silent frozen picture. Cleared by hideTipSafe() when buffering ends.
     void showBufferingTip(String msg) {
         if (!isAdded()) return;
         final int generation = currentPlayGeneration();
@@ -1476,6 +1502,12 @@ public class PlayFragment extends BaseLazyFragment {
                 mPlayLoadErr.setVisibility(View.GONE);
             }
         });
+    }
+
+    void hideTip() {
+        mPlayLoadTip.setVisibility(View.GONE);
+        mPlayLoading.setVisibility(View.GONE);
+        mPlayLoadErr.setVisibility(View.GONE);
     }
 
     void hideTipSafe() {
@@ -1930,17 +1962,8 @@ public class PlayFragment extends BaseLazyFragment {
                 return;
             }
             mHandler.post(() -> {
-                if (mController == null || mController.mBitmapSubtitleView == null) {
-                    return;
-                }
-                boolean show = subtitleEnabled
-                        && mController.mSubtitleView != null
-                        && mController.mSubtitleView.isInternal
-                        && cues != null
-                        && !cues.isEmpty();
-                mController.mBitmapSubtitleView.setCues(
-                        show ? cues : Collections.emptyList());
-                mController.mBitmapSubtitleView.setVisibility(show ? View.VISIBLE : View.GONE);
+                latestBitmapSubtitleCues = cues == null ? Collections.emptyList() : cues;
+                renderBitmapSubtitleCues();
             });
         });
         player.setOnRuntimeVideoModeListener((hdr, dolbyVision, outputMode, reason) -> {
@@ -1949,6 +1972,21 @@ public class PlayFragment extends BaseLazyFragment {
             }
             mHandler.post(() -> promoteRuntimeHdrState(hdr, dolbyVision, outputMode, "fragment-" + reason));
         });
+    }
+
+    private void renderBitmapSubtitleCues() {
+        if (mController == null || mController.mBitmapSubtitleView == null) {
+            return;
+        }
+        boolean show = subtitleEnabled
+                && mController.mSubtitleView != null
+                && mController.mSubtitleView.isInternal
+                && !latestBitmapSubtitleCues.isEmpty();
+        mController.mBitmapSubtitleView.setCues(show
+                ? BitmapSubtitleRenderer.normalizeCues(
+                latestBitmapSubtitleCues, currentPlaybackRequiresHdrOutput)
+                : Collections.emptyList());
+        mController.mBitmapSubtitleView.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     private void promoteRuntimeHdrState(boolean hdr, boolean dolbyVision, String outputMode, String reason) {
@@ -3499,6 +3537,29 @@ public class PlayFragment extends BaseLazyFragment {
         LOG.i("echo-playTimeout defer native-buffering elapsed=" + elapsedMs
                 + " next=" + nextCheckMs);
         startPlayTimeout(currentPlaybackUrl, nextCheckMs, "buffer-native-liveness");
+        return true;
+    }
+
+    private boolean deferPlayTimeoutWhileUnknownProgress() {
+        if (mVideoView == null
+                || !PlaybackBufferProgressPolicy.isLoadingState(mVideoView.getCurrentPlayState())
+                || loadingEpisodeStartAtMs <= 0L) {
+            return false;
+        }
+        int percent = mVideoView.getBufferedPercentage();
+        long elapsedMs = Math.max(0L, System.currentTimeMillis() - loadingEpisodeStartAtMs);
+        if (!PlaybackBufferProgressPolicy.shouldDeferTimeoutForUnknownProgress(
+                mVideoView.getCurrentPlayState(),
+                percent,
+                elapsedMs,
+                UNKNOWN_PROGRESS_LIVENESS_CEILING_MS)) {
+            return false;
+        }
+        long remainingMs = UNKNOWN_PROGRESS_LIVENESS_CEILING_MS - elapsedMs;
+        long nextCheckMs = Math.max(1_000L, Math.min(BUFFER_STALL_TIMEOUT_MS, remainingMs));
+        LOG.i("echo-playTimeout defer unknown-progress elapsed=" + elapsedMs
+                + " next=" + nextCheckMs);
+        startPlayTimeout(currentPlaybackUrl, nextCheckMs, "buffer-unknown-progress-liveness");
         return true;
     }
 

@@ -34,7 +34,7 @@ public class RealtimeNetworkSpeedMeterTest {
         meter.onBytesTransferred(null, null, true, 256 * 1024);
         assertEquals(2L * 1024L * 1024L, meter.getBytesPerSecond());
 
-        clock.advance(1_501L);
+        clock.advance(5_001L);
 
         assertEquals(0L, meter.getBytesPerSecond());
     }

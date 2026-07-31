@@ -116,12 +116,10 @@ public final class PlaybackUrlNormalizer {
             return path;
         }
         String normalizedPath = normalizeHttpUrl(path);
-        if (isAnyLocalProxyPlayUrl(normalizedPath)) {
-            if (!live && shouldWrapLocalProxyPlayForSystemSeek(normalizedPath, headers)) {
-                String wrapped = wrapWithStreamProxy(normalizedPath, headers);
-                LOG.i("echo-playback-url wrap-local-proxy-play-system -> " + safeSnippet(wrapped));
-                return wrapped;
-            }
+        if (SystemPlaybackUrlPolicy.isLocalProxyPlayUrl(normalizedPath)) {
+            // The spider owns this endpoint and its Range semantics. Keep it direct so the
+            // player can reconnect against the actual 6677 source for seek/resume; wrapping it
+            // in the app's 9978 stream proxy causes a second proxy hop and 500 retry loops.
             LOG.i("echo-playback-url direct-local-proxy-play -> " + safeSnippet(normalizedPath));
             return normalizedPath;
         }
@@ -230,18 +228,6 @@ public final class PlaybackUrlNormalizer {
         return lower.contains(".mkv") || lower.contains(".webm");
     }
 
-    private static boolean shouldWrapLocalProxyPlayForSystemSeek(String path, Map<String, String> headers) {
-        if (TextUtils.isEmpty(path) || isHlsLike(path)) {
-            return false;
-        }
-        if (shouldKeepDirectMatroskaLocalPlay(path, null, headers)) {
-            return false;
-        }
-        String lower = path.toLowerCase(Locale.US);
-        return lower.startsWith("http://127.0.0.1:6677/proxy/play/")
-                || lower.startsWith("http://localhost:6677/proxy/play/");
-    }
-
     private static boolean shouldKeepDirectMatroskaLocalPlay(String primaryPath,
                                                               String secondaryPath,
                                                               Map<String, String> headers) {
@@ -280,19 +266,6 @@ public final class PlaybackUrlNormalizer {
         }
         String lower = path.toLowerCase(Locale.US);
         return lower.startsWith("http://") || lower.startsWith("https://");
-    }
-
-    private static boolean isAnyLocalProxyPlayUrl(String path) {
-        if (!isLocalProxyUrl(path)) {
-            return false;
-        }
-        try {
-            Uri uri = Uri.parse(path);
-            String valuePath = uri.getPath();
-            return valuePath != null && valuePath.contains("/proxy/play/");
-        } catch (Exception ignored) {
-            return false;
-        }
     }
 
     private static boolean isAppLocalProxyUrl(String path) {
@@ -383,7 +356,7 @@ public final class PlaybackUrlNormalizer {
                 return null;
             }
             String nestedNormalized = normalizeHttpUrl(nestedUrl);
-            if (isAnyLocalProxyPlayUrl(nestedNormalized)) {
+            if (SystemPlaybackUrlPolicy.isLocalProxyPlayUrl(nestedNormalized)) {
                 return nestedNormalized;
             }
             return unwrapAppStreamProxyToAnyLocalPlay(nestedNormalized);
