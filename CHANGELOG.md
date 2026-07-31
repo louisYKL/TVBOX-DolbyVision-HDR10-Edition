@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.6
+
+### 中文
+
+- 修复本地 `6677/proxy/play` 源的非标准 Range 响应：只有“请求起点 `+8`、请求终点 `-8`、正文连续且少 8 字节”这一已确认形态会兼容处理；普通短包、空包、错误偏移和 `416` 仍严格重试，不再把错误数据伪装成完整缓存窗口。
+- 系统硬解播放器改为单一前台 Range 读取链，首包和前台窗口保持 `8 MiB`、最大窗口 `16 MiB`；系统解码路径不再与后台 Range 预读竞争，也不再被启动预读任务长时间阻塞，打开视频后立即开始真实读取。
+- 保留大文件持续缓存、恢复进度和重复拖动保护；跨数据源重建传递已确认的文件长度，避免带进度视频因临时 `416` 被误判为加载失败或播放超时。
+- 准备、缓冲和 seek 期间显示真实缓冲百分比与网速；首帧、缓冲结束或详情页小窗稳定后清理过期的加载文字、旋转图标和快进/回退提示。
+- 修复位图字幕在 HDR 输出下透明或颜色异常的问题：HDR 使用不透明灰色字形和黑色描边，SDR 保持白色字形；保留字幕默认开启、全屏开关和轨道恢复能力。
+- 播放核心、回归测试和版本配置同步到 Java64 与 Hisense；保留 Java64 触控/手势/焦点链、Hisense 独立包名 `com.github.tvbox.osc.hisense` 与 `armeabi-v7a` ABI。三端统一为 `0.2.6`、`versionCode 2060`，沿用原签名证书。
+
+### English
+
+- Fixed the confirmed non-standard Range response from local `6677/proxy/play` sources. Only the exact contiguous-body shape with request start `+8`, request end `-8`, and an eight-byte short body is accepted; ordinary short, empty, offset, and `416` responses still retry strictly instead of becoming false cache windows.
+- The system-codec path now uses one foreground Range loading lane with an `8 MiB` first/foreground window and a bounded `16 MiB` maximum. It no longer competes with a background Range reader or waits behind a startup-prebuffer gate, so opening a video starts real I/O immediately.
+- Preserved sustained large-file caching, resume positions, and repeated-scrub protection. A verified content length is carried across data-source recreation so a temporary `416` on a saved-position read cannot become a false load failure or timeout.
+- Buffering percentage and transfer speed remain visible during prepare, rebuffer, and seek; stale loading text, spinners, and seek icons are cleared after the first frame, buffering end, or stable embedded preview.
+- Normalized bitmap subtitles for HDR output: opaque grey glyphs with a black outline on HDR, white glyphs on SDR. Subtitle default-on behavior, fullscreen toggle, and track recovery remain intact.
+- Synchronized the playback core, regression tests, and version configuration to Java64 and Hisense while preserving Java64 touch/gesture/focus behavior, the Hisense package `com.github.tvbox.osc.hisense`, and `armeabi-v7a`. All variants are `0.2.6` with `versionCode 2060` and the existing signing certificate.
+
 ## 0.2.5
 
 ### 中文

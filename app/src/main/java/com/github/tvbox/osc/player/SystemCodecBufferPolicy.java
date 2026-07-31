@@ -11,9 +11,15 @@ final class SystemCodecBufferPolicy {
     // A high-bitrate network-disk REMUX needs meaningful runway before both startup and resume.
     // ExoPlayer may still start earlier when its track-sized byte target is full, which protects
     // the 192 MB app heap from an unbounded time-only allocation.
-    static final int PLAYBACK_BUFFER_MS = 15_000;
-    static final int REBUFFER_MS = 15_000;
+    // Do not start or resume a high-bitrate network-disk video until there is at least a
+    // twenty-second runway. A shorter gate is not enough for the sustained throughput dips seen
+    // on 50+ GB files, while MAX_BUFFER_MS still bounds memory and latency.
+    static final int PLAYBACK_BUFFER_MS = 20_000;
+    static final int REBUFFER_MS = 20_000;
     static final int BACK_BUFFER_MS = 0;
+    // Keep loading until the time watermarks are satisfied instead of stopping at ExoPlayer's
+    // small track-sized byte target. MAX_BUFFER_MS still bounds the forward runway.
+    static final boolean PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS = true;
     private static final int MB = 1024 * 1024;
 
     private SystemCodecBufferPolicy() {

@@ -61,6 +61,7 @@ import com.github.tvbox.osc.player.SystemPlayerTrackManager;
 import com.github.tvbox.osc.player.TrackInfo;
 import com.github.tvbox.osc.player.TrackInfoBean;
 import com.github.tvbox.osc.player.controller.VodController;
+import com.github.tvbox.osc.subtitle.widget.BitmapSubtitleRenderer;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.ui.adapter.SelectDialogAdapter;
 import com.github.tvbox.osc.ui.dialog.SearchSubtitleDialog;
@@ -89,6 +90,7 @@ import com.github.tvbox.osc.util.parser.SuperParse;
 import com.github.tvbox.osc.util.thunder.Jianpian;
 import com.github.tvbox.osc.util.thunder.Thunder;
 import com.github.tvbox.osc.viewmodel.SourceViewModel;
+import com.google.android.exoplayer2.text.Cue;
 import com.lzy.okgo.OkGo;
 import com.lzy.okgo.callback.AbsCallback;
 import com.lzy.okgo.model.HttpHeaders;
@@ -143,6 +145,7 @@ public class PlayActivity extends BaseActivity {
     // native buffering is treated as liveness up to this bound; a dead source surfaces STATE_ERROR
     // so this only guards a fully wedged pipeline.
     private static final long ACTIVE_BUFFERING_LIVENESS_CEILING_MS = 180 * 1000L;
+    private static final long UNKNOWN_PROGRESS_LIVENESS_CEILING_MS = 120 * 1000L;
     private static final long BUFFER_PROGRESS_POLL_MS = 500L;
     private static final long BUFFER_TIMEOUT_REFRESH_MS = 5_000L;
     private static final long PLAYER_RELEASE_SETTLE_MS = 260L;
@@ -170,6 +173,7 @@ public class PlayActivity extends BaseActivity {
     private int lastBufferingPercent = -1;
     private long lastBufferTimeoutRefreshAtMs;
     private long activeBufferingEpisodeStartAtMs = 0L;
+    private long loadingEpisodeStartAtMs = 0L;
     private final Runnable bufferingProgressRunnable = new Runnable() {
         @Override
         public void run() {
@@ -203,6 +207,7 @@ public class PlayActivity extends BaseActivity {
     private boolean systemFallbackTried;
     private int subtitleTextStyle = 0;
     private boolean subtitleEnabled = true;
+    private List<Cue> latestBitmapSubtitleCues = Collections.emptyList();
     private boolean fullScreenStateSyncPending;
     private final View.OnLayoutChangeListener fullScreenStateSyncLayoutListener = new View.OnLayoutChangeListener() {
         @Override
@@ -532,6 +537,9 @@ public class PlayActivity extends BaseActivity {
                             return true;
                         }
                         if (deferPlayTimeoutWhileNativeBuffering()) {
+                            return true;
+                        }
+                        if (deferPlayTimeoutWhileUnknownProgress()) {
                             return true;
                         }
                         LOG.i("echo-playTimeout exceeded, no auto source/player fallback");
@@ -956,6 +964,7 @@ public class PlayActivity extends BaseActivity {
     }
 
     private void clearBitmapSubtitleView() {
+        latestBitmapSubtitleCues = Collections.emptyList();
         if (mController == null || mController.mBitmapSubtitleView == null) {
             return;
         }
@@ -1108,7 +1117,7 @@ public class PlayActivity extends BaseActivity {
 
     void setSubtitleViewTextStyle(int style) {
         subtitleTextStyle = style;
-        mController.mSubtitleView.setSubtitleTextColor(getBaseContext().getResources().getColor(R.color.color_FFFFFF));
+        mController.mSubtitleView.setSubtitleTextColor(android.graphics.Color.WHITE);
         applySubtitleToneForCurrentPlayback();
     }
 
@@ -1117,6 +1126,7 @@ public class PlayActivity extends BaseActivity {
             return;
         }
         mController.mSubtitleView.setHdrSubtitleMode(currentPlaybackRequiresHdrOutput);
+        renderBitmapSubtitleCues();
     }
 
     private boolean isSameTrack(TrackInfoBean left, TrackInfoBean right) {
@@ -1282,20 +1292,26 @@ public class PlayActivity extends BaseActivity {
             mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
         }));
         player.setOnBitmapSubtitleCueListener(cues -> runOnUiThread(() -> {
-            if (mController == null || mController.mBitmapSubtitleView == null) {
-                return;
-            }
-            boolean show = subtitleEnabled
-                    && mController.mSubtitleView != null
-                    && mController.mSubtitleView.isInternal
-                    && cues != null
-                    && !cues.isEmpty();
-            mController.mBitmapSubtitleView.setCues(
-                    show ? cues : Collections.emptyList());
-            mController.mBitmapSubtitleView.setVisibility(show ? View.VISIBLE : View.GONE);
+            latestBitmapSubtitleCues = cues == null ? Collections.emptyList() : cues;
+            renderBitmapSubtitleCues();
         }));
         player.setOnRuntimeVideoModeListener((hdr, dolbyVision, outputMode, reason) ->
                 runOnUiThread(() -> promoteRuntimeHdrState(hdr, dolbyVision, outputMode, "activity-" + reason)));
+    }
+
+    private void renderBitmapSubtitleCues() {
+        if (mController == null || mController.mBitmapSubtitleView == null) {
+            return;
+        }
+        boolean show = subtitleEnabled
+                && mController.mSubtitleView != null
+                && mController.mSubtitleView.isInternal
+                && !latestBitmapSubtitleCues.isEmpty();
+        mController.mBitmapSubtitleView.setCues(show
+                ? BitmapSubtitleRenderer.normalizeCues(
+                latestBitmapSubtitleCues, currentPlaybackRequiresHdrOutput)
+                : Collections.emptyList());
+        mController.mBitmapSubtitleView.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     private void promoteRuntimeHdrState(boolean hdr, boolean dolbyVision, String outputMode, String reason) {
@@ -1332,7 +1348,9 @@ public class PlayActivity extends BaseActivity {
         bufferingProgressGeneration = generation;
         bufferingProgressPlayState = playState;
         lastBufferingPercent = -1;
-        lastBufferTimeoutRefreshAtMs = System.currentTimeMillis();
+        long now = System.currentTimeMillis();
+        lastBufferTimeoutRefreshAtMs = now;
+        loadingEpisodeStartAtMs = now;
         if (playState == VideoView.STATE_BUFFERING) {
             activeBufferingEpisodeStartAtMs = lastBufferTimeoutRefreshAtMs;
         }
@@ -1349,6 +1367,7 @@ public class PlayActivity extends BaseActivity {
         lastBufferingPercent = -1;
         lastBufferTimeoutRefreshAtMs = 0L;
         activeBufferingEpisodeStartAtMs = 0L;
+        loadingEpisodeStartAtMs = 0L;
         if (mHandler != null) {
             mHandler.removeCallbacks(bufferingProgressRunnable);
         }
@@ -1365,9 +1384,10 @@ public class PlayActivity extends BaseActivity {
             return;
         }
         int playState = mVideoView.getCurrentPlayState();
-        int percent = PlaybackBufferProgressPolicy.clampPercent(
-                mVideoView.getBufferedPercentage());
-        if (PlaybackBufferProgressPolicy.hasForwardProgress(lastBufferingPercent, percent)) {
+        int rawPercent = mVideoView.getBufferedPercentage();
+        int percent = PlaybackBufferProgressPolicy.displayPercent(rawPercent);
+        int watchdogPercent = PlaybackBufferProgressPolicy.clampPercent(rawPercent);
+        if (PlaybackBufferProgressPolicy.hasForwardProgress(lastBufferingPercent, watchdogPercent)) {
             LOG.i("echo-buffer-progress activity percent=" + percent
                     + " rendered=" + playbackRenderedFirstFrame);
         }
@@ -1395,7 +1415,7 @@ public class PlayActivity extends BaseActivity {
         if (PlaybackBufferProgressPolicy.shouldRefreshTimeout(
                 playState,
                 lastBufferingPercent,
-                percent,
+                watchdogPercent,
                 now - lastBufferTimeoutRefreshAtMs,
                 BUFFER_TIMEOUT_REFRESH_MS)) {
             lastBufferTimeoutRefreshAtMs = now;
@@ -1414,9 +1434,20 @@ public class PlayActivity extends BaseActivity {
             startPlayTimeout(currentPlaybackUrl,
                     BUFFER_STALL_TIMEOUT_MS,
                     "buffer-native-alive");
+        } else if (PlaybackBufferProgressPolicy.shouldRefreshTimeoutForUnknownProgress(
+                playState,
+                rawPercent,
+                now - lastBufferTimeoutRefreshAtMs,
+                BUFFER_TIMEOUT_REFRESH_MS,
+                loadingEpisodeStartAtMs == 0L ? -1L : now - loadingEpisodeStartAtMs,
+                UNKNOWN_PROGRESS_LIVENESS_CEILING_MS)) {
+            lastBufferTimeoutRefreshAtMs = now;
+            startPlayTimeout(currentPlaybackUrl,
+                    BUFFER_STALL_TIMEOUT_MS,
+                    "buffer-unknown-progress-alive");
         }
         lastBufferingPercent = PlaybackBufferProgressPolicy.updateHighWater(
-                lastBufferingPercent, percent);
+                lastBufferingPercent, watchdogPercent);
         mHandler.postDelayed(bufferingProgressRunnable, BUFFER_PROGRESS_POLL_MS);
     }
 
@@ -2271,6 +2302,29 @@ public class PlayActivity extends BaseActivity {
         LOG.i("echo-playTimeout defer native-buffering elapsed=" + elapsedMs
                 + " next=" + nextCheckMs);
         startPlayTimeout(currentPlaybackUrl, nextCheckMs, "buffer-native-liveness");
+        return true;
+    }
+
+    private boolean deferPlayTimeoutWhileUnknownProgress() {
+        if (mVideoView == null
+                || !PlaybackBufferProgressPolicy.isLoadingState(mVideoView.getCurrentPlayState())
+                || loadingEpisodeStartAtMs <= 0L) {
+            return false;
+        }
+        int percent = mVideoView.getBufferedPercentage();
+        long elapsedMs = Math.max(0L, System.currentTimeMillis() - loadingEpisodeStartAtMs);
+        if (!PlaybackBufferProgressPolicy.shouldDeferTimeoutForUnknownProgress(
+                mVideoView.getCurrentPlayState(),
+                percent,
+                elapsedMs,
+                UNKNOWN_PROGRESS_LIVENESS_CEILING_MS)) {
+            return false;
+        }
+        long remainingMs = UNKNOWN_PROGRESS_LIVENESS_CEILING_MS - elapsedMs;
+        long nextCheckMs = Math.max(1_000L, Math.min(BUFFER_STALL_TIMEOUT_MS, remainingMs));
+        LOG.i("echo-playTimeout defer unknown-progress elapsed=" + elapsedMs
+                + " next=" + nextCheckMs);
+        startPlayTimeout(currentPlaybackUrl, nextCheckMs, "buffer-unknown-progress-liveness");
         return true;
     }
 

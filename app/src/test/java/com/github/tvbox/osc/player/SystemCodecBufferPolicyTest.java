@@ -24,14 +24,15 @@ public class SystemCodecBufferPolicyTest {
 
     @Test
     public void playbackThresholdsKeepAValidLargePrebuffer() {
-        assertEquals(15_000, SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS);
-        assertEquals(15_000, SystemCodecBufferPolicy.REBUFFER_MS);
+        assertEquals(20_000, SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS);
+        assertEquals(20_000, SystemCodecBufferPolicy.REBUFFER_MS);
         assertTrue(SystemCodecBufferPolicy.MIN_BUFFER_MS
                 >= SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS);
         assertTrue(SystemCodecBufferPolicy.MIN_BUFFER_MS
                 >= SystemCodecBufferPolicy.REBUFFER_MS);
         assertTrue(SystemCodecBufferPolicy.MAX_BUFFER_MS
                 >= SystemCodecBufferPolicy.MIN_BUFFER_MS);
+        assertTrue(SystemCodecBufferPolicy.PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS);
     }
 
     @Test

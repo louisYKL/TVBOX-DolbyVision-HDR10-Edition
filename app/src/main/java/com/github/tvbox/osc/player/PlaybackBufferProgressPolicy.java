@@ -11,6 +11,11 @@ public final class PlaybackBufferProgressPolicy {
         return Math.max(0, Math.min(100, percent));
     }
 
+    /** Keeps -1 as an explicit "the player cannot report a percentage" value for the UI. */
+    public static int displayPercent(int percent) {
+        return percent == -1 ? -1 : clampPercent(percent);
+    }
+
     public static boolean isLoadingState(int playState) {
         return playState == VideoView.STATE_PREPARING
                 || playState == VideoView.STATE_BUFFERING;
@@ -73,9 +78,37 @@ public final class PlaybackBufferProgressPolicy {
                 && elapsedSinceRefreshMs >= Math.max(0L, minimumRefreshIntervalMs);
     }
 
+    /**
+     * A few TV MediaPlayer implementations never expose a byte percentage. Do not use that
+     * missing value as a stall signal during startup; keep the watchdog alive for a bounded
+     * episode while the native player is still in a loading state.
+     */
+    public static boolean shouldRefreshTimeoutForUnknownProgress(int playState,
+                                                                 int currentPercent,
+                                                                 long elapsedSinceRefreshMs,
+                                                                 long minimumRefreshIntervalMs,
+                                                                 long elapsedSinceLoadingStartMs,
+                                                                 long maxLoadingEpisodeMs) {
+        return isLoadingState(playState)
+                && currentPercent == -1
+                && elapsedSinceLoadingStartMs >= 0L
+                && elapsedSinceLoadingStartMs < Math.max(0L, maxLoadingEpisodeMs)
+                && elapsedSinceRefreshMs >= Math.max(0L, minimumRefreshIntervalMs);
+    }
+
     public static boolean shouldDeferTimeoutForActiveBuffering(long elapsedSinceBufferingStartMs,
                                                                long maxBufferingEpisodeMs) {
         return elapsedSinceBufferingStartMs >= 0L
                 && elapsedSinceBufferingStartMs < Math.max(0L, maxBufferingEpisodeMs);
+    }
+
+    public static boolean shouldDeferTimeoutForUnknownProgress(int playState,
+                                                                int currentPercent,
+                                                                long elapsedSinceLoadingStartMs,
+                                                                long maxLoadingEpisodeMs) {
+        return isLoadingState(playState)
+                && currentPercent == -1
+                && elapsedSinceLoadingStartMs >= 0L
+                && elapsedSinceLoadingStartMs < Math.max(0L, maxLoadingEpisodeMs);
     }
 }

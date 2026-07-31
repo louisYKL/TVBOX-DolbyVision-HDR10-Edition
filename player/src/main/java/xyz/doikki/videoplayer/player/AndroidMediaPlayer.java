@@ -656,6 +656,14 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 DIRECT_URI_PROGRESS_TARGET_BYTES,
                 mBufferedPercent,
                 mDirectUriProgressPercent);
+        if (mDirectUriProgressPercent == 0
+                && mBufferedPercent == 0
+                && (mIsPreparing || mBufferingInfoVisible)) {
+            // The vendor callback often reports zero until the first range is available. Keep
+            // that state distinct from a measured 0% so the UI and timeout policy do not treat a
+            // healthy but unmeasurable source as a permanent zero-progress stall.
+            return -1;
+        }
         return mDirectUriProgressPercent;
     }
 
@@ -668,6 +676,14 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         }
         long received = readUidRxBytes();
         if (received == TrafficStats.UNSUPPORTED) {
+            mDirectUriProgressActive = true;
+            mDirectUriProgressStartRxBytes = TrafficStats.UNSUPPORTED;
+            mDirectUriProgressPercent = mBufferedPercent > 0
+                    ? BufferingProgressPolicy.clampPercent(mBufferedPercent)
+                    : -1;
+            logInfo("echo-system-buffer progress-window-begin reason=" + reason
+                    + " target=" + formatMegabytes(DIRECT_URI_PROGRESS_TARGET_BYTES)
+                    + " bytes=unsupported");
             return;
         }
         if (resetExisting) {
@@ -1119,7 +1135,14 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 mState = STATE_STARTED;
                 mPlaybackHasStarted = true;
                 scheduleVideoRenderWatchdogIfNeeded("seek-complete-resume");
-                dispatchBufferingEndIfIdle(0, "seek-complete-resume");
+                // A native seek callback only means that the decoder accepted the new
+                // position. It does not mean that the first frame/range is ready. Keep the
+                // buffering episode open until BUFFERING_END or RENDERING_START; ending it here
+                // caused a second BUFFERING_START to reset the UI to 0% and armed a stale timeout
+                // for resumed videos.
+                logInfo("echo-system-buffer wait-after-seek-complete target=" + completedTarget
+                        + " native=" + mNativeBuffering
+                        + " percent=" + getBufferedPercentage() + "%");
                 if (audioOnly && mPlayerEventListener != null) {
                     mNativeBuffering = false;
                     finishPlaybackPrebuffer();
@@ -1336,13 +1359,17 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 mState = STATE_STARTED;
                 mPlaybackHasStarted = true;
                 scheduleVideoRenderWatchdogIfNeeded("seek-timeout-resume");
+                // A seek timeout is not a successful buffer completion. Keep the loading state
+                // until the decoder reports a frame or an actual buffering end.
+                logInfo("echo-system-buffer wait-after-seek-timeout target=" + target
+                        + " percent=" + getBufferedPercentage() + "%");
             } else {
                 if (mPlaybackHasStarted) {
                     owner.pause();
                 }
                 mState = STATE_PAUSED;
+                dispatchBufferingEndIfIdle(0, "seek-timeout-paused");
             }
-            dispatchBufferingEndIfIdle(0, "seek-timeout-fallback");
         } catch (IllegalStateException error) {
             Log.e(TAG, "seek timeout fallback failed target=" + target, error);
             mState = STATE_ERROR;

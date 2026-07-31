@@ -13,7 +13,9 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Tracks current playback throughput without allocating on the loader thread. */
 final class RealtimeNetworkSpeedMeter implements TransferListener {
     private static final long SAMPLE_INTERVAL_MS = 250L;
-    private static final long STALE_AFTER_MS = 1_500L;
+    // A range boundary can take a few seconds to reopen even while the source is healthy. Keep
+    // the last measured rate through that short gap so the UI does not falsely show 0 B/s.
+    private static final long STALE_AFTER_MS = 5_000L;
     private static final long TIME_UNSET = Long.MIN_VALUE;
 
     interface Clock {

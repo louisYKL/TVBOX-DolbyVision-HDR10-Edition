@@ -5,13 +5,13 @@
 > A TV-first TVBox branch focused on device hardware decoding, HDR activation, capability-aware Dolby Vision routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.5"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.5-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.6"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.6-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.5">Download 0.2.5</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.6">Download 0.2.6</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -25,9 +25,9 @@ This branch is built for real living-room playback: every video uses the current
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.2.5_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.4 and earlier builds |
-| `TVBox_v0.2.5_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.4 and earlier builds |
-| `TVBox_v0.2.5_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.4 and earlier builds |
+| `TVBox_v0.2.6_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.5 and earlier builds |
+| `TVBox_v0.2.6_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.5 and earlier builds |
+| `TVBox_v0.2.6_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.5 and earlier builds |
 
 ## Preview
 
@@ -57,7 +57,7 @@ The core principle is simple:
 - Keep subtitles, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
 
-## 0.2.5 Variants
+## 0.2.6 Variants
 
 | Variant | ABI | Target devices | Notes |
 | --- | --- | --- | --- |
@@ -65,14 +65,14 @@ The core principle is simple:
 | `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
 | `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Dedicated Hisense build |
 
-## What 0.2.5 focused on
+## What 0.2.6 focused on
 
-- All three variants now use one ExoPlayer clock/demux pipeline whose video renderer accepts only device hardware `MediaCodec` decoders; there is no software video fallback.
-- Dolby Vision routing is end-to-end capability based. Devices exposing both a hardware DV decoder and DV output keep the complete DV stream; other devices alone use the HDR10/HLG base layer.
-- Audio renderer order is platform `MediaCodec` first and FFmpeg second. Device-supported Atmos, AC-3, E-AC-3/JOC, DTS, and TrueHD use platform decoding, and every result is downmixed to stereo PCM.
-- Capability probing and decoder selection now share the same hardware-only classification. Declaration-only flags and software codecs cannot trigger native DV/10-bit routing, and platform playback still starts when the FFmpeg extension is absent.
-- The verified Java32 startup/seek prebuffering, live transfer speed, buffering percentage, pre-prepare resume seek, false-completion guard, and allocation-free DV RPU handling are synchronized to Java64 and Hisense.
-- Java64 touch/gesture/focus behavior and the independent Hisense package/ABI remain intact. All builds use `0.2.5` (`versionCode 2050`) and the existing signing certificate for in-place updates from `0.2.4` and earlier.
+- The system-codec path uses one foreground Range loading lane with an `8 MiB` first/foreground window and a bounded `16 MiB` maximum, so real I/O begins immediately without a competing background reader.
+- The confirmed eight-byte malformed Range response from `6677/proxy/play` is accepted narrowly. Normal short, empty, offset, and `416` responses remain strict retries and cannot become false cache windows.
+- Resume, repeated forward/backward scrubbing, and data-source recreation retain verified length information, avoiding transient `416`, false 0% progress, and stale-read timeouts without reducing sustained large-file caching.
+- Embedded and fullscreen prepare/rebuffer/seek states show real percentage and speed, then clear stale loading text, spinners, and seek icons once playback is stable.
+- HDR bitmap subtitles render as opaque grey with a black outline; SDR remains white. Default-on subtitles, fullscreen control, Java64 touch/gesture/focus behavior, and the independent Hisense package/ABI remain intact.
+- All builds use `0.2.6` (`versionCode 2060`) and the existing signing certificate for in-place updates from `0.2.5` and earlier.
 
 ## Highlights
 
@@ -157,9 +157,9 @@ $env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 
 The repository includes a basic Android build workflow for:
 
-- `TVBox_v0.2.5_java32.apk`
-- `TVBox_v0.2.5_java64.apk`
-- `TVBox_v0.2.5_hisense32.apk`
+- `TVBox_v0.2.6_java32.apk`
+- `TVBox_v0.2.6_java64.apk`
+- `TVBox_v0.2.6_hisense32.apk`
 
 ## Community
 
@@ -192,4 +192,5 @@ The repository includes a basic Android build workflow for:
 - `0.2.3`: fix the root cause of playback/seek/scrub freezing into "播放超时" by adding a finite per-read inactivity timeout to every proxy streaming client (local direct stream, HLS/live `ts` relay, foreign `go=stream` passthrough, and m3u8 fetch), and treat active native buffering itself as a liveness signal so healthy playback is no longer killed while its byte-count percentage plateaus.
 - `0.2.4`: fix Java64 live black-screen-with-audio and the Surface lifecycle conflict during player release; keep ordinary non-Dolby-Vision VOD on the native system decoder for main 32-bit and Hisense; give saved-progress startup and repeated timeline movement a bounded native-buffer allowance to avoid false timeouts.
 - `0.2.5`: unify capability-aware routing across all variants: device hardware video decode only, complete native DV on capable devices, HDR base-layer fallback only elsewhere, platform-first audio decoding to stereo PCM, and synchronized buffering/seek/performance fixes.
+- `0.2.6`: move the system-codec path to one foreground Range lane while retaining the large-file cache window, narrowly fix the eight-byte `6677/proxy/play` Range anomaly, and synchronize resume/scrub, buffering progress/speed, HDR bitmap subtitles, and loading-overlay cleanup across all variants.
 - Next: keep closing playback, subtitle, HDR, and audio behavior from device logs.

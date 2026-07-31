@@ -40,6 +40,10 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private static final long STREAMING_MAX_CACHE_SIZE = resolveStreamingMaxCacheSize();
     private static final long STREAMING_BACK_BUFFER_SIZE = resolveStreamingBackBufferSize();
     private static final long PROBE_WINDOW_SIZE = 256L * 1024L;
+    // Some 6677 providers report the requested range with an eight-byte header offset while
+    // returning the contiguous body that starts at the requested position. Keep this narrow:
+    // normal short bodies must still be retried instead of being cached as a false window.
+    private static final long LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES = 8L;
     private static final int MAX_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 150L;
     private static final String HEADER_PROBE_CONTAINER = "x-tvbox-probe-container";
@@ -61,6 +65,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private final long prefetchWindowSize;
     private final boolean prefetchEnabled;
     private final boolean interruptForegroundReadOnSeek;
+    private final RangeTransferListener rangeTransferListener;
     private volatile boolean closed;
     private volatile long totalSize = -1L;
     private long windowStart = -1L;
@@ -97,31 +102,72 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private static Method sRuntimeLogInfoMethod;
     private static boolean sRuntimeLogLookupDone;
 
+    /** Receives bytes at the moment the HTTP body supplies them. */
+    public interface RangeTransferListener {
+        void onBytesTransferred(int bytes);
+    }
+
     public HttpRangeMediaDataSource(String url, Map<String, String> headers) {
-        this(url, headers, DEFAULT_WINDOW_SIZE, MAX_WINDOW_SIZE, false);
+        this(url, headers, DEFAULT_WINDOW_SIZE, MAX_WINDOW_SIZE, false, null);
     }
 
     public static HttpRangeMediaDataSource createForStreamingPlayback(String url, Map<String, String> headers) {
         return new HttpRangeMediaDataSource(url, headers,
-                STREAMING_DEFAULT_WINDOW_SIZE, STREAMING_MAX_WINDOW_SIZE, false);
+                STREAMING_DEFAULT_WINDOW_SIZE, STREAMING_MAX_WINDOW_SIZE, false, null);
+    }
+
+    /**
+     * Range-backed source for the ExoPlayer system-codec path. ExoPlayer already owns one
+     * sequential loading loop; a second asynchronous prefetch lane only makes the 6677 proxy
+     * cancel and reopen the same range. Use a larger bounded foreground window instead so each
+     * request gets the endpoint's efficient 8-16 MiB transfer without competing connections.
+     */
+    public static HttpRangeMediaDataSource createForSystemStreamingPlayback(
+            String url, Map<String, String> headers) {
+        return createForSystemStreamingPlayback(url, headers, null);
+    }
+
+    public static HttpRangeMediaDataSource createForSystemStreamingPlayback(
+            String url, Map<String, String> headers, RangeTransferListener transferListener) {
+        return new HttpRangeMediaDataSource(url, headers,
+                8L * 1024L * 1024L,
+                16L * 1024L * 1024L,
+                false,
+                Boolean.FALSE,
+                transferListener);
     }
 
     static HttpRangeMediaDataSource createForProxyFileDescriptor(String url,
                                                                   Map<String, String> headers) {
         return new HttpRangeMediaDataSource(url, headers,
-                STREAMING_DEFAULT_WINDOW_SIZE, STREAMING_MAX_WINDOW_SIZE, true);
+                STREAMING_DEFAULT_WINDOW_SIZE, STREAMING_MAX_WINDOW_SIZE, true, null);
     }
 
     private HttpRangeMediaDataSource(String url,
                                      Map<String, String> headers,
                                      long defaultWindowSize,
                                      long maxWindowSize,
-                                     boolean interruptForegroundReadOnSeek) {
+                                     boolean interruptForegroundReadOnSeek,
+                                     Boolean prefetchEnabledOverride) {
+        this(url, headers, defaultWindowSize, maxWindowSize, interruptForegroundReadOnSeek,
+                prefetchEnabledOverride, null);
+    }
+
+    private HttpRangeMediaDataSource(String url,
+                                     Map<String, String> headers,
+                                     long defaultWindowSize,
+                                     long maxWindowSize,
+                                     boolean interruptForegroundReadOnSeek,
+                                     Boolean prefetchEnabledOverride,
+                                     RangeTransferListener transferListener) {
         this.url = url;
         this.defaultWindowSize = Math.max(DEFAULT_WINDOW_SIZE, defaultWindowSize);
         this.maxWindowSize = Math.max(this.defaultWindowSize, maxWindowSize);
         this.prefetchWindowSize = Math.max(this.defaultWindowSize, STREAMING_PREFETCH_WINDOW_SIZE);
-        this.prefetchEnabled = this.defaultWindowSize >= STREAMING_DEFAULT_WINDOW_SIZE;
+        this.prefetchEnabled = prefetchEnabledOverride == null
+                ? this.defaultWindowSize >= STREAMING_DEFAULT_WINDOW_SIZE
+                : prefetchEnabledOverride;
+        this.rangeTransferListener = transferListener;
         this.interruptForegroundReadOnSeek = interruptForegroundReadOnSeek;
         if (headers != null) {
             for (Map.Entry<String, String> entry : headers.entrySet()) {
@@ -195,13 +241,18 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                     totalCopied += copyLength;
                     cursor += copyLength;
                     notePlaybackReadLocked(cursor);
-                    maybeSchedulePrefetchLocked(cursor, requestedSize);
                     if (copyLength < available) {
                         break;
                     }
                     if (totalSize >= 0L && cursor >= totalSize) {
                         break;
                     }
+                }
+                if (totalCopied > 0) {
+                    // Schedule fill-ahead only after this read is complete. If one decoder
+                    // request spans two windows, scheduling in the middle of the loop would
+                    // immediately be cancelled by the next foreground cache miss.
+                    maybeSchedulePrefetchLocked(cursor, requestedSize);
                 }
                 if (debugReadCount < 8) {
                     debugReadCount++;
@@ -238,6 +289,34 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
             }
         } finally {
             blockingReadLock.unlock();
+        }
+    }
+
+    /**
+     * Returns the length learned from a completed Range response without issuing another request.
+     * A system DataSource may intentionally skip the eager byte-zero size probe, so its adapter
+     * uses this snapshot to terminate cleanly once the first real read has exposed Content-Range.
+     */
+    public long getKnownTotalSize() {
+        return totalSize;
+    }
+
+    /**
+     * Seeds a length that was established by an earlier DataSource open for the same active
+     * playback URL. ExoPlayer can create a fresh DataSource for a saved-position read, while the
+     * local 6677 endpoint may temporarily reject that non-zero range before it exposes the whole
+     * file again. Carrying the verified length forward prevents that temporary 416 from becoming
+     * a false end-of-input.
+     */
+    public void primeKnownTotalSize(long verifiedTotalSize) {
+        if (verifiedTotalSize <= 0L) {
+            return;
+        }
+        synchronized (this) {
+            if (!closed && totalSize < 0L) {
+                totalSize = verifiedTotalSize;
+                refreshBufferSnapshotsLocked();
+            }
         }
     }
 
@@ -352,7 +431,11 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     }
 
     private void notePlaybackReadLocked(long position) {
-        if (!prefetchEnabled || position < 0L) {
+        // Keep the playback anchor even when this source uses ExoPlayer's single foreground
+        // loading lane (prefetchEnabled=false). Cache trimming must know which windows are
+        // behind the decoder; otherwise it evicts the newest window and the next read fetches
+        // the same Range again, producing the observed slow/zero-speed oscillation.
+        if (position < 0L) {
             return;
         }
         if (isAuxiliaryTailProbeLocked(position)) {
@@ -442,7 +525,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         cancelAllPrefetchCalls();
         Future<?> future = prefetchFuture;
         if (future != null) {
-            future.cancel(true);
+            // The active Call is cancelled above. Keep the executor thread's interrupt state
+            // clean so the next foreground read can acquire the range lane normally.
+            future.cancel(false);
         }
     }
 
@@ -589,7 +674,10 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         activePrefetchId = -1L;
         cancelPrefetchCall(cancelledPrefetchId);
         if (future != null) {
-            future.cancel(true);
+            // Closing the OkHttp Call is enough to release the network read. Do not interrupt
+            // the shared executor thread: an interrupt can leak into the next foreground range
+            // request and make a healthy read fail as "interrupted" after a short payload.
+            future.cancel(false);
         }
     }
 
@@ -843,69 +931,123 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 long resolvedTotalSize = knownTotalSize;
                 if (response.code() == 416) {
                     long unsatisfiedTotal = ContentRangeInfo.parseUnsatisfiedTotal(response.header("Content-Range"));
-                    if (unsatisfiedTotal > 0L) {
-                        resolvedTotalSize = unsatisfiedTotal;
-                    }
-                    if (resolvedTotalSize >= 0L && start >= resolvedTotalSize) {
-                        return new WindowData(start, start - 1L, new byte[0], resolvedTotalSize,
+                    if (knownTotalSize >= 0L) {
+                        if (start >= knownTotalSize) {
+                            return new WindowData(start, start - 1L, new byte[0], knownTotalSize,
+                                    start, start - 1L, desiredEnd, response.code());
+                        }
+                        // The local 6677 endpoint can briefly report the length of its current
+                        // cache window as `bytes */N` while a valid, larger file is still being
+                        // streamed. Never replace an already verified file length with that
+                        // transient value: doing so turns a retryable read into a false EOF and
+                        // leaves the decoder stuck at the new position.
+                        lastPayloadFailure = new IOException("Transient HTTP 416 before known EOF at "
+                                + start + "/" + knownTotalSize + " reported=" + unsatisfiedTotal);
+                    } else if (unsatisfiedTotal > 0L && start >= unsatisfiedTotal) {
+                        // With no prior verified length, the RFC 7233 unsatisfied-range form is
+                        // the only length evidence available. Treat it as EOF only at or beyond
+                        // that reported end; otherwise retry because the proxy may still be
+                        // growing its readable window.
+                        return new WindowData(start, start - 1L, new byte[0], unsatisfiedTotal,
                                 start, start - 1L, desiredEnd, response.code());
+                    } else {
+                        lastPayloadFailure = new IOException("HTTP 416 before known EOF at "
+                                + start + " reported=" + unsatisfiedTotal);
                     }
-                }
-                if (!response.isSuccessful() || response.body() == null) {
+                } else if (!response.isSuccessful() || response.body() == null) {
                     throw new IOException("Unexpected HTTP " + response.code() + " for " + start + "-" + desiredEnd);
-                }
-                ContentRangeInfo rangeInfo = ContentRangeInfo.parse(response.header("Content-Range"));
-                if (rangeInfo != null && rangeInfo.total > 0L) {
-                    resolvedTotalSize = rangeInfo.total;
-                } else if (start == 0L) {
-                    long bodyLength = response.body().contentLength();
-                    if (bodyLength > 0L) {
-                        resolvedTotalSize = bodyLength;
-                    }
-                }
-
-                long payloadStart = rangeInfo != null ? rangeInfo.start : 0L;
-                long payloadEnd;
-                if (rangeInfo != null) {
-                    payloadEnd = rangeInfo.end;
                 } else {
-                    long bodyLength = response.body().contentLength();
-                    payloadEnd = bodyLength > 0L ? payloadStart + bodyLength - 1L : desiredEnd;
-                }
-                if (payloadEnd < start) {
-                    throw new IOException("Invalid payload window " + payloadStart + "-" + payloadEnd + " for " + start);
-                }
-                if (start > 0L && rangeInfo == null) {
-                    throw new IOException("Server ignored range request for offset " + start);
-                }
-                if (rangeInfo != null && rangeInfo.start > start) {
-                    throw new IOException("Range response starts after requested offset: " + rangeInfo.start + " > " + start);
-                }
+                    String contentRangeHeader = response.header("Content-Range");
+                    ContentRangeInfo rangeInfo = ContentRangeInfo.parse(contentRangeHeader);
+                    boolean bareLoopbackRangeStart = isBareLoopbackRangeStart(
+                            response.code(), contentRangeHeader, start);
+                    boolean shiftedLoopbackRange = hasExpectedLoopbackRangeShift(
+                            rangeInfo, start, desiredEnd);
+                    if (rangeInfo != null && rangeInfo.total > 0L) {
+                        resolvedTotalSize = rangeInfo.total;
+                    } else if (start == 0L) {
+                        long bodyLength = response.body().contentLength();
+                        if (bodyLength > 0L) {
+                            resolvedTotalSize = bodyLength;
+                        }
+                    }
 
-                long skipBytes = Math.max(0L, start - payloadStart);
-                long availableAfterSkip = payloadEnd - start + 1L;
-                long targetLength = desiredEnd >= start ? desiredEnd - start + 1L : availableAfterSkip;
-                long bytesToRead = targetLength > 0L ? Math.min(targetLength, availableAfterSkip) : availableAfterSkip;
+                    long payloadStart = rangeInfo != null ? rangeInfo.start : 0L;
+                    long payloadEnd;
+                    if (rangeInfo != null) {
+                        payloadEnd = rangeInfo.end;
+                    } else {
+                        long bodyLength = response.body().contentLength();
+                        payloadEnd = bodyLength > 0L ? payloadStart + bodyLength - 1L : desiredEnd;
+                    }
+                // 6677 can answer the first seek reopen with its initial 1 MB block even
+                // though this request starts later. Closing and retrying the same byte range
+                // yields the correct 206 response; treating that first block as EOF turns a
+                // valid resume/tail read into a permanent loading-0% failure.
+                    boolean retryableRangeReset = start > 0L
+                            && response.code() == 200
+                            && rangeInfo != null
+                            && rangeInfo.start == 0L
+                            && rangeInfo.end < start;
+                    if (retryableRangeReset) {
+                        lastPayloadFailure = new IOException("Server reset non-zero range "
+                                + start + " to " + rangeInfo.start + "-" + rangeInfo.end);
+                    } else {
+                        if (payloadEnd < start) {
+                            throw new IOException("Invalid payload window " + payloadStart + "-" + payloadEnd + " for " + start);
+                        }
+                        if (start > 0L && rangeInfo == null) {
+                            throw new IOException("Server ignored range request for offset " + start);
+                        }
+                        if (rangeInfo != null && rangeInfo.start > start
+                                && !shiftedLoopbackRange) {
+                            throw new IOException("Range response starts after requested offset: " + rangeInfo.start + " > " + start);
+                        }
 
-                InputStream stream = response.body().byteStream();
-                byte[] data;
-                try {
-                    discardFully(stream, skipBytes);
-                    data = readUpTo(stream, bytesToRead);
-                } catch (IOException bodyFailure) {
-                    lastPayloadFailure = new IOException(
-                            "Range payload ended early at " + start + "-" + desiredEnd,
-                            bodyFailure);
-                    data = null;
-                }
-                if (data != null && data.length > 0) {
-                    long resolvedEnd = start + data.length - 1L;
-                    return new WindowData(start, resolvedEnd, data, resolvedTotalSize,
-                            payloadStart, payloadEnd, desiredEnd, response.code());
-                }
-                if (data != null) {
-                    lastPayloadFailure = new IOException(
-                            "Empty range payload before EOF at " + start + "/" + resolvedTotalSize);
+                        long skipBytes = Math.max(0L, start - payloadStart);
+                        long availableAfterSkip = payloadEnd - start + 1L;
+                        long targetLength = desiredEnd >= start ? desiredEnd - start + 1L : availableAfterSkip;
+                        long bytesToRead = targetLength > 0L ? Math.min(targetLength, availableAfterSkip) : availableAfterSkip;
+
+                        InputStream stream = response.body().byteStream();
+                        byte[] data;
+                        try {
+                            discardFully(stream, skipBytes);
+                            data = readUpTo(stream, bytesToRead, rangeTransferListener);
+                        } catch (IOException bodyFailure) {
+                            lastPayloadFailure = new IOException(
+                                    "Range payload ended early at " + start + "-" + desiredEnd,
+                                    bodyFailure);
+                            data = null;
+                        }
+                        if (data != null && data.length > 0) {
+                            long expectedBytes = bytesToRead;
+                            boolean completePayload = data.length >= expectedBytes;
+                            boolean reachedKnownEnd = resolvedTotalSize > 0L
+                                    && start <= Long.MAX_VALUE - data.length
+                                    && start + data.length >= resolvedTotalSize;
+                            boolean toleratedBareLoopbackShortPayload = bareLoopbackRangeStart
+                                    && isExpectedLoopbackShortPayload(expectedBytes, data.length);
+                            if (completePayload || reachedKnownEnd || toleratedBareLoopbackShortPayload) {
+                                long resolvedEnd = start + data.length - 1L;
+                                return new WindowData(start, resolvedEnd, data, resolvedTotalSize,
+                                        payloadStart, payloadEnd, desiredEnd, response.code());
+                            }
+                            // A Range response can advertise an 8 MiB entity while the proxy
+                            // closes the body after a much smaller prefix. Returning that prefix as
+                            // a valid window moves ExoPlayer to a false boundary and eventually
+                            // stalls on an interrupted follow-up request. Reopen the same Range
+                            // until the advertised payload is complete (or the known file end is
+                            // reached).
+                            lastPayloadFailure = new IOException(
+                                    "Range payload short at " + start + ": expected "
+                                            + expectedBytes + " bytes, received " + data.length);
+                        }
+                        if (data != null && data.length == 0) {
+                            lastPayloadFailure = new IOException(
+                                    "Empty range payload before EOF at " + start + "/" + resolvedTotalSize);
+                        }
+                    }
                 }
             } finally {
                 response.close();
@@ -1227,7 +1369,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         }
     }
 
-    private static byte[] readUpTo(InputStream stream, long maxBytes) throws IOException {
+    private static byte[] readUpTo(InputStream stream,
+                                   long maxBytes,
+                                   RangeTransferListener transferListener) throws IOException {
         if (maxBytes <= 0L) {
             return new byte[0];
         }
@@ -1248,6 +1392,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
             }
             if (read < 0) {
                 break;
+            }
+            if (read > 0 && transferListener != null) {
+                transferListener.onBytesTransferred(read);
             }
             total += read;
         }
@@ -1272,6 +1419,32 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
 
     private static boolean isNullOrEmpty(String value) {
         return value == null || value.isEmpty();
+    }
+
+    private static boolean isBareLoopbackRangeStart(int responseCode,
+                                                    String contentRangeHeader,
+                                                    long requestedStart) {
+        return responseCode == 206
+                && contentRangeHeader != null
+                && contentRangeHeader.trim().equalsIgnoreCase("bytes " + requestedStart);
+    }
+
+    private static boolean hasExpectedLoopbackRangeShift(ContentRangeInfo range,
+                                                          long requestedStart,
+                                                          long requestedEnd) {
+        if (range == null || requestedEnd < requestedStart
+                || requestedStart > Long.MAX_VALUE - LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES) {
+            return false;
+        }
+        return range.start == requestedStart + LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES
+                && requestedEnd >= LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES
+                && range.end == requestedEnd - LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES;
+    }
+
+    private static boolean isExpectedLoopbackShortPayload(long expectedBytes, long receivedBytes) {
+        return expectedBytes > LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES
+                && receivedBytes > 0L
+                && expectedBytes - receivedBytes == LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES;
     }
 
     private static final class ContentRangeInfo {

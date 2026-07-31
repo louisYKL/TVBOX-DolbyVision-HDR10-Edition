@@ -63,6 +63,27 @@ public class PlaybackBufferProgressPolicyTest {
     }
 
     @Test
+    public void unknownProgressIsPreservedForDisplay() {
+        assertEquals(-1, PlaybackBufferProgressPolicy.displayPercent(-1));
+        assertEquals(0, PlaybackBufferProgressPolicy.displayPercent(0));
+        assertEquals(100, PlaybackBufferProgressPolicy.displayPercent(120));
+    }
+
+    @Test
+    public void unknownProgressKeepsStartupWatchdogAliveOnlyWithinBound() {
+        assertTrue(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForUnknownProgress(
+                VideoView.STATE_PREPARING, -1, 5_000L, 5_000L, 30_000L, 120_000L));
+        assertFalse(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForUnknownProgress(
+                VideoView.STATE_PREPARING, -1, 4_999L, 5_000L, 30_000L, 120_000L));
+        assertFalse(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForUnknownProgress(
+                VideoView.STATE_PREPARING, -1, 5_000L, 5_000L, 120_000L, 120_000L));
+        assertTrue(PlaybackBufferProgressPolicy.shouldDeferTimeoutForUnknownProgress(
+                VideoView.STATE_BUFFERING, -1, 119_999L, 120_000L));
+        assertFalse(PlaybackBufferProgressPolicy.shouldDeferTimeoutForUnknownProgress(
+                VideoView.STATE_BUFFERING, -1, 120_000L, 120_000L));
+    }
+
+    @Test
     public void activeNativeBufferingRefreshesEvenWithFrozenPercent() {
         // The java64 4K HDR regression: native player filled its buffer, percent frozen at 29,
         // still buffering/decoding the first frame. The outer safety-net must keep refreshing.
