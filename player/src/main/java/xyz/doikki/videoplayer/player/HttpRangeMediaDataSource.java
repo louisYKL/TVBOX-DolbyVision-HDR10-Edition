@@ -40,10 +40,18 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private static final long STREAMING_MAX_CACHE_SIZE = resolveStreamingMaxCacheSize();
     private static final long STREAMING_BACK_BUFFER_SIZE = resolveStreamingBackBufferSize();
     private static final long PROBE_WINDOW_SIZE = 256L * 1024L;
-    // Some 6677 providers report the requested range with an eight-byte header offset while
-    // returning the contiguous body that starts at the requested position. Keep this narrow:
-    // normal short bodies must still be retried instead of being cached as a false window.
+    // The direct 6677 provider occasionally reports a bounded entity with an eight-byte
+    // Content-Range header shift while the body still starts at the requested logical offset.
+    // Keep the exception in response-header parsing only. The physical HTTP Range request must
+    // always use the same coordinates that the decoder requested; expanding it would prepend
+    // unrelated bytes and corrupt EBML/Matroska parsing.
     private static final long LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES = 8L;
+    private static final byte[] PNG_SIGNATURE = new byte[]{
+            (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
+    };
+    private static final byte[] EBML_SIGNATURE = new byte[]{
+            0x1A, 0x45, (byte) 0xDF, (byte) 0xA3
+    };
     private static final int MAX_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 150L;
     private static final String HEADER_PROBE_CONTAINER = "x-tvbox-probe-container";
@@ -65,6 +73,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private final long prefetchWindowSize;
     private final boolean prefetchEnabled;
     private final boolean interruptForegroundReadOnSeek;
+    // Only the system ExoPlayer route may commit a verified contiguous short prefix. Legacy
+    // MediaDataSource paths keep strict entity-length validation and retry incomplete bodies.
+    private final boolean allowVerifiedShortPayload;
     private final RangeTransferListener rangeTransferListener;
     private volatile boolean closed;
     private volatile long totalSize = -1L;
@@ -82,6 +93,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     private volatile long playbackStartBufferTargetSnapshot;
     private volatile long cachedBytesSnapshot;
     private int debugLoadCount;
+    private int debugResponseCount;
     private int debugReadCount;
     private int debugPrefetchCount;
     private volatile Future<?> prefetchFuture;
@@ -134,6 +146,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 16L * 1024L * 1024L,
                 false,
                 Boolean.FALSE,
+                true,
                 transferListener);
     }
 
@@ -150,7 +163,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                                      boolean interruptForegroundReadOnSeek,
                                      Boolean prefetchEnabledOverride) {
         this(url, headers, defaultWindowSize, maxWindowSize, interruptForegroundReadOnSeek,
-                prefetchEnabledOverride, null);
+                prefetchEnabledOverride, false, null);
     }
 
     private HttpRangeMediaDataSource(String url,
@@ -159,6 +172,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                                      long maxWindowSize,
                                      boolean interruptForegroundReadOnSeek,
                                      Boolean prefetchEnabledOverride,
+                                     boolean allowVerifiedShortPayload,
                                      RangeTransferListener transferListener) {
         this.url = url;
         this.defaultWindowSize = Math.max(DEFAULT_WINDOW_SIZE, defaultWindowSize);
@@ -167,6 +181,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         this.prefetchEnabled = prefetchEnabledOverride == null
                 ? this.defaultWindowSize >= STREAMING_DEFAULT_WINDOW_SIZE
                 : prefetchEnabledOverride;
+        this.allowVerifiedShortPayload = allowVerifiedShortPayload;
         this.rangeTransferListener = transferListener;
         this.interruptForegroundReadOnSeek = interruptForegroundReadOnSeek;
         if (headers != null) {
@@ -943,7 +958,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                         // leaves the decoder stuck at the new position.
                         lastPayloadFailure = new IOException("Transient HTTP 416 before known EOF at "
                                 + start + "/" + knownTotalSize + " reported=" + unsatisfiedTotal);
-                    } else if (unsatisfiedTotal > 0L && start >= unsatisfiedTotal) {
+                    } else if (shouldTreatUnknown416AsEof(url, start, unsatisfiedTotal)) {
                         // With no prior verified length, the RFC 7233 unsatisfied-range form is
                         // the only length evidence available. Treat it as EOF only at or beyond
                         // that reported end; otherwise retry because the proxy may still be
@@ -951,6 +966,12 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                         return new WindowData(start, start - 1L, new byte[0], unsatisfiedTotal,
                                 start, start - 1L, desiredEnd, response.code());
                     } else {
+                        // The direct 6677 proxy can expose a transient cache length as
+                        // `bytes */N` while the remote file is still growing. At a non-zero
+                        // position that response is not EOF when the total is otherwise unknown;
+                        // retry the exact range instead of poisoning the DataSource with a false
+                        // end-of-input. A real EOF is still handled once a verified total is
+                        // known, or by the bounded retry policy turning this into a source error.
                         lastPayloadFailure = new IOException("HTTP 416 before known EOF at "
                                 + start + " reported=" + unsatisfiedTotal);
                     }
@@ -959,26 +980,75 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 } else {
                     String contentRangeHeader = response.header("Content-Range");
                     ContentRangeInfo rangeInfo = ContentRangeInfo.parse(contentRangeHeader);
+                    long responseBodyLength = response.body().contentLength();
                     boolean bareLoopbackRangeStart = isBareLoopbackRangeStart(
                             response.code(), contentRangeHeader, start);
-                    boolean shiftedLoopbackRange = hasExpectedLoopbackRangeShift(
-                            rangeInfo, start, desiredEnd);
+                    boolean shiftedLoopbackRange = isLoopbackShiftedRangeHeader(
+                            url, rangeInfo, start, desiredEnd);
+                    boolean loopbackProxy = isLoopbackProxyPlayUrl(url);
+                    if (debugResponseCount < 12) {
+                        debugResponseCount++;
+                        logInfo("echo-range-source response start=" + start
+                                + " end=" + desiredEnd
+                                + " range=" + contentRangeHeader
+                                + " bodyLength=" + responseBodyLength
+                                + " loopback=" + loopbackProxy
+                                + " shifted=" + shiftedLoopbackRange);
+                    }
                     if (rangeInfo != null && rangeInfo.total > 0L) {
                         resolvedTotalSize = rangeInfo.total;
                     } else if (start == 0L) {
-                        long bodyLength = response.body().contentLength();
-                        if (bodyLength > 0L) {
-                            resolvedTotalSize = bodyLength;
+                        if (responseBodyLength > 0L) {
+                            resolvedTotalSize = responseBodyLength;
                         }
                     }
 
-                    long payloadStart = rangeInfo != null ? rangeInfo.start : 0L;
+                    // A tail seek can be the first request on a saved-position reopen, so
+                    // knownTotalSize is still unset when the request is built. Once this
+                    // response establishes the real entity length, immediately clamp the
+                    // logical window to that length. Without this, the 6677 endpoint may stream
+                    // bytes beyond the Matroska file tail and the extractor sees fabricated EBML
+                    // data, reported as `Invalid integer size` at the resume position.
+                    if (resolvedTotalSize > 0L) {
+                        if (start >= resolvedTotalSize) {
+                            return new WindowData(start, start - 1L, new byte[0], resolvedTotalSize,
+                                    start, start - 1L, desiredEnd, response.code());
+                        }
+                        desiredEnd = desiredEnd >= start
+                                ? Math.min(desiredEnd, resolvedTotalSize - 1L)
+                                : resolvedTotalSize - 1L;
+                    }
+
+                    // For the known 6677 header defect, the body is still contiguous from the
+                    // requested offset even though Content-Range says start+8/end-8. Rebase only
+                    // the logical interpretation of that response; never skip eight body bytes
+                    // and never alter the actual Range header sent on the wire.
+                    // The local proxy's physical Range request is always logicalStart-logicalEnd.
+                    // Its malformed Content-Range header is metadata only; the response body
+                    // therefore starts at the requested logical offset even when the header says
+                    // start+8. Keeping this invariant prevents stale/alternate proxy headers
+                    // from shifting the bytes fed to Matroska's EBML parser.
+                    long payloadStart = (loopbackProxy && (shiftedLoopbackRange
+                            || (rangeInfo != null && rangeInfo.start == start))) ? start
+                            : (rangeInfo != null ? rangeInfo.start : 0L);
                     long payloadEnd;
                     if (rangeInfo != null) {
                         payloadEnd = rangeInfo.end;
                     } else {
-                        long bodyLength = response.body().contentLength();
-                        payloadEnd = bodyLength > 0L ? payloadStart + bodyLength - 1L : desiredEnd;
+                        payloadEnd = responseBodyLength > 0L
+                                ? payloadStart + responseBodyLength - 1L : desiredEnd;
+                    }
+                    if (loopbackProxy && payloadStart == start && desiredEnd >= start) {
+                        // Never let a malformed or over-optimistic Content-Range make the
+                        // decoder consume bytes past the exact requested entity.
+                        payloadEnd = Math.min(payloadEnd, desiredEnd);
+                        if (responseBodyLength > 0L) {
+                            payloadEnd = Math.min(payloadEnd,
+                                    start + responseBodyLength - 1L);
+                        }
+                    }
+                    if (resolvedTotalSize > 0L) {
+                        payloadEnd = Math.min(payloadEnd, resolvedTotalSize - 1L);
                     }
                 // 6677 can answer the first seek reopen with its initial 1 MB block even
                 // though this request starts later. Closing and retrying the same byte range
@@ -999,8 +1069,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                         if (start > 0L && rangeInfo == null) {
                             throw new IOException("Server ignored range request for offset " + start);
                         }
-                        if (rangeInfo != null && rangeInfo.start > start
-                                && !shiftedLoopbackRange) {
+                        if (rangeInfo != null && rangeInfo.start > start && !shiftedLoopbackRange) {
                             throw new IOException("Range response starts after requested offset: " + rangeInfo.start + " > " + start);
                         }
 
@@ -1020,6 +1089,22 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                                     bodyFailure);
                             data = null;
                         }
+                        if (data != null && data.length > 0
+                                && isCorruptLoopbackPayload(url, start, data)) {
+                            // A 6677 overrun request can return eight bytes from an image
+                            // response followed by the video's EBML header. The Content-Range
+                            // metadata still looks usable, so accepting this body would feed a
+                            // PNG prefix into Matroska and leave ExoPlayer permanently buffering
+                            // at zero. Discard the whole response and retry the same logical
+                            // range; never trim the prefix because the following bytes are from a
+                            // different entity, not a shifted video window.
+                            lastPayloadFailure = new IOException(
+                                    "Loopback range returned image-prefixed payload at " + start);
+                            logInfo("echo-range-source reject-corrupt-payload start=" + start
+                                    + " bytes=" + data.length
+                                    + " prefix=" + hexPrefix(data));
+                            data = null;
+                        }
                         if (data != null && data.length > 0) {
                             long expectedBytes = bytesToRead;
                             boolean completePayload = data.length >= expectedBytes;
@@ -1028,10 +1113,29 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                                     && start + data.length >= resolvedTotalSize;
                             boolean toleratedBareLoopbackShortPayload = bareLoopbackRangeStart
                                     && isExpectedLoopbackShortPayload(expectedBytes, data.length);
-                            if (completePayload || reachedKnownEnd || toleratedBareLoopbackShortPayload) {
+                            // The loopback endpoint can keep a valid Range connection open while
+                            // it fills the remote-drive entity. For the ExoPlayer route, commit a
+                            // verified contiguous prefix immediately and let the next decoder
+                            // read continue at its exact end. This exception is limited to the
+                            // local proxy's exact +8 header signature; ordinary origins and
+                            // ordinary short responses still require the advertised window.
+                            boolean verifiedShortPrefix = allowVerifiedShortPayload
+                                    && !completePayload
+                                    && data.length > 0
+                                    && (shiftedLoopbackRange
+                                    || (rangeInfo != null && rangeInfo.start == start));
+                            if (completePayload || reachedKnownEnd || toleratedBareLoopbackShortPayload
+                                    || verifiedShortPrefix) {
+                                if (debugLoadCount < 12) {
+                                    logInfo("echo-range-source body start=" + start
+                                            + " bytes=" + data.length
+                                            + " prefix=" + hexPrefix(data));
+                                }
                                 long resolvedEnd = start + data.length - 1L;
                                 return new WindowData(start, resolvedEnd, data, resolvedTotalSize,
-                                        payloadStart, payloadEnd, desiredEnd, response.code());
+                                        payloadStart,
+                                        verifiedShortPrefix ? resolvedEnd : payloadEnd,
+                                        desiredEnd, response.code());
                             }
                             // A Range response can advertise an 8 MiB entity while the proxy
                             // closes the body after a much smaller prefix. Returning that prefix as
@@ -1065,6 +1169,39 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                     + " total=" + knownTotalSize + " prefetch=" + prefetch);
             waitForPayloadRetry(payloadAttempt, prefetchId);
         }
+    }
+
+    private static boolean isLoopbackProxyPlayUrl(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            java.net.URI uri = new java.net.URI(value.trim());
+            String host = uri.getHost();
+            String path = uri.getPath();
+            return ("127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host))
+                    && uri.getPort() > 0
+                    && path != null
+                    && path.contains("/proxy/play/");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    static long resolveLoopbackWireStart(String url, long logicalStart) {
+        // Kept package-visible for regression tests and callers that previously used the
+        // coordinate helper. Physical and logical offsets are intentionally identical now.
+        return Math.max(0L, logicalStart);
+    }
+
+    static long resolveLoopbackWireEnd(String url, long logicalEnd) {
+        return logicalEnd;
+    }
+
+    static boolean shouldTreatUnknown416AsEof(String url, long start, long unsatisfiedTotal) {
+        return unsatisfiedTotal > 0L
+                && start >= unsatisfiedTotal
+                && !(start > 0L && isLoopbackProxyPlayUrl(url));
     }
 
     private void waitForPayloadRetry(int attempt, long prefetchId) throws IOException {
@@ -1102,7 +1239,23 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                         .url(url)
                         .header("Connection", "close")
                         .header("Accept-Encoding", "identity");
-                builder.header("Range", end >= start ? "bytes=" + start + "-" + end : "bytes=" + start + "-");
+                // Keep wire coordinates identical to the decoder's logical coordinates. The
+                // 6677 endpoint has a header-only +8/-8 defect; expanding the physical request
+                // prepends unrelated bytes and makes valid Matroska clusters look corrupt.
+                long wireStart = resolveLoopbackWireStart(url, start);
+                // A saved-position reopen can be the first request that exposes the file length.
+                // Sending start+8MiB while that length is unknown is unsafe for 6677: if the
+                // cursor is near EOF, the proxy emits an image-prefixed error entity instead of
+                // the requested tail. An open-ended Range lets the proxy clamp to its actual EOF;
+                // readUpTo below still limits the bytes committed to this foreground window.
+                boolean unknownLengthLoopbackSeek = isLoopbackProxyPlayUrl(url)
+                        && wireStart > 0L
+                        && getKnownTotalSizeSnapshot() < 0L;
+                long wireEnd = unknownLengthLoopbackSeek
+                        ? -1L : resolveLoopbackWireEnd(url, end);
+                builder.header("Range", wireEnd >= wireStart
+                        ? "bytes=" + wireStart + "-" + wireEnd
+                        : "bytes=" + wireStart + "-");
                 for (Map.Entry<String, String> entry : headers.entrySet()) {
                     if (!isNullOrEmpty(entry.getKey())
                             && entry.getValue() != null
@@ -1115,6 +1268,9 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                     throw new IOException(prefetchId >= 0L
                             ? "Prefetch request cancelled before range open"
                             : "Playback request cancelled before range open");
+                }
+                if (debugResponseCount < 12 && unknownLengthLoopbackSeek) {
+                    logInfo("echo-range-source open-ended-seek start=" + wireStart);
                 }
                 return call.execute();
             } catch (IOException e) {
@@ -1421,6 +1577,47 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         return value == null || value.isEmpty();
     }
 
+    private static String hexPrefix(byte[] data) {
+        if (data == null || data.length == 0) {
+            return "";
+        }
+        int count = Math.min(16, data.length);
+        StringBuilder result = new StringBuilder(count * 3);
+        for (int i = 0; i < count; i++) {
+            if (i > 0) {
+                result.append(' ');
+            }
+            int value = data[i] & 0xff;
+            if (value < 0x10) {
+                result.append('0');
+            }
+            result.append(Integer.toHexString(value).toUpperCase());
+        }
+        return result.toString();
+    }
+
+    private static boolean isCorruptLoopbackPayload(String responseUrl,
+                                                    long requestedStart,
+                                                    byte[] data) {
+        if (requestedStart <= 0L
+                || !isLoopbackProxyPlayUrl(responseUrl)
+                || data == null
+                || data.length < PNG_SIGNATURE.length + EBML_SIGNATURE.length) {
+            return false;
+        }
+        for (int i = 0; i < PNG_SIGNATURE.length; i++) {
+            if (data[i] != PNG_SIGNATURE[i]) {
+                return false;
+            }
+        }
+        for (int i = 0; i < EBML_SIGNATURE.length; i++) {
+            if (data[PNG_SIGNATURE.length + i] != EBML_SIGNATURE[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static boolean isBareLoopbackRangeStart(int responseCode,
                                                     String contentRangeHeader,
                                                     long requestedStart) {
@@ -1429,16 +1626,26 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 && contentRangeHeader.trim().equalsIgnoreCase("bytes " + requestedStart);
     }
 
-    private static boolean hasExpectedLoopbackRangeShift(ContentRangeInfo range,
-                                                          long requestedStart,
-                                                          long requestedEnd) {
-        if (range == null || requestedEnd < requestedStart
+    private static boolean isLoopbackShiftedRangeHeader(String responseUrl,
+                                                        ContentRangeInfo range,
+                                                        long requestedStart,
+                                                        long requestedEnd) {
+        if (!isLoopbackProxyPlayUrl(responseUrl)
+                || range == null
                 || requestedStart > Long.MAX_VALUE - LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES) {
             return false;
         }
-        return range.start == requestedStart + LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES
-                && requestedEnd >= LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES
-                && range.end == requestedEnd - LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES;
+        if (range.start != requestedStart + LOOPBACK_MALFORMED_RANGE_HEADER_SHIFT_BYTES) {
+            return false;
+        }
+        // The endpoint has shipped more than one broken Content-Range formatter: the start is
+        // consistently shifted by eight bytes, while the end has been observed as end-8, the
+        // requested end, and (for chunked responses) beyond the requested end. The body is the
+        // useful source of truth here. Once the exact +8 start signature is present on the local
+        // proxy, ignore both advertised coordinates and rebase the entity at the logical request
+        // offset below. Do not broaden this to arbitrary origins or arbitrary offsets: those are
+        // real out-of-order responses and must still fail rather than feed corrupt bytes to EBML.
+        return true;
     }
 
     private static boolean isExpectedLoopbackShortPayload(long expectedBytes, long receivedBytes) {
