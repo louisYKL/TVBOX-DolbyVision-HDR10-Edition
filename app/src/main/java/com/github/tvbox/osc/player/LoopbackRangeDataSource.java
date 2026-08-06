@@ -13,7 +13,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -46,6 +45,14 @@ final class LoopbackRangeDataSource extends BaseDataSource {
         // player's current lifetime so a subsequent non-zero open is not forced back to an
         // unknown-length 416/EOF path.
         private final ConcurrentHashMap<String, Long> verifiedContentLengths = new ConcurrentHashMap<>();
+        // ExoPlayer can create more than one DataSource while it probes metadata or restores a
+        // saved position. HttpRangeMediaDataSource owns mutable cursor/window state, therefore
+        // every DataSource must keep its own instance. Serialize only the network read lane so
+        // the 6677 proxy never sees overlapping requests for one file.
+        private final java.util.concurrent.locks.ReentrantLock rangeReadLock =
+                new java.util.concurrent.locks.ReentrantLock(true);
+        private final java.util.concurrent.CopyOnWriteArrayList<LoopbackRangeDataSource>
+                rangeDataSources = new java.util.concurrent.CopyOnWriteArrayList<>();
         private volatile Map<String, String> defaultRequestHeaders = Collections.emptyMap();
 
         Factory(DataSource.Factory fallbackFactory,
@@ -68,16 +75,53 @@ final class LoopbackRangeDataSource extends BaseDataSource {
 
         @Override
         public DataSource createDataSource() {
-            return new LoopbackRangeDataSource(
+            LoopbackRangeDataSource source = new LoopbackRangeDataSource(
+                    this,
                     fallbackFactory.createDataSource(),
                     userAgent,
                     connectTimeoutMs,
                     readTimeoutMs,
                     defaultRequestHeaders,
                     verifiedContentLengths);
+            rangeDataSources.add(source);
+            return source;
+        }
+
+        private int readRange(HttpRangeMediaDataSource source,
+                              long position,
+                              byte[] buffer,
+                              int offset,
+                              int length) throws IOException {
+            boolean locked = false;
+            try {
+                rangeReadLock.lockInterruptibly();
+                locked = true;
+                return source.readAt(position, buffer, offset, length);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Range read interrupted before network read", interrupted);
+            } finally {
+                if (locked) {
+                    rangeReadLock.unlock();
+                }
+            }
+        }
+
+        /** Returns the largest committed forward window among active DataSources. */
+        long getBufferedAheadBytes() {
+            long largest = 0L;
+            for (LoopbackRangeDataSource source : rangeDataSources) {
+                largest = Math.max(largest, source.getBufferedAheadBytesInternal());
+            }
+            return largest;
+        }
+
+        private void onDataSourceClosed(LoopbackRangeDataSource source) {
+            rangeDataSources.remove(source);
         }
     }
 
+    private final Factory factory;
     private final DataSource fallback;
     // Kept in the factory for API compatibility and to make the direct-source policy explicit.
     // HttpRangeMediaDataSource owns the actual bounded network timeouts.
@@ -102,13 +146,15 @@ final class LoopbackRangeDataSource extends BaseDataSource {
     private String lengthCacheKey;
     private Map<String, List<String>> responseHeaders = Collections.emptyMap();
 
-    private LoopbackRangeDataSource(DataSource fallback,
+    private LoopbackRangeDataSource(Factory factory,
+                                    DataSource fallback,
                                     String userAgent,
                                     int connectTimeoutMs,
                                     int readTimeoutMs,
                                     Map<String, String> defaultRequestHeaders,
                                     ConcurrentHashMap<String, Long> verifiedContentLengths) {
         super(true);
+        this.factory = factory;
         this.fallback = fallback;
         this.userAgent = userAgent;
         this.connectTimeoutMs = connectTimeoutMs;
@@ -121,6 +167,11 @@ final class LoopbackRangeDataSource extends BaseDataSource {
 
     @Override
     public long open(DataSpec dataSpec) throws IOException {
+        closeRangeSourceQuietly();
+        if (specialOpen) {
+            specialOpen = false;
+            transferEnded();
+        }
         this.dataSpec = dataSpec;
         if (!shouldHandle(dataSpec)) {
             usingFallback = true;
@@ -176,8 +227,12 @@ final class LoopbackRangeDataSource extends BaseDataSource {
         if (requested <= 0) {
             return C.RESULT_END_OF_INPUT;
         }
-        int count = rangeSource.readAt(nextPosition, buffer, offset, requested);
-        long discoveredTotalLength = rangeSource.getKnownTotalSize();
+        HttpRangeMediaDataSource source = rangeSource;
+        if (source == null) {
+            throw new IOException("Direct loopback range source is closed");
+        }
+        int count = factory.readRange(source, nextPosition, buffer, offset, requested);
+        long discoveredTotalLength = source.getKnownTotalSize();
         if (discoveredTotalLength >= 0L) {
             knownTotalLength = discoveredTotalLength;
             if (lengthCacheKey != null && discoveredTotalLength > 0L) {
@@ -229,16 +284,7 @@ final class LoopbackRangeDataSource extends BaseDataSource {
                 closeFailure = error;
             }
         } else {
-            if (rangeSource != null) {
-                try {
-                    rangeSource.close();
-                } catch (Throwable error) {
-                    if (error instanceof IOException) {
-                        closeFailure = (IOException) error;
-                    }
-                }
-            }
-            rangeSource = null;
+            closeRangeSourceQuietly();
             if (specialOpen) {
                 specialOpen = false;
                 transferEnded();
@@ -259,14 +305,20 @@ final class LoopbackRangeDataSource extends BaseDataSource {
     }
 
     private void closeRangeSourceQuietly() {
-        if (rangeSource == null) {
-            return;
-        }
-        try {
-            rangeSource.close();
-        } catch (Throwable ignored) {
-        }
+        HttpRangeMediaDataSource source = rangeSource;
         rangeSource = null;
+        if (source != null) {
+            try {
+                source.close();
+            } catch (Throwable ignored) {
+            }
+        }
+        factory.onDataSourceClosed(this);
+    }
+
+    private long getBufferedAheadBytesInternal() {
+        HttpRangeMediaDataSource source = rangeSource;
+        return source == null ? 0L : source.getBufferedAheadBytes();
     }
 
     static boolean shouldHandle(DataSpec dataSpec) {

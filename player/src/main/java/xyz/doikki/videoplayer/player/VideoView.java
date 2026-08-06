@@ -432,9 +432,13 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
                 mSeekInFlight = false;
                 L.d("initial resume position applied before prepare: " + resumePosition);
             }
-            mMediaPlayer.prepareAsync();
             setPlayState(STATE_PREPARING);
             setPlayerState(isFullScreen() ? PLAYER_FULL_SCREEN : isTinyScreen() ? PLAYER_TINY_SCREEN : PLAYER_NORMAL);
+            // Set the public state before entering the player callback chain. Some native
+            // implementations can report buffering/prepared synchronously from prepareAsync;
+            // setting PREPARING afterwards overwrites that real state and leaves the UI/watchdog
+            // stuck in "preparing" even though the source has started loading.
+            mMediaPlayer.prepareAsync();
         }
     }
 

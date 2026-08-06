@@ -2,10 +2,10 @@
 
 # TV BOX 海信 32 位版
 
-> 基于 `0.2.6` 播放核心同步的海信 Android / Google TV 独立分支。
+> 基于 `0.2.7` 播放核心同步的海信 Android / Google TV 独立分支。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.6"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.6-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.7"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.7-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Hisense%20Android%20TV-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
@@ -14,10 +14,17 @@
 ## 当前版本
 
 - 包名：`com.github.tvbox.osc.hisense`
-- 版本号：`0.2.6`（`versionCode 2060`）
+- 版本号：`0.2.7`（`versionCode 2070`）
 - ABI：`armeabi-v7a`
-- 输出 APK：`TVBox_v0.2.6_hisense32.apk`
+- 输出 APK：`TVBox_v0.2.7_hisense32.apk`
 - 最低系统：Android 4.4 / API 19
+
+## 0.2.7 同步内容
+
+- 修复本地 `6677/proxy/play` 在恢复进度的非零 Range 请求中偶发返回“PNG 文件头 + EBML 视频头”的污染正文；数据源会丢弃整段错误响应并重试原始 Range，不会把图片头交给 Matroska 解码器，避免缓冲 0%、黑屏或播放超时。
+- 保持系统硬解单一前台 Range 读取链、`8 MiB` 首包/前台窗口、最大 `16 MiB` 窗口和大文件持续缓存；异常 Range 不会破坏正常首播、恢复进度或连续拖动。
+- 收紧源重试次数和活动缓冲边界，避免异常响应无限重试，同时保留临时网络失败的自动恢复。
+- 三端继续保持海信独立包名 `com.github.tvbox.osc.hisense`、`armeabi-v7a` ABI、字幕/音频/HDR 路由和原签名，可覆盖安装 `0.2.6`。
 
 ## 0.2.6 同步内容
 
