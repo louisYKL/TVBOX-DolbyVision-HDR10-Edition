@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.7
+
+### 中文
+
+- 修复本地 `6677/proxy/play` 在恢复进度的非零 Range 请求中偶发返回“PNG 文件头 + EBML 视频头”的污染正文。数据源现在识别并丢弃整段错误响应后重试原始 Range，避免图片头进入 Matroska 解码器后造成缓冲 0%、黑屏或播放超时。
+- 保持系统硬解单一前台 Range 读取链、`8 MiB` 首包/前台窗口、最大 `16 MiB` 窗口和大文件持续缓存；异常 Range 不会破坏正常首播、恢复进度或连续拖动。
+- 收紧源重试次数和活动缓冲状态边界，避免异常响应无限重试，同时保留临时网络失败的自动恢复。
+- Java32、Java64 和 Hisense 三端同步本次播放核心与回归测试，保留设备硬解、立体声 PCM、HDR 字幕、Java64 触控/手势/焦点链、海信独立包名/ABI 和原签名证书。三端统一为 `0.2.7`、`versionCode 2070`，可覆盖安装 `0.2.6`。
+
+### English
+
+- Fixed an intermittent non-zero Range response from local `6677/proxy/play` sources that returned a contaminated body consisting of a PNG signature followed by the video's EBML header. The data source now rejects the entire response and retries the original Range, preventing an image prefix from reaching the Matroska extractor and causing 0% buffering, black video, or playback timeouts.
+- Preserved the single foreground system-codec Range lane, the `8 MiB` first/foreground window, the bounded `16 MiB` window, and sustained large-file caching; malformed responses cannot regress normal startup, resume, or repeated scrubbing.
+- Bounded source retries and active-buffer handling so malformed responses cannot loop forever while recoverable transient network errors still retry.
+- Synchronized the playback core and regression tests across Java32, Java64, and Hisense while retaining hardware video decoding, stereo PCM audio, HDR subtitles, the Java64 touch/gesture/focus chain, the independent Hisense package/ABI, and the existing signing certificate. All variants are `0.2.7` with `versionCode 2070`, installable over `0.2.6`.
+
 ## 0.2.6
 
 ### 中文

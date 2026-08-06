@@ -5,13 +5,13 @@
 > 为电视而做的 TVBox 分支，重点优化设备硬解、HDR 激发、杜比视界能力路由与大屏交互体验。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.6"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.6-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.7"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.7-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.6">下载 0.2.6</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.7">下载 0.2.7</a> ·
   <a href="README.en.md">English</a>
 </p>
 
@@ -25,9 +25,9 @@
 
 | 文件 | 适用设备 | 说明 |
 | --- | --- | --- |
-| `TVBox_v0.2.6_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本，可覆盖安装 0.2.5 及更早版本 |
-| `TVBox_v0.2.6_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本，可覆盖安装 0.2.5 及更早版本 |
-| `TVBox_v0.2.6_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本，可覆盖安装 0.2.5 及更早版本 |
+| `TVBox_v0.2.7_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本，可覆盖安装 0.2.6 及更早版本 |
+| `TVBox_v0.2.7_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本，可覆盖安装 0.2.6 及更早版本 |
+| `TVBox_v0.2.7_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本，可覆盖安装 0.2.6 及更早版本 |
 
 ## 项目观感
 
@@ -56,6 +56,21 @@
 - 设备支持的 Dolby Atmos、AC-3、E-AC-3/JOC、DTS、TrueHD 等音频优先走系统解码，其他格式自动后备解码为双声道 PCM。
 - 保持字幕、全屏控制、遥控器焦点和返回逻辑在电视场景下更连贯。
 - 把项目拆成更明确的 32 位电视版、64 位 Android 版和海信 32 位版，便于后续长期维护。
+
+## 0.2.7 当前版本包含
+
+| 版本 | ABI | 面向设备 | 说明 |
+| --- | --- | --- | --- |
+| `java32` | `armeabi-v7a` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本 |
+| `java64` | `arm64-v8a` | 64 位 Android 手机 / 平板 / 盒子 | 当前 64 位版本 |
+| `hisense` | `armeabi-v7a` | 海信 32 位电视 | 当前海信专用版本 |
+
+## 0.2.7 这次重点修了什么
+
+- 修复本地 `6677/proxy/play` 在恢复进度的非零 Range 请求中偶发返回“PNG 文件头 + EBML 视频头”的污染正文；数据源现在识别并丢弃整段错误响应后重试原始 Range，不会再把图片头交给 Matroska 解码器导致缓冲 0%、黑屏或播放超时。
+- 保持系统硬解单一前台 Range 读取链、`8 MiB` 首包/前台窗口、最大 `16 MiB` 窗口和大文件持续缓存；错误 Range 不会破坏正常首播、恢复进度或连续拖动。
+- 收紧源重试次数和活动缓冲状态的边界，避免异常响应无限重试，同时保留可恢复的临时网络失败处理。
+- 三端继续保持设备硬解、PCM 音频、HDR 字幕、Java64 触控/手势/焦点链和海信独立包名/ABI，可覆盖安装 `0.2.6`。
 
 ## 0.2.6 当前版本包含
 
@@ -159,9 +174,9 @@ $env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 
 仓库内置基础 Android 构建工作流，可直接产出：
 
-- `TVBox_v0.2.6_java32.apk`
-- `TVBox_v0.2.6_java64.apk`
-- `TVBox_v0.2.6_hisense32.apk`
+- `TVBox_v0.2.7_java32.apk`
+- `TVBox_v0.2.7_java64.apk`
+- `TVBox_v0.2.7_hisense32.apk`
 
 ## 社区协作
 

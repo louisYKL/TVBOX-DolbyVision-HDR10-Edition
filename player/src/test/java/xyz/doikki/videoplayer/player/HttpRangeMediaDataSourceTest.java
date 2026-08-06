@@ -135,6 +135,172 @@ public class HttpRangeMediaDataSourceTest {
     }
 
     @Test
+    public void systemStreamingCommitsVerifiedShortPrefixThenContinuesAtExactOffset() throws Exception {
+        AtomicInteger requestCount = new AtomicInteger();
+        Future<?> server = serverExecutor.submit(() -> {
+            try {
+                serveSystemShortPrefixThenExactContinuation(requestCount);
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        });
+
+        HttpRangeMediaDataSource source = HttpRangeMediaDataSource.createForSystemStreamingPlayback(
+                "http://127.0.0.1:" + serverSocket.getLocalPort() + "/video", null);
+        byte[] prefix = new byte[64];
+        byte[] continuation = new byte[4];
+        try {
+            assertEquals(prefix.length, source.readAt(0L, prefix, 0, prefix.length));
+            assertEquals(continuation.length, source.readAt(prefix.length, continuation, 0,
+                    continuation.length));
+        } finally {
+            source.close();
+        }
+        server.get(5L, TimeUnit.SECONDS);
+
+        assertEquals(2, requestCount.get());
+        assertEquals(0x41, prefix[0]);
+        assertArrayEquals(new byte[]{0x51, 0x52, 0x53, 0x54}, continuation);
+    }
+
+    @Test
+    public void unknownLengthLoopback416AtNonZeroOffsetIsRetriedNotTreatedAsEof() {
+        assertFalse(HttpRangeMediaDataSource.shouldTreatUnknown416AsEof(
+                "http://127.0.0.1:6677/proxy/play/disk/movie.mkv", 8_388_608L, 1_048_576L));
+        assertFalse(HttpRangeMediaDataSource.shouldTreatUnknown416AsEof(
+                "http://localhost:6677/proxy/play/disk/movie.mkv", 8_388_608L, 1_048_576L));
+        assertTrue(HttpRangeMediaDataSource.shouldTreatUnknown416AsEof(
+                "https://media.example.com/video.mkv", 8_388_608L, 1_048_576L));
+        assertFalse(HttpRangeMediaDataSource.shouldTreatUnknown416AsEof(
+                "http://127.0.0.1:6677/proxy/play/disk/movie.mkv", 0L, 0L));
+    }
+
+    @Test
+    public void loopbackPhysicalRangeKeepsLogicalCursor() {
+        String loopback = "http://127.0.0.1:6677/proxy/play/disk/movie.mkv";
+        String ordinary = "https://media.example.com/movie.mkv";
+        assertEquals(1_024L,
+                HttpRangeMediaDataSource.resolveLoopbackWireStart(loopback, 1_024L));
+        assertEquals(8_192L,
+                HttpRangeMediaDataSource.resolveLoopbackWireEnd(loopback, 8_192L));
+        assertEquals(0L,
+                HttpRangeMediaDataSource.resolveLoopbackWireStart(loopback, 0L));
+        assertEquals(1_024L,
+                HttpRangeMediaDataSource.resolveLoopbackWireStart(ordinary, 1_024L));
+        assertEquals(8_192L,
+                HttpRangeMediaDataSource.resolveLoopbackWireEnd(ordinary, 8_192L));
+    }
+
+    @Test
+    public void responseLengthClampsAnOverstatedTailRangeToTheVerifiedFileEnd() throws Exception {
+        AtomicInteger requestCount = new AtomicInteger();
+        Future<?> server = serverExecutor.submit(() -> {
+            try {
+                serveOverstatedTailRangeResponse(requestCount);
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        });
+
+        HttpRangeMediaDataSource source = HttpRangeMediaDataSource.createForSystemStreamingPlayback(
+                "http://127.0.0.1:" + serverSocket.getLocalPort() + "/video", null);
+        byte[] actual = new byte[4_096];
+        try {
+            assertEquals(1_024, source.readAt(1_024L, actual, 0, actual.length));
+            assertEquals(2_048L, source.getKnownTotalSize());
+        } finally {
+            source.close();
+        }
+        server.get(5L, TimeUnit.SECONDS);
+
+        assertEquals(1, requestCount.get());
+        assertEquals(0x71, actual[0]);
+        assertEquals(0x72, actual[1]);
+    }
+
+    @Test
+    public void unknownLengthLoopbackSeekUsesOpenEndedRange() throws Exception {
+        AtomicInteger requestCount = new AtomicInteger();
+        Future<?> server = serverExecutor.submit(() -> {
+            try (Socket socket = serverSocket.accept()) {
+                String range = readRangeHeader(socket);
+                assertEquals("bytes=1024-", range);
+                requestCount.incrementAndGet();
+                byte[] body = new byte[]{0x21, 0x22, 0x23, 0x24};
+                OutputStream output = socket.getOutputStream();
+                String headers = "HTTP/1.1 206 Partial Content\r\n"
+                        + "Content-Range: bytes 1032-1035/2048\r\n"
+                        + "Content-Length: " + body.length + "\r\n"
+                        + "Connection: close\r\n\r\n";
+                output.write(headers.getBytes(StandardCharsets.US_ASCII));
+                output.write(body);
+                output.flush();
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        });
+
+        HttpRangeMediaDataSource source = HttpRangeMediaDataSource.createForSystemStreamingPlayback(
+                "http://127.0.0.1:" + serverSocket.getLocalPort() + "/proxy/play/video", null);
+        byte[] actual = new byte[4];
+        try {
+            assertEquals(actual.length, source.readAt(1024L, actual, 0, actual.length));
+        } finally {
+            source.close();
+        }
+        server.get(5L, TimeUnit.SECONDS);
+
+        assertEquals(1, requestCount.get());
+        assertArrayEquals(new byte[]{0x21, 0x22, 0x23, 0x24}, actual);
+        assertEquals(2048L, source.getKnownTotalSize());
+    }
+
+    @Test
+    public void imagePrefixedLoopbackPayloadIsDiscardedAndRetried() throws Exception {
+        AtomicInteger requestCount = new AtomicInteger();
+        Future<?> server = serverExecutor.submit(() -> {
+            try {
+                for (int request = 0; request < 2; request++) {
+                    try (Socket socket = serverSocket.accept()) {
+                        String range = readRangeHeader(socket);
+                        assertEquals("bytes=1024-", range);
+                        requestCount.incrementAndGet();
+                        byte[] body = request == 0
+                                ? new byte[]{
+                                (byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                                0x1A, 0x45, (byte) 0xDF, (byte) 0xA3
+                        }
+                                : new byte[]{0x31, 0x32, 0x33, 0x34};
+                        OutputStream output = socket.getOutputStream();
+                        String headers = "HTTP/1.1 206 Partial Content\r\n"
+                                + "Content-Range: bytes 1032-1035/2048\r\n"
+                                + "Content-Length: " + body.length + "\r\n"
+                                + "Connection: close\r\n\r\n";
+                        output.write(headers.getBytes(StandardCharsets.US_ASCII));
+                        output.write(body);
+                        output.flush();
+                    }
+                }
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        });
+
+        HttpRangeMediaDataSource source = HttpRangeMediaDataSource.createForSystemStreamingPlayback(
+                "http://127.0.0.1:" + serverSocket.getLocalPort() + "/proxy/play/video", null);
+        byte[] actual = new byte[4];
+        try {
+            assertEquals(actual.length, source.readAt(1024L, actual, 0, actual.length));
+        } finally {
+            source.close();
+        }
+        server.get(5L, TimeUnit.SECONDS);
+
+        assertEquals(2, requestCount.get());
+        assertArrayEquals(new byte[]{0x31, 0x32, 0x33, 0x34}, actual);
+    }
+
+    @Test
     public void knownLoopbackEightByteRangeHeaderBugStillDeliversContiguousWindows() throws Exception {
         final int windowSize = 8 * 1024 * 1024;
         final int deliveredWindowSize = windowSize - 8;
@@ -151,7 +317,7 @@ public class HttpRangeMediaDataSourceTest {
         });
 
         HttpRangeMediaDataSource source = HttpRangeMediaDataSource.createForSystemStreamingPlayback(
-                "http://127.0.0.1:" + serverSocket.getLocalPort() + "/video", null);
+                "http://127.0.0.1:" + serverSocket.getLocalPort() + "/proxy/play/video", null);
         byte[] first = new byte[4];
         byte[] second = new byte[4];
         try {
@@ -165,6 +331,40 @@ public class HttpRangeMediaDataSourceTest {
         assertArrayEquals(new byte[]{0x41, 0x41, 0x41, 0x41}, first);
         assertArrayEquals(new byte[]{0x42, 0x42, 0x42, 0x42}, second);
         assertEquals("the known eight-byte header bug must not trigger a retry loop", 2,
+                requestCount.get());
+    }
+
+    @Test
+    public void loopbackShiftedStartWithOverstatedEndStillUsesContiguousEntity() throws Exception {
+        final int windowSize = 8 * 1024 * 1024;
+        final int deliveredWindowSize = windowSize - 8;
+        final long secondStart = deliveredWindowSize;
+        final long totalLength = windowSize * 4L;
+        AtomicInteger requestCount = new AtomicInteger();
+        Future<?> server = serverExecutor.submit(() -> {
+            try {
+                serveBareThenShiftedLoopbackRangeResponses(requestCount, secondStart,
+                        windowSize, deliveredWindowSize, totalLength, 8L);
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        });
+
+        HttpRangeMediaDataSource source = HttpRangeMediaDataSource.createForSystemStreamingPlayback(
+                "http://127.0.0.1:" + serverSocket.getLocalPort() + "/proxy/play/video", null);
+        byte[] first = new byte[4];
+        byte[] second = new byte[4];
+        try {
+            assertEquals(first.length, source.readAt(0L, first, 0, first.length));
+            assertEquals(second.length, source.readAt(secondStart, second, 0, second.length));
+        } finally {
+            source.close();
+        }
+        server.get(5L, TimeUnit.SECONDS);
+
+        assertArrayEquals(new byte[]{0x41, 0x41, 0x41, 0x41}, first);
+        assertArrayEquals(new byte[]{0x42, 0x42, 0x42, 0x42}, second);
+        assertEquals("an overstated malformed end must not reject the contiguous body", 2,
                 requestCount.get());
     }
 
@@ -548,11 +748,74 @@ public class HttpRangeMediaDataSourceTest {
         }
     }
 
+    private void serveSystemShortPrefixThenExactContinuation(AtomicInteger requestCount)
+            throws IOException {
+        byte[] prefix = filledBytes(64, (byte) 0x41);
+        try (Socket first = serverSocket.accept()) {
+            String range = readRangeHeader(first);
+            assertTrue(range != null && range.startsWith("bytes=0-"));
+            requestCount.incrementAndGet();
+            OutputStream output = first.getOutputStream();
+            String headers = "HTTP/1.1 206 Partial Content\r\n"
+                    + "Content-Range: bytes 0-" + (ADVERTISED_LENGTH - 1L) + "/"
+                    + ADVERTISED_LENGTH + "\r\n"
+                    + "Content-Length: " + prefix.length + "\r\n"
+                    + "Connection: close\r\n\r\n";
+            output.write(headers.getBytes(StandardCharsets.US_ASCII));
+            output.write(prefix);
+            output.flush();
+        }
+        try (Socket second = serverSocket.accept()) {
+            String range = readRangeHeader(second);
+            assertTrue(range != null && range.startsWith("bytes=64-"));
+            requestCount.incrementAndGet();
+            byte[] continuation = new byte[]{0x51, 0x52, 0x53, 0x54};
+            OutputStream output = second.getOutputStream();
+            String headers = "HTTP/1.1 206 Partial Content\r\n"
+                    + "Content-Range: bytes 64-67/" + ADVERTISED_LENGTH + "\r\n"
+                    + "Content-Length: " + continuation.length + "\r\n"
+                    + "Connection: close\r\n\r\n";
+            output.write(headers.getBytes(StandardCharsets.US_ASCII));
+            output.write(continuation);
+            output.flush();
+        }
+    }
+
+    private void serveOverstatedTailRangeResponse(AtomicInteger requestCount) throws IOException {
+        try (Socket socket = serverSocket.accept()) {
+            String range = readRangeHeader(socket);
+            assertTrue(range != null && range.startsWith("bytes=1024-"));
+            requestCount.incrementAndGet();
+            byte[] body = new byte[1_024];
+            body[0] = 0x71;
+            body[1] = 0x72;
+            OutputStream output = socket.getOutputStream();
+            String headers = "HTTP/1.1 206 Partial Content\r\n"
+                    // Deliberately overstate the response end; the total is authoritative.
+                    + "Content-Range: bytes 1024-999999/2048\r\n"
+                    + "Content-Length: " + body.length + "\r\n"
+                    + "Connection: close\r\n\r\n";
+            output.write(headers.getBytes(StandardCharsets.US_ASCII));
+            output.write(body);
+            output.flush();
+        }
+    }
+
     private void serveBareThenShiftedLoopbackRangeResponses(AtomicInteger requestCount,
                                                              long secondStart,
                                                              int windowSize,
                                                              int deliveredWindowSize,
                                                              long totalLength) throws IOException {
+        serveBareThenShiftedLoopbackRangeResponses(requestCount, secondStart, windowSize,
+                deliveredWindowSize, totalLength, -8L);
+    }
+
+    private void serveBareThenShiftedLoopbackRangeResponses(AtomicInteger requestCount,
+                                                             long secondStart,
+                                                             int windowSize,
+                                                             int deliveredWindowSize,
+                                                             long totalLength,
+                                                             long endDelta) throws IOException {
         try (Socket first = serverSocket.accept()) {
             String range = readRangeHeader(first);
             assertTrue(range != null && range.startsWith("bytes=0-"));
@@ -562,11 +825,24 @@ public class HttpRangeMediaDataSourceTest {
         }
         try (Socket second = serverSocket.accept()) {
             String range = readRangeHeader(second);
-            long requestedEnd = secondStart + windowSize - 1L;
-            assertTrue(range != null && range.startsWith("bytes=" + secondStart + "-"));
+            assertTrue(range != null && range.startsWith("bytes="));
+            String[] requestedBounds = range.substring("bytes=".length()).split("-", 2);
+            long requestedStart = Long.parseLong(requestedBounds[0]);
+            // Unknown-length loopback seeks intentionally use an open-ended wire range. The
+            // logical window remains bounded by the source, so use the same nominal window end
+            // for this response when the physical header has no explicit end.
+            long requestedEnd = requestedBounds.length > 1
+                    && !requestedBounds[1].isEmpty()
+                    ? Long.parseLong(requestedBounds[1])
+                    : requestedStart + windowSize - 1L;
+            assertEquals("the physical request must stay at the logical cursor",
+                    secondStart, requestedStart);
             requestCount.incrementAndGet();
-            String malformedRange = "bytes " + (secondStart + 8L) + "-"
-                    + (requestedEnd - 8L) + "/" + totalLength;
+            // The endpoint's known defect is in Content-Range only: it trims eight bytes from
+            // both coordinates but the entity remains a contiguous prefix beginning at the
+            // requested logical offset.
+            String malformedRange = "bytes " + (requestedStart + 8L) + "-"
+                    + (requestedEnd + endDelta) + "/" + totalLength;
             writeChunkedResponse(second.getOutputStream(), malformedRange, totalLength,
                     filledBytes(deliveredWindowSize, (byte) 0x42));
         }

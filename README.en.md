@@ -5,13 +5,13 @@
 > A TV-first TVBox branch focused on device hardware decoding, HDR activation, capability-aware Dolby Vision routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.6"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.6-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.7"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.7-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.6">Download 0.2.6</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.7">Download 0.2.7</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -25,9 +25,9 @@ This branch is built for real living-room playback: every video uses the current
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.2.6_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.5 and earlier builds |
-| `TVBox_v0.2.6_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.5 and earlier builds |
-| `TVBox_v0.2.6_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.5 and earlier builds |
+| `TVBox_v0.2.7_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.6 and earlier builds |
+| `TVBox_v0.2.7_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.6 and earlier builds |
+| `TVBox_v0.2.7_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.6 and earlier builds |
 
 ## Preview
 
@@ -56,6 +56,21 @@ The core principle is simple:
 - Prefer platform decoding for Atmos, AC-3, E-AC-3/JOC, DTS, and TrueHD, then downmix all output to stereo PCM.
 - Keep subtitles, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
+
+## 0.2.7 Variants
+
+| Variant | ABI | Target devices | Notes |
+| --- | --- | --- | --- |
+| `java32` | `armeabi-v7a` | Mainstream 32-bit Android TVs / smart screens | Primary TV build |
+| `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Current 64-bit build |
+| `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Current dedicated Hisense build |
+
+## What 0.2.7 focused on
+
+- Fixed an intermittent non-zero Range response from local `6677/proxy/play` sources that returned a contaminated body consisting of a PNG signature followed by the video's EBML header. The data source now rejects the entire response and retries the original Range instead of feeding an image prefix to the Matroska extractor, which caused 0% buffering, black video, and playback timeouts.
+- Kept the single foreground system-codec Range lane, the `8 MiB` first/foreground window, the bounded `16 MiB` window, and sustained large-file caching; malformed responses cannot regress normal startup, resume, or repeated scrubbing.
+- Bounded source retries and active-buffer handling so malformed responses cannot loop forever while recoverable transient network errors still retry.
+- All three variants retain device hardware video decoding, stereo PCM audio, HDR subtitle handling, Java64 touch/gesture/focus behavior, and the independent Hisense package/ABI. They install over `0.2.6`.
 
 ## 0.2.6 Variants
 
@@ -157,9 +172,9 @@ $env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 
 The repository includes a basic Android build workflow for:
 
-- `TVBox_v0.2.6_java32.apk`
-- `TVBox_v0.2.6_java64.apk`
-- `TVBox_v0.2.6_hisense32.apk`
+- `TVBox_v0.2.7_java32.apk`
+- `TVBox_v0.2.7_java64.apk`
+- `TVBox_v0.2.7_hisense32.apk`
 
 ## Community
 

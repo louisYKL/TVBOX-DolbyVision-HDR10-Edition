@@ -120,7 +120,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     // momentary proxy stall/reconnect does not turn into a permanent black screen. Retry resumes
     // from the last known position.
     private int sourceRetryCount;
-    private static final int MAX_SOURCE_RETRIES = 3;
     private static final long SOURCE_RETRY_BACKOFF_MS = 1_000L;
     // This bounds inactivity without limiting the total download time. The app-level buffering
     // watchdog remains the terminal guard, while a continuously slow/large file is allowed to
@@ -130,7 +129,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     // aborts valid slow windows before the next bytes arrive and presents as a permanent 0 B/s
     // source. The outer buffering watchdog still bounds a genuinely dead playback attempt.
     private static final int HTTP_READ_TIMEOUT_MS = 60_000;
-    private static final String HTTP_USER_AGENT = "TVBox-SystemCodec/0.2.6";
+    private static final String HTTP_USER_AGENT = "TVBox-SystemCodec/0.2.7";
     private TrackInfo lastTrackInfo = new TrackInfo();
     private SubtitleTextListener subtitleTextListener;
     private BitmapSubtitleCueListener bitmapSubtitleCueListener;
@@ -284,9 +283,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 firstFrameRendered = true;
                 firstFramePositionMs = player == null ? C.TIME_UNSET : player.getCurrentPosition();
                 lastObservedPositionMs = firstFramePositionMs;
-                // Playback is proven healthy again; refresh the transient-error retry budget so a
-                // later isolated proxy stall can also recover instead of exhausting the count.
-                sourceRetryCount = 0;
+                // Do not reset sourceRetryCount here: a first frame does not prove that later
+                // range requests will succeed, and resetting it would allow an endless retry loop.
                 log("echo-system-codec first-frame surface=" + describeBoundSurface());
                 dispatchRuntimeVideoModeIfNeeded("first-frame");
                 maybeNotifyRenderingStart("first-frame");
@@ -342,6 +340,9 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         dataSource = PlaybackUrlNormalizer.normalizeHttpUrl(parsed.url);
         passthroughVolumeLocked = hasHeaderValue(parsed.headers, "X-TVBox-Probe-AudioPassthrough", "1");
         requestHeaders = sanitizeRequestHeaders(parsed.headers);
+        // A new source gets a fresh transient-error budget. Retry prepares do not call
+        // setDataSource, so they keep the same bounded budget for this source session.
+        sourceRetryCount = 0;
         resetPlaybackFlags();
         enforceExternalPcmVolume();
         log("echo-system-codec source network=" + isNetworkSource(dataSource)
@@ -395,8 +396,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             long initialPositionMs = pendingInitialSeekMs;
             resetPlaybackFlags();
             pendingInitialSeekMs = initialPositionMs;
-            // A user-initiated fresh play resets the transient-source-error retry budget.
-            sourceRetryCount = 0;
             startRequested = true;
             httpFactory.setDefaultRequestProperties(requestHeaders);
             loopbackRangeFactory.setDefaultRequestHeaders(requestHeaders);
@@ -514,15 +513,24 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         if (current.getPlaybackState() == Player.STATE_BUFFERING) {
             long bufferedDurationMs = Math.max(0L, current.getBufferedPosition()
                     - current.getCurrentPosition());
-            int allocatedDeltaBytes = allocator == null ? 0
-                    : Math.max(0, allocator.getTotalBytesAllocated() - bufferingStartAllocatedBytes);
+            long allocatedDeltaBytes = allocator == null ? 0L
+                    : Math.max(0L, (long) allocator.getTotalBytesAllocated()
+                    - bufferingStartAllocatedBytes);
+            // The direct 6677 DataSource commits bytes into its Range window before ExoPlayer's
+            // allocator accounts for the corresponding load chunk. Include that
+            // real forward cache so a healthy source does not display "0%" while its body is
+            // already available to the decoder. This is a data-source snapshot, never a speed
+            // or elapsed-time estimate, and the normal HTTP path remains unchanged.
+            long committedRangeBytes = loopbackRangeFactory == null
+                    ? 0L : loopbackRangeFactory.getBufferedAheadBytes();
+            long bufferedBytes = Math.max(allocatedDeltaBytes, committedRangeBytes);
             int requiredBufferMs = firstFrameRendered
                     ? SystemCodecBufferPolicy.REBUFFER_MS
                     : SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS;
             return SystemCodecBufferPolicy.bufferingProgressPercent(
                     bufferedDurationMs,
                     requiredBufferMs,
-                    allocatedDeltaBytes,
+                    bufferedBytes,
                     bufferProgressTargetBytes,
                     false);
         }
@@ -1131,14 +1139,14 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             return false;
         }
         int code = error.errorCode;
-        boolean sourceError = code >= 2000 && code < 3000;
-        if (!sourceError || sourceRetryCount >= MAX_SOURCE_RETRIES) {
+        int attempt = SystemCodecRetryPolicy.nextRetryAttempt(sourceRetryCount, code);
+        if (attempt < 0) {
             return false;
         }
-        sourceRetryCount++;
+        sourceRetryCount = attempt;
         final long resumeMs = Math.max(0L, player.getCurrentPosition());
-        final int attempt = sourceRetryCount;
-        log("echo-system-codec source-retry attempt=" + attempt + "/" + MAX_SOURCE_RETRIES
+        log("echo-system-codec source-retry attempt=" + attempt + "/"
+                + SystemCodecRetryPolicy.MAX_SOURCE_RETRIES
                 + " resumeMs=" + resumeMs + " code=" + code);
         notifyBufferingStart();
         mainHandler.postDelayed(() -> {
