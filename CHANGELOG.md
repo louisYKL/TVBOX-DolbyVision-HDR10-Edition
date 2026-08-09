@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.8
+
+### 中文
+
+- 受控应用内 `do=m3u8` / `proxyM3u8` 源统一通过 `go=live&type=m3u8` 路由 HLS 播放列表和媒体分片，避免本地 HLS 地址被错误当作普通直连流。
+- URL 规范化保留嵌套签名 URL 的原始转义层级，避免 `%2B`、`%25` 等值被二次解码后破坏签名。
+- HLS 分片采用独立 HTTP/1.1 连接，并按系统 DNS、配置 DNS、系统 DNS 的有限顺序恢复；无 `.m3u8` 后缀的子播放列表会正确识别为播放列表，不会被误当作媒体分片。
+- 最终 HTTP 失败会受控结束当前 HLS 请求，防止系统播放器对同一地址无限重新 prepare；不改变既有大文件 Range、进度恢复、`416` 和连续拖动的恢复边界。
+- Java64 继续保留 `arm64-v8a` ABI、设备硬解、立体声 PCM、HDR 字幕、触控/手势/焦点链和原签名证书。三端统一为 `0.2.8`、`versionCode 2080`，可覆盖安装 `0.2.7` 及更早版本。
+
+### English
+
+- Controlled in-app `do=m3u8` / `proxyM3u8` sources now route HLS playlists and media segments through `go=live&type=m3u8`, preventing local HLS URLs from being mistaken for ordinary direct streams.
+- URL normalization preserves the raw escaping level of nested signed URLs so values such as `%2B` and `%25` are not invalidated by a second decode pass.
+- HLS segments use independent HTTP/1.1 connections with bounded system-DNS, configured-DNS, then system-DNS recovery. Child playlists without a `.m3u8` suffix are recognized as playlists instead of media segments.
+- Terminal HTTP failures end the current controlled HLS request instead of making the system player prepare the same URL indefinitely; existing large-file Range, saved-progress, `416`, and repeated-scrub recovery boundaries remain unchanged.
+- Java64 retains its `arm64-v8a` ABI, device hardware decode, stereo PCM, HDR subtitles, touch/gesture/focus chain, and existing signing certificate. All variants use `0.2.8` (`versionCode 2080`) and install over `0.2.7` and earlier releases.
+
 ## 0.2.7
 
 ### 中文

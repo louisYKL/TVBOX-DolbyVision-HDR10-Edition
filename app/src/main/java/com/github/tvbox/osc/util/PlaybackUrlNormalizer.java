@@ -56,26 +56,38 @@ public final class PlaybackUrlNormalizer {
     }
 
     public static String normalizeHttpUrl(String path) {
-        if (TextUtils.isEmpty(path)) {
+        if (path == null || path.isEmpty()) {
             return path;
         }
         try {
-            Uri parsed = Uri.parse(path);
-            if (TextUtils.isEmpty(parsed.getScheme()) || parsed.isOpaque()) {
+            // Keep a valid URL's original escape levels intact. In particular, nested app-local
+            // HLS URLs can contain a CDN signature that is escaped twice by design.
+            URI normalized = new URI(path);
+            if (normalized.getScheme() == null || normalized.isOpaque()) {
                 return path;
             }
-            URI normalized = new URI(
-                    parsed.getScheme(),
-                    parsed.getUserInfo(),
-                    parsed.getHost(),
-                    parsed.getPort(),
-                    parsed.getPath(),
-                    parsed.getQuery(),
-                    parsed.getFragment()
-            );
             return normalized.toASCIIString();
         } catch (Exception ignored) {
-            return path;
+            // Compatibility fallback for legacy URLs containing unescaped spaces or other
+            // URI-invalid characters. Valid signed URLs never reach this decoded-query path.
+            try {
+                Uri parsed = Uri.parse(path);
+                if (TextUtils.isEmpty(parsed.getScheme()) || parsed.isOpaque()) {
+                    return path;
+                }
+                URI normalized = new URI(
+                        parsed.getScheme(),
+                        parsed.getUserInfo(),
+                        parsed.getHost(),
+                        parsed.getPort(),
+                        parsed.getPath(),
+                        parsed.getQuery(),
+                        parsed.getFragment()
+                );
+                return normalized.toASCIIString();
+            } catch (Exception ignoredAgain) {
+                return path;
+            }
         }
     }
 
@@ -84,6 +96,12 @@ public final class PlaybackUrlNormalizer {
             return path;
         }
         String normalizedPath = normalizeHttpUrl(path);
+        if (!live && (isAppLocalHlsProxyUrl(path) || isAppLocalHlsProxyUrl(normalizedPath))) {
+            // Keep the original encoded local URL inside the wrapper. normalizeHttpUrl is useful
+            // for classification, but rebuilding an already nested signed query can change its
+            // percent escapes before the spider receives it.
+            return wrapWithLiveProxy(path, headers);
+        }
         if (isAppLocalProxyUrl(normalizedPath)) {
             String nested = unwrapAppStreamProxyToForeignLocalPlay(normalizedPath);
             if (!TextUtils.isEmpty(nested)) {
@@ -122,6 +140,18 @@ public final class PlaybackUrlNormalizer {
             // in the app's 9978 stream proxy causes a second proxy hop and 500 retry loops.
             LOG.i("echo-playback-url direct-local-proxy-play -> " + safeSnippet(normalizedPath));
             return normalizedPath;
+        }
+        if (!live && (isAppLocalHlsProxyUrl(path) || isAppLocalHlsProxyUrl(normalizedPath))) {
+            // Preserve signed inner parameters exactly; only the outer controlled proxy is new.
+            String wrapped = wrapWithLiveProxy(path, headers);
+            if (!TextUtils.equals(wrapped, normalizedPath)) {
+                // A spider's do=m3u8 response can contain CDN segment URLs that expire or
+                // intermittently return 404 during long playback. Route only this known app-local
+                // HLS endpoint through the controlled proxy so segment retries and prefetch stay
+                // in one request path; regular VOD and foreign local proxy URLs remain unchanged.
+                LOG.i("echo-playback-url app-local-hls-proxy -> " + safeSnippet(wrapped));
+                return wrapped;
+            }
         }
         if (isAppLocalProxyUrl(normalizedPath)) {
             String nested = unwrapAppStreamProxyToForeignLocalPlay(normalizedPath);
@@ -266,6 +296,84 @@ public final class PlaybackUrlNormalizer {
         }
         String lower = path.toLowerCase(Locale.US);
         return lower.startsWith("http://") || lower.startsWith("https://");
+    }
+
+    static boolean isAppLocalHlsProxyUrl(String path) {
+        if (path == null || path.isEmpty()) {
+            return false;
+        }
+        try {
+            URI uri = new URI(path);
+            String host = uri.getHost();
+            boolean loopback = "127.0.0.1".equals(host)
+                    || "localhost".equalsIgnoreCase(host);
+            if (!loopback) {
+                return false;
+            }
+            // 9978 is the normal server port and keeps this classifier pure for unit tests.
+            // If a port collision moved the app server, retain the runtime ControlManager check.
+            if (uri.getPort() != 9978 && !isAppLocalProxyUrl(path)) {
+                return false;
+            }
+            String go = getRawQueryParameter(uri.getRawQuery(), "go");
+            if ("live".equalsIgnoreCase(go) || "stream".equalsIgnoreCase(go)) {
+                return false;
+            }
+            String doValue = getRawQueryParameter(uri.getRawQuery(), "do");
+            if (doValue != null && !doValue.isEmpty()) {
+                return "m3u8".equalsIgnoreCase(doValue);
+            }
+            String localPath = uri.getPath();
+            if (localPath != null && "/proxym3u8".equalsIgnoreCase(localPath)) {
+                return true;
+            }
+            // Some spiders omit the m3u8 suffix and expose only a type/format query marker.
+            String lower = path.toLowerCase(Locale.US);
+            return lower.contains(".m3u8")
+                    || lower.contains("type=hls")
+                    || lower.contains("format=hls")
+                    || lower.contains("/live/")
+                    || lower.contains("/playlist/");
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static String getRawQueryParameter(String rawQuery, String name) {
+        if (rawQuery == null || rawQuery.isEmpty() || name == null || name.isEmpty()) {
+            return null;
+        }
+        String[] pairs = rawQuery.split("&");
+        for (String pair : pairs) {
+            int separator = pair.indexOf('=');
+            String rawName = separator >= 0 ? pair.substring(0, separator) : pair;
+            if (!name.equals(rawName)) {
+                continue;
+            }
+            String rawValue = separator >= 0 ? pair.substring(separator + 1) : "";
+            try {
+                return URLDecoder.decode(rawValue, "UTF-8");
+            } catch (Exception ignored) {
+                return rawValue;
+            }
+        }
+        return null;
+    }
+
+    private static String wrapWithLiveProxy(String path, Map<String, String> headers) {
+        String localAddress = ControlManager.get().getAddress(true);
+        if (TextUtils.isEmpty(localAddress) || TextUtils.isEmpty(path)) {
+            return path;
+        }
+        try {
+            StringBuilder builder = new StringBuilder(localAddress)
+                    .append("proxy?go=live&type=m3u8&url=")
+                    .append(URLEncoder.encode(path, "UTF-8"));
+            appendHeaders(builder, headers);
+            return builder.toString();
+        } catch (Exception ignored) {
+            return path;
+        }
     }
 
     private static boolean isAppLocalProxyUrl(String path) {
