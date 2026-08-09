@@ -2,6 +2,7 @@ package com.github.tvbox.osc.util;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -46,5 +47,33 @@ public class SystemPlaybackUrlPolicyTest {
 
         assertTrue(SystemPlaybackUrlPolicy.isLocalProxyPlayUrl(direct));
         assertFalse(SystemPlaybackUrlPolicy.isLocalProxyPlayUrl(legacyWrapped));
+    }
+
+    @Test
+    public void appLocalM3u8ProxyUsesControlledHlsRoute() {
+        assertTrue(PlaybackUrlNormalizer.isAppLocalHlsProxyUrl(
+                "http://127.0.0.1:9978/proxy?do=m3u8&url=https%3A%2F%2Fmedia.example%2Fepisode.m3u8"));
+        assertTrue(PlaybackUrlNormalizer.isAppLocalHlsProxyUrl(
+                "http://127.0.0.1:9978/proxy?do=m3u8&url=https%3A%2F%2Fmedia.example%2Fvariant"));
+        assertTrue(PlaybackUrlNormalizer.isAppLocalHlsProxyUrl(
+                "http://localhost:9978/proxyM3u8"));
+    }
+
+    @Test
+    public void alreadyControlledHlsProxyIsNotWrappedAgain() {
+        assertFalse(PlaybackUrlNormalizer.isAppLocalHlsProxyUrl(
+                "http://127.0.0.1:9978/proxy?go=live&type=m3u8&url=https%3A%2F%2Fmedia.example%2Fepisode.m3u8"));
+        assertFalse(PlaybackUrlNormalizer.isAppLocalHlsProxyUrl(
+                "http://127.0.0.1:9978/proxy?go=stream&url=https%3A%2F%2Fmedia.example%2Fepisode.m3u8"));
+        assertFalse(PlaybackUrlNormalizer.isAppLocalHlsProxyUrl(
+                "http://127.0.0.1:9978/proxy?do=danmu&url=https%3A%2F%2Fmedia.example%2Fepisode.m3u8"));
+    }
+
+    @Test
+    public void normalizePreservesNestedSignedQueryEscapes() {
+        String url = "http://127.0.0.1:9978/proxy?do=m3u8&url="
+                + "https%3A%2F%2Fcdn.example%2Fvariant%3Ftoken%3Dabc%252B123%26sig%3Dpart%2525value";
+
+        assertEquals(url, PlaybackUrlNormalizer.normalizeHttpUrl(url));
     }
 }

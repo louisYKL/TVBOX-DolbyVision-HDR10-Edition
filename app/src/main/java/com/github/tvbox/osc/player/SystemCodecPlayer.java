@@ -56,6 +56,7 @@ import com.google.android.exoplayer2.upstream.DefaultAllocator;
 import com.google.android.exoplayer2.upstream.DefaultBandwidthMeter;
 import com.google.android.exoplayer2.upstream.DefaultDataSource;
 import com.google.android.exoplayer2.upstream.DefaultHttpDataSource;
+import com.google.android.exoplayer2.upstream.HttpDataSource;
 import com.google.android.exoplayer2.util.MimeTypes;
 import com.google.android.exoplayer2.video.ColorInfo;
 import com.google.android.exoplayer2.video.MediaCodecVideoRenderer;
@@ -1138,6 +1139,16 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         if (released || player == null) {
             return false;
         }
+        // The controlled HLS proxy retries a failed CDN segment across independent connections
+        // and DNS routes before ExoPlayer sees it. Re-preparing that same playlist after a final
+        // HTTP response failure only asks for the same missing segment again, which produces the
+        // visible black-screen/reload loop. Keep the established retry path for direct range VOD
+        // sources, including their 416 recovery behavior.
+        if (isControlledHlsProxySource() && containsHttpResponseFailure(error)) {
+            log("echo-system-codec source-retry-suppressed http-response "
+                    + describeThrowable(error));
+            return false;
+        }
         int code = error.errorCode;
         int attempt = SystemCodecRetryPolicy.nextRetryAttempt(sourceRetryCount, code);
         if (attempt < 0) {
@@ -1173,6 +1184,38 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             }
         }, SOURCE_RETRY_BACKOFF_MS * attempt);
         return true;
+    }
+
+    private boolean isControlledHlsProxySource() {
+        if (TextUtils.isEmpty(dataSource)) {
+            return false;
+        }
+        try {
+            Uri uri = Uri.parse(dataSource);
+            String host = uri == null ? null : uri.getHost();
+            String path = uri == null ? null : uri.getPath();
+            return ("127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host))
+                    && "/proxy".equals(path)
+                    && "live".equalsIgnoreCase(uri.getQueryParameter("go"))
+                    && "m3u8".equalsIgnoreCase(uri.getQueryParameter("type"));
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private boolean containsHttpResponseFailure(@Nullable Throwable throwable) {
+        Throwable current = throwable;
+        for (int depth = 0; current != null && depth < 16; depth++) {
+            if (current instanceof HttpDataSource.InvalidResponseCodeException) {
+                return true;
+            }
+            Throwable next = current.getCause();
+            if (next == current) {
+                break;
+            }
+            current = next;
+        }
+        return false;
     }
 
     /** Like resetPlaybackFlags but preserves the source-retry counter across a retry prepare. */

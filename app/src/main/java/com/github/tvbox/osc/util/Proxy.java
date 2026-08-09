@@ -10,7 +10,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
-import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -61,10 +60,14 @@ public class Proxy {
     private static final long HLS_PREFETCH_STARTUP_WAIT_MS = 900L;
     private static final long HLS_PREFETCH_FUTURE_POLL_WAIT_MS = 120L;
     private static final int HLS_PREFETCH_MAX_SEGMENT_BYTES = 10 * 1024 * 1024;
+    private static final int HLS_SEGMENT_REQUEST_MAX_ATTEMPTS = 3;
+    private static final long HLS_SEGMENT_REQUEST_RETRY_DELAY_MS = 180L;
     private static final long HLS_PREFETCH_CACHE_BYTES = resolveHlsPrefetchCacheBytes();
     private static final int HLS_PREFETCH_THREADS = resolveHlsPrefetchThreads();
     private static volatile OkHttpClient localProxyStreamClient;
     private static volatile OkHttpClient boundedStreamClient;
+    private static volatile OkHttpClient hlsSegmentClient;
+    private static volatile OkHttpClient hlsSystemDnsSegmentClient;
     private static final ExecutorService HLS_PREFETCH_EXECUTOR = Executors.newFixedThreadPool(HLS_PREFETCH_THREADS);
     private static final Object HLS_PREFETCH_LOCK = new Object();
     private static final LinkedHashMap<String, HlsSegmentCacheEntry> HLS_SEGMENT_CACHE =
@@ -76,6 +79,7 @@ public class Proxy {
     private static final Map<String, Future<?>> HLS_PREFETCH_INFLIGHT = new HashMap<>();
     private static volatile boolean hlsPrefetchConfigLogged;
     private static int hlsPrefetchDebugLogCount;
+    private static int hlsSegmentSuccessLogCount;
     private static long hlsSegmentCacheBytes;
     private static final String[] PASSTHROUGH_REQUEST_HEADERS = new String[]{
             "Range",
@@ -132,7 +136,8 @@ public class Proxy {
             if (url == null || type == null) {
                 return null;
             }
-            url = URLDecoder.decode(url,"UTF-8");
+            // NanoHTTPD has already decoded query parameters once. Decoding again corrupts
+            // signed URLs containing values such as %2B, %25, or nested query delimiters.
             Map<String, String> requestHeaders = extractProxyHeaders(params);
             mergeRequestHeadersFromSession(params, requestHeaders);
 
@@ -162,12 +167,15 @@ public class Proxy {
                     }
                 }
                 scheduleHlsPrefetchAfterSegment(url, requestHeaders);
-                Request request = buildRequest(url, requestHeaders);
-                Response response = executeRequest(client, request);
+                Response response = executeHlsSegmentRequest(url, requestHeaders);
                 return buildPassthroughResult(url, requestHeaders, response);
             }
             throw new IllegalArgumentException("Invalid type: " + type);
         } catch (Exception e) {
+            if ("ts".equalsIgnoreCase(params == null ? null : params.get("type"))) {
+                LOG.e("echo-hls-proxy segment-failed url=" + abbreviateUrl(params == null ? null : params.get("url"))
+                        + " err=" + e.getClass().getSimpleName() + ":" + e.getMessage());
+            }
             SpiderDebug.log(e);
             return null;
         }
@@ -176,7 +184,6 @@ public class Proxy {
     public static Object[] removeBOMFromM3U8(Map<String, String> params) throws Exception {
         try {
             String url = params.get("url");
-            url = URLDecoder.decode(url,"UTF-8");
             Map<String, String> requestHeaders = extractProxyHeaders(params);
 
             OkHttpClient client = getBoundedStreamClient();
@@ -204,7 +211,6 @@ public class Proxy {
             if (url == null) {
                 return null;
             }
-            url = URLDecoder.decode(url, "UTF-8");
             boolean localProxyPlayUrl = isLocalProxyPlayUrl(url);
             Map<String, String> requestHeaders = extractProxyHeaders(params);
             mergeRequestHeadersFromSession(params, requestHeaders);
@@ -599,6 +605,101 @@ public class Proxy {
         return client;
     }
 
+    /**
+     * HLS segments are short independent requests. Keep them on a fresh HTTP/1.1 connection so a
+     * CDN cache miss or a stale pooled HTTP/2 stream cannot poison the next segment. Android's
+     * resolver is the primary route; the configured DNS client is retained as a bounded alternate
+     * for CDNs whose edge selection differs between resolver paths.
+     */
+    private static OkHttpClient getHlsSegmentClient(boolean systemDns) {
+        OkHttpClient client = systemDns ? hlsSystemDnsSegmentClient : hlsSegmentClient;
+        if (client != null) {
+            return client;
+        }
+        synchronized (Proxy.class) {
+            client = systemDns ? hlsSystemDnsSegmentClient : hlsSegmentClient;
+            if (client == null) {
+                OkHttpClient base = getBoundedStreamClient();
+                OkHttpClient.Builder builder = base.newBuilder()
+                        .protocols(Collections.singletonList(Protocol.HTTP_1_1))
+                        .connectionPool(new ConnectionPool(0, 1, TimeUnit.MILLISECONDS))
+                        .retryOnConnectionFailure(true)
+                        .readTimeout(LOCAL_PROXY_STREAM_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                if (systemDns) {
+                    builder.dns(okhttp3.Dns.SYSTEM);
+                }
+                client = builder.build();
+                if (systemDns) {
+                    hlsSystemDnsSegmentClient = client;
+                } else {
+                    hlsSegmentClient = client;
+                }
+            }
+        }
+        return client;
+    }
+
+    private static Response executeHlsSegmentRequest(String url,
+                                                     Map<String, String> requestHeaders) throws IOException {
+        IOException lastException = null;
+        for (int attempt = 1; attempt <= HLS_SEGMENT_REQUEST_MAX_ATTEMPTS; attempt++) {
+            boolean systemDns = attempt == 1 || attempt == HLS_SEGMENT_REQUEST_MAX_ATTEMPTS;
+            Response response = null;
+            boolean keepResponse = false;
+            try {
+                Request request = buildRequest(url, requestHeaders).newBuilder()
+                        .header("Connection", "close")
+                        .header("Cache-Control", "no-cache")
+                        .header("Accept-Encoding", "identity")
+                        .build();
+                // Prefer the device resolver for CDN segments. The user-selected DoH resolver is
+                // useful for API calls but can pin a short-lived CDN hostname to an edge that
+                // returns a stale 404/5xx for only some objects. The configured resolver remains
+                // the bounded alternate path on the next attempt.
+                response = executeRequest(getHlsSegmentClient(systemDns), request);
+                int code = response.code();
+                long length = response.body() == null ? -1L : response.body().contentLength();
+                if (response.isSuccessful() && response.body() != null) {
+                    logHlsSegmentSuccess("hls-proxy segment-response attempt=" + attempt
+                            + " dns=" + (systemDns ? "system" : "configured")
+                            + " code=" + code
+                            + " length=" + length
+                            + " url=" + abbreviateUrl(url));
+                    keepResponse = true;
+                    return response;
+                }
+                lastException = new IOException("HLS segment upstream code=" + code
+                        + " length=" + length + " url=" + abbreviateUrl(url));
+                LOG.e("echo-hls-proxy segment-upstream-failure attempt=" + attempt
+                        + " dns=" + (systemDns ? "system" : "configured")
+                        + " code=" + code
+                        + " length=" + length
+                        + " url=" + abbreviateUrl(url));
+            } catch (IOException e) {
+                lastException = e;
+                LOG.e("echo-hls-proxy segment-io-failure attempt=" + attempt
+                        + " dns=" + (systemDns ? "system" : "configured")
+                        + " url=" + abbreviateUrl(url)
+                        + " err=" + e.getClass().getSimpleName() + ":" + e.getMessage());
+            } finally {
+                if (response != null && !keepResponse) {
+                    response.close();
+                }
+            }
+            if (attempt < HLS_SEGMENT_REQUEST_MAX_ATTEMPTS) {
+                try {
+                    Thread.sleep(HLS_SEGMENT_REQUEST_RETRY_DELAY_MS * attempt);
+                } catch (InterruptedException interruptedException) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        throw lastException == null
+                ? new IOException("HLS segment request failed: " + abbreviateUrl(url))
+                : lastException;
+    }
+
     private static Response openChunkResponse(String url, Map<String, String> requestHeaders, long start, long end) throws IOException {
         HashMap<String, String> chunkHeaders = new HashMap<>();
         if (requestHeaders != null) {
@@ -619,6 +720,7 @@ public class Proxy {
         String[] m3u8Lines = m3u8Content.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
         StringBuilder processedM3u8 = new StringBuilder();
         List<String> mediaSegmentUrls = new ArrayList<>();
+        boolean expectVariantPlaylistUri = false;
 
         for (String rawLine : m3u8Lines) {
             String line = rawLine == null ? "" : rawLine.trim();
@@ -628,12 +730,20 @@ public class Proxy {
             }
             if (line.startsWith("#")) {
                 processedM3u8.append(rewriteM3u8DirectiveLine(rawLine, m3u8Url, headers, mediaSegmentUrls)).append("\n");
+                // A master playlist may use a relative variant URI without an .m3u8 suffix.
+                // Remember the marker so the following URI is routed as a playlist, not as a
+                // media segment. This keeps disguised/extensionless HLS sources playable.
+                expectVariantPlaylistUri = line.regionMatches(true, 0, "#EXT-X-STREAM-INF", 0,
+                        "#EXT-X-STREAM-INF".length());
             } else {
                 String resolvedUrl = resolveUrl(m3u8Url, line);
-                if (!TextUtils.isEmpty(resolvedUrl) && !looksLikeM3u8(resolvedUrl)) {
+                boolean childPlaylist = expectVariantPlaylistUri
+                        || looksLikeM3u8(resolvedUrl);
+                if (!TextUtils.isEmpty(resolvedUrl) && !childPlaylist) {
                     mediaSegmentUrls.add(resolvedUrl);
                 }
-                processedM3u8.append(rewriteResolvedUrl(line, resolvedUrl, headers)).append("\n");
+                processedM3u8.append(rewriteResolvedUrl(line, resolvedUrl, headers, childPlaylist)).append("\n");
+                expectVariantPlaylistUri = false;
             }
         }
         registerHlsPlaylist(m3u8Url, headers, mediaSegmentUrls);
@@ -650,13 +760,17 @@ public class Proxy {
         Matcher matcher = M3U8_URI_ATTRIBUTE_PATTERN.matcher(rawLine);
         StringBuffer buffer = new StringBuffer();
         boolean replaced = false;
+        String directive = rawLine.trim().toUpperCase(Locale.US);
+        boolean playlistDirective = directive.startsWith("#EXT-X-MEDIA")
+                || directive.startsWith("#EXT-X-I-FRAME-STREAM-INF");
         while (matcher.find()) {
             String target = matcher.group(2) != null ? matcher.group(2) : matcher.group(3);
             String resolvedUrl = resolveUrl(baseUrl, target);
-            if (!TextUtils.isEmpty(resolvedUrl) && !looksLikeM3u8(resolvedUrl) && mediaSegmentUrls != null) {
+            boolean childPlaylist = playlistDirective || looksLikeM3u8(resolvedUrl);
+            if (!TextUtils.isEmpty(resolvedUrl) && !childPlaylist && mediaSegmentUrls != null) {
                 mediaSegmentUrls.add(resolvedUrl);
             }
-            String rewritten = rewriteResolvedUrl(target, resolvedUrl, headers);
+            String rewritten = rewriteResolvedUrl(target, resolvedUrl, headers, childPlaylist);
             String quote = matcher.group(1) != null && matcher.group(1).startsWith("'") ? "'" : "\"";
             matcher.appendReplacement(buffer, Matcher.quoteReplacement("URI=" + quote + rewritten + quote));
             replaced = true;
@@ -673,11 +787,18 @@ public class Proxy {
     }
 
     private static String rewriteResolvedUrl(String originalUrl, String resolvedUrl, Map<String, String> headers) {
+        return rewriteResolvedUrl(originalUrl, resolvedUrl, headers, false);
+    }
+
+    private static String rewriteResolvedUrl(String originalUrl,
+                                             String resolvedUrl,
+                                             Map<String, String> headers,
+                                             boolean forcePlaylist) {
         if (TextUtils.isEmpty(resolvedUrl)) {
             return originalUrl == null ? "" : originalUrl;
         }
         try {
-            return buildLiveProxyUrl(resolvedUrl, headers);
+            return buildLiveProxyUrl(resolvedUrl, headers, forcePlaylist);
         } catch (Exception e) {
             e.printStackTrace();
             return originalUrl == null ? resolvedUrl : originalUrl;
@@ -705,12 +826,14 @@ public class Proxy {
         }
     }
 
-    private static String buildLiveProxyUrl(String resolvedUrl, Map<String, String> headers) throws Exception {
+    private static String buildLiveProxyUrl(String resolvedUrl,
+                                            Map<String, String> headers,
+                                            boolean forcePlaylist) throws Exception {
         String localAddress = ControlManager.get().getAddress(true);
         if (TextUtils.isEmpty(localAddress) || TextUtils.isEmpty(resolvedUrl)) {
             return resolvedUrl;
         }
-        String type = looksLikeM3u8(resolvedUrl) ? "m3u8" : "ts";
+        String type = forcePlaylist || looksLikeM3u8(resolvedUrl) ? "m3u8" : "ts";
         return localAddress + "proxy?go=live&type=" + type + "&url="
                 + URLEncoder.encode(resolvedUrl, "UTF-8") + buildHeaderQuery(headers);
     }
@@ -777,8 +900,9 @@ public class Proxy {
         try {
             String rawHeader = params.get("header");
             if (rawHeader != null && !rawHeader.trim().isEmpty()) {
-                String decoded = URLDecoder.decode(rawHeader, "UTF-8");
-                org.json.JSONObject headerJson = new org.json.JSONObject(decoded);
+                // The request map comes from NanoHTTPD.getParms(), which performs the single
+                // percent-decoding pass required for the encoded JSON query value.
+                org.json.JSONObject headerJson = new org.json.JSONObject(rawHeader);
                 java.util.Iterator<String> iterator = headerJson.keys();
                 while (iterator.hasNext()) {
                     String key = iterator.next();
@@ -1123,8 +1247,7 @@ public class Proxy {
 
     private static HlsSegmentCacheEntry fetchHlsSegment(String url,
                                                         Map<String, String> requestHeaders) throws IOException {
-        Request request = buildRequest(url, requestHeaders);
-        try (Response response = executeRequest(getBoundedStreamClient(), request)) {
+        try (Response response = executeHlsSegmentRequest(url, requestHeaders)) {
             if (!response.isSuccessful() || response.body() == null) {
                 throw new IOException("Prefetch request failed with code: " + response.code());
             }
@@ -1341,7 +1464,18 @@ public class Proxy {
             }
             hlsPrefetchDebugLogCount++;
         }
+        LOG.i("echo-" + message);
         SpiderDebug.log(message);
+    }
+
+    private static void logHlsSegmentSuccess(String message) {
+        synchronized (HLS_PREFETCH_LOCK) {
+            if (hlsSegmentSuccessLogCount >= 24) {
+                return;
+            }
+            hlsSegmentSuccessLogCount++;
+        }
+        LOG.i("echo-" + message);
     }
 
     private static String abbreviateUrl(String url) {
