@@ -2,10 +2,10 @@
 
 # TV BOX Hisense 32-bit Edition
 
-> A dedicated Hisense Android / Google TV branch synced to the `0.2.7` playback core.
+> A dedicated Hisense Android / Google TV branch synced to the `0.2.8` playback core.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.7"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.7-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.8"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.8-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Hisense%20Android%20TV-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
@@ -14,10 +14,18 @@
 ## Current build
 
 - Package name: `com.github.tvbox.osc.hisense`
-- Version: `0.2.7` (`versionCode 2070`)
+- Version: `0.2.8` (`versionCode 2080`)
 - ABI: `armeabi-v7a`
-- Output APK: `TVBox_v0.2.7_hisense32.apk`
+- Output APK: `TVBox_v0.2.8_hisense32.apk`
 - Minimum Android: 4.4 / API 19
+
+## What 0.2.8 fixed
+
+- Routes controlled in-app `do=m3u8` / `proxyM3u8` sources through `go=live&type=m3u8`, keeping HLS playlists and media segments on the controlled local path instead of treating local HLS URLs as ordinary direct streams.
+- Preserves the raw escaping level of nested signed URLs, so values such as `%2B` and `%25` are not invalidated by a second decode pass.
+- Fetches HLS segments through independent HTTP/1.1 connections with bounded system-DNS, configured-DNS, then system-DNS recovery. Child playlists without a `.m3u8` suffix are recognized as playlists rather than media segments.
+- Terminal HTTP failures end the current controlled HLS request instead of making the system player repeatedly rebuild the same playback URL; existing large-file Range, saved-progress, `416`, and repeated-scrub recovery boundaries remain unchanged.
+- The independent `com.github.tvbox.osc.hisense` package, `armeabi-v7a` ABI, device hardware decode, stereo PCM, HDR subtitles, and existing signing certificate remain intact. Version `0.2.8` (`versionCode 2080`) installs over `0.2.7` and earlier releases and remains side-by-side installable with the main package.
 
 ## What 0.2.7 fixed
 

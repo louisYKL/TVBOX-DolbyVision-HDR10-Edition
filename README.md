@@ -2,10 +2,10 @@
 
 # TV BOX 海信 32 位版
 
-> 基于 `0.2.7` 播放核心同步的海信 Android / Google TV 独立分支。
+> 基于 `0.2.8` 播放核心同步的海信 Android / Google TV 独立分支。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.7"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.7-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.8"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.8-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Hisense%20Android%20TV-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
@@ -14,10 +14,18 @@
 ## 当前版本
 
 - 包名：`com.github.tvbox.osc.hisense`
-- 版本号：`0.2.7`（`versionCode 2070`）
+- 版本号：`0.2.8`（`versionCode 2080`）
 - ABI：`armeabi-v7a`
-- 输出 APK：`TVBox_v0.2.7_hisense32.apk`
+- 输出 APK：`TVBox_v0.2.8_hisense32.apk`
 - 最低系统：Android 4.4 / API 19
+
+## 0.2.8 同步内容
+
+- 受控应用内 `do=m3u8` / `proxyM3u8` 源统一通过 `go=live&type=m3u8` 路由 HLS 播放列表和媒体分片，避免本地 HLS 地址被错误当作普通直连流。
+- URL 规范化保留嵌套签名地址的原始转义层级，避免 `%2B`、`%25` 等编码被二次解码后失效。
+- HLS 分片使用独立 HTTP/1.1 连接，并按系统 DNS、配置 DNS、系统 DNS 的有限顺序恢复；无 `.m3u8` 后缀的子播放列表会正确识别为播放列表而不是媒体分片。
+- 最终 HTTP 失败会受控结束当前 HLS 请求，不再让系统播放器对同一播放地址无限重建；既有大文件 Range、进度恢复、`416` 和连续拖动恢复边界保持不变。
+- 保留海信独立包名 `com.github.tvbox.osc.hisense`、`armeabi-v7a` ABI、设备硬解、立体声 PCM、HDR 字幕和原签名；`0.2.8`（`versionCode 2080`）可覆盖安装 `0.2.7` 及更早版本，并可与主版并存。
 
 ## 0.2.7 同步内容
 
