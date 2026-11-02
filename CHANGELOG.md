@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.9.3.2
+
+### 中文
+
+- 彻底修复 HDR 字幕仍显示纯白的问题：HDR 文本字形固定为中性灰 `RGB 192`，描边固定为纯黑，不再使用字幕文件里的白色填充或白色描边。
+- 修复播放开始后才识别 HDR 时的路径切换：已选文本字幕会从 Android 原生白色字幕渲染器迁移到应用灰字黑描边叠加层；PGS/VobSub 位图字幕继续使用位图渲染。
+- SDR 字幕不改变字幕文件原有颜色和样式。
+- 三端版本统一为 `0.2.9.3.2`、`versionCode 20932`，沿用 `0.2.9.3.1` 的签名证书，支持覆盖安装。
+
+### English
+
+- Fully fixed HDR subtitles remaining pure white: HDR glyphs now use neutral grey `RGB 192` and a pure black outline, independent of white colors from the subtitle file.
+- When HDR is detected after playback starts, the selected text track is moved from Android's native white subtitle renderer to the app's grey-glyph/black-outline overlay. PGS/VobSub bitmap subtitles keep their bitmap path.
+- SDR subtitles keep the file's original colors and styling.
+- Unified all three variants under `0.2.9.3.2` with `versionCode 20932`, retaining the `0.2.9.3.1` signing certificate for in-place updates.
+
 ## 0.2.9.3.1
 
 ### 中文

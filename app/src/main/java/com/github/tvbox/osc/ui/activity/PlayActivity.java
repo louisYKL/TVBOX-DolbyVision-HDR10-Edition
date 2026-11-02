@@ -1347,8 +1347,38 @@ public class PlayActivity extends BaseActivity {
                 LOG.e("echo-runtime-hdr activity put dvm failed: " + e.getMessage());
             }
         }
+        migrateHdrTextSubtitleToOverlay();
         applySubtitleToneForCurrentPlayback();
         syncHdrWindowForCurrentPlayback(reason + (changed ? "-promote" : "-refresh"));
+    }
+
+    /** Move a text track away from Android's native white timed-text renderer when HDR is learned late. */
+    private void migrateHdrTextSubtitleToOverlay() {
+        if (mVideoView == null || mController == null || mController.mSubtitleView == null) {
+            return;
+        }
+        AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
+        if (!(mediaPlayer instanceof AndroidMediaPlayer)) {
+            return;
+        }
+        TrackInfo trackInfo = resolveSubtitleTrackInfo(mediaPlayer);
+        if (trackInfo == null) {
+            return;
+        }
+        TrackInfoBean selected = null;
+        for (TrackInfoBean track : trackInfo.getSubtitle()) {
+            if (track != null && track.selected && !track.metadataOnly
+                    && SystemPlayerTrackManager.isTextSubtitleTrack(track)) {
+                selected = track;
+                break;
+            }
+        }
+        if (selected == null) {
+            return;
+        }
+        prepareInternalSubtitleOverlay(mediaPlayer);
+        enableSystemSubtitleOverlayPassThrough(mediaPlayer);
+        SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, selected);
     }
 
     private boolean startBufferingProgressMonitor(int playState) {

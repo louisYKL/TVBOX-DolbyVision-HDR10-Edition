@@ -79,7 +79,7 @@ public class SimpleSubtitleView extends TextView
     private boolean hdrSubtitleMode = false;
     private static final int DEFAULT_SUBTITLE_COLOR = Color.WHITE;
     /** A single neutral HDR caption tone shared by text and bitmap subtitles. */
-    private static final int HDR_SUBTITLE_TONE = 232;
+    private static final int HDR_SUBTITLE_TONE = 192;
     private int requestedTextColor = DEFAULT_SUBTITLE_COLOR;
     private String lastRawSubtitleText = EMPTY_TEXT;
 
@@ -279,9 +279,6 @@ public class SimpleSubtitleView extends TextView
     }
 
     public void setHdrSubtitleMode(boolean enabled) {
-        if (hdrSubtitleMode == enabled) {
-            return;
-        }
         hdrSubtitleMode = enabled;
         applyEffectiveTextColor();
         if (!TextUtils.isEmpty(lastRawSubtitleText)) {
@@ -461,7 +458,10 @@ public class SimpleSubtitleView extends TextView
         tp.setStrokeJoin(Paint.Join.ROUND);
         tp.setStrokeMiter(10f);
         tp.setAntiAlias(true);
-        backGroundText.setTextColor(hdrSubtitleMode ? dimForHdr(Color.BLACK) : Color.BLACK);
+        // The duplicate layer is an outline only. Keep it black in both SDR and
+        // HDR; applying the HDR fill tone here turns the outline into a bright
+        // second subtitle and makes the caption appear white.
+        backGroundText.setTextColor(Color.BLACK);
         //将背景的文字对齐方式做同步
         backGroundText.setGravity(getGravity());
     }
