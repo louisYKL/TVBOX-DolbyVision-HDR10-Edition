@@ -70,6 +70,7 @@
             </com.github.tvbox.osc.ui.tv.widget.RoundedPosterLayout>
 
             <LinearLayout
+                android:id="@+id/detailInfoColumn"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -86,6 +87,7 @@
                     android:textStyle="bold" />
 
                 <LinearLayout
+                    android:id="@+id/detailActionsRow"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="@dimen/vs_12"

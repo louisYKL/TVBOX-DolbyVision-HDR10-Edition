@@ -11,6 +11,7 @@ import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.ListAdapter;
 import androidx.recyclerview.widget.RecyclerView;
+import androidx.core.content.ContextCompat;
 
 import com.github.tvbox.osc.R;
 
@@ -83,13 +84,9 @@ public class SelectDialogAdapter<T> extends ListAdapter<T, SelectDialogAdapter.S
         T value = data.get(position);
         String name = dialogInterface.getDisplay(value);
         TextView view = holder.itemView.findViewById(R.id.tvName);
-        if (position == select) {
-            view.setTextColor(holder.itemView.getResources().getColor(R.color.apple_tv_selected_text_dark));
-            view .setTypeface(Typeface.defaultFromStyle(Typeface.BOLD));
-        }else {
-            view.setTextColor(holder.itemView.getResources().getColor(R.color.apple_tv_text_primary));
-            view .setTypeface(Typeface.defaultFromStyle(Typeface.NORMAL));
-        }
+        view.setTextColor(ContextCompat.getColorStateList(holder.itemView.getContext(),
+                position == select ? R.color.apple_tv_button_text_selected : R.color.apple_tv_button_text_light_focus));
+        view.setTypeface(Typeface.defaultFromStyle(position == select ? Typeface.BOLD : Typeface.NORMAL));
         view.setText(name);
         holder.itemView.setOnClickListener(new View.OnClickListener() {
             @Override

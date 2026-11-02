@@ -168,6 +168,7 @@ public class VodController extends BaseController {
     TextView mCurrentTime;
     TextView mTotalTime;
     boolean mIsDragging;
+    private boolean touchSeekOverlayPinned;
     LinearLayout mProgressRoot;
     TextView mProgressText;
     ImageView mProgressIcon;
@@ -199,6 +200,7 @@ public class VodController extends BaseController {
     public SimpleSubtitleView mSubtitleView;
     public com.google.android.exoplayer2.ui.SubtitleView mBitmapSubtitleView;
     TextView mResumeAnchor;
+    TextView mPlayToggleBtn;
     TextView mZimuBtn;
     TextView mSubtitleToggleBtn;
     TextView mAudioTrackBtn;
@@ -271,6 +273,9 @@ public class VodController extends BaseController {
             String width = Integer.toString(mVideoSizes[0]);
             String height = Integer.toString(mVideoSizes[1]);
             mVideoSize.setText("[ " + width + " X " + height +" ]");
+            if (touchSeekOverlayPinned && !mIsDragging) {
+                updateTouchSeekOverlay(cachedProgressPosition, mControlWrapper.getDuration());
+            }
 
             mHandler.postDelayed(this, 1000);
         }
@@ -320,6 +325,7 @@ public class VodController extends BaseController {
         mSubtitleView = findViewById(R.id.subtitle_view);
         mBitmapSubtitleView = findViewById(R.id.bitmap_subtitle_view);
         mResumeAnchor = findViewById(R.id.play_resume_anchor);
+        mPlayToggleBtn = findViewById(R.id.play_toggle);
         mZimuBtn = findViewById(R.id.zimu_select);
         mSubtitleToggleBtn = findViewById(R.id.subtitle_toggle);
         mAudioTrackBtn = findViewById(R.id.audio_track_select);
@@ -424,13 +430,22 @@ public class VodController extends BaseController {
                 long newPosition = (duration * progress) / seekBar.getMax();
                 if (mCurrentTime != null)
                     mCurrentTime.setText(stringForTime(safeTimeMs(newPosition)));
+                if (mIsDragging) {
+                    updateTouchSeekOverlay(newPosition, duration);
+                }
             }
 
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {
                 mIsDragging = true;
+                touchSeekOverlayPinned = true;
+                mHandler.removeMessages(1000);
+                mHandler.removeMessages(1001);
                 mControlWrapper.stopProgress();
                 mControlWrapper.stopFadeOut();
+                long duration = mControlWrapper.getDuration();
+                long position = (duration * seekBar.getProgress()) / seekBar.getMax();
+                updateTouchSeekOverlay(position, duration);
             }
 
             @Override
@@ -445,6 +460,15 @@ public class VodController extends BaseController {
                 mIsDragging = false;
                 mControlWrapper.startProgress();
                 mControlWrapper.startFadeOut();
+                mHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        touchSeekOverlayPinned = false;
+                        if (!mIsDragging) {
+                            hideSeekOverlay();
+                        }
+                    }
+                }, 1200L);
             }
         });
         mPlayerRetry.setOnClickListener(new OnClickListener() {
@@ -550,6 +574,18 @@ public class VodController extends BaseController {
                 } catch (JSONException e) {
                     e.printStackTrace();
                 }
+            }
+        });
+
+        mPlayToggleBtn.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                if (!isInPlaybackState() || isLocked()) {
+                    return;
+                }
+                myHandle.removeCallbacks(myRunnable);
+                mControlWrapper.togglePlay();
+                myHandle.postDelayed(myRunnable, myHandleSeconds);
             }
         });
 
@@ -1084,10 +1120,34 @@ public class VodController extends BaseController {
         } else {
             mProgressIcon.setImageResource(R.drawable.icon_back);
         }
-        mProgressText.setText(stringForTime(seekTo) + " / " + stringForTime(duration));
+        String speed = PlayerHelper.getDisplaySpeed(mControlWrapper.getTcpSpeed(), false);
+        mProgressText.setText(PlaybackLoadingOverlayPolicy.formatSeekStatus(
+                stringForTime(seekTo),
+                stringForTime(duration),
+                videoPlayState,
+                mControlWrapper.getBufferedPercentage(),
+                speed));
         mHandler.sendEmptyMessage(1000);
         mHandler.removeMessages(1001);
         mHandler.sendEmptyMessageDelayed(1001, 1000);
+    }
+
+    /** Keep the single seek surface live while a touch drag is in progress. */
+    private void updateTouchSeekOverlay(long seekTo, long duration) {
+        if (mProgressRoot == null || mProgressText == null || mControlWrapper == null) {
+            return;
+        }
+        mProgressRoot.setVisibility(VISIBLE);
+        mProgressIcon.setImageResource(seekTo >= safeTimeMs(mControlWrapper.getCurrentPosition())
+                ? R.drawable.icon_pre : R.drawable.icon_back);
+        String speed = PlayerHelper.getDisplaySpeed(mControlWrapper.getTcpSpeed(), false);
+        mProgressText.setText(PlaybackLoadingOverlayPolicy.formatSeekStatus(
+                stringForTime(safeTimeMs(seekTo)),
+                stringForTime(safeTimeMs(duration)),
+                videoPlayState,
+                mControlWrapper.getBufferedPercentage(),
+                speed));
+        updatePlaybackLoadingSpeedVisibility(videoPlayState);
     }
 
     /**
@@ -1096,6 +1156,9 @@ public class VodController extends BaseController {
      * that stale display message run after playback resumes and leaves the seek icon over video.
      */
     private void hideSeekOverlay() {
+        if (mIsDragging || touchSeekOverlayPinned) {
+            return;
+        }
         mHandler.removeMessages(1000);
         mHandler.removeMessages(1001);
         if (mProgressRoot != null) {
@@ -1107,6 +1170,7 @@ public class VodController extends BaseController {
     protected void onPlayStateChanged(int playState) {
         super.onPlayStateChanged(playState);
         videoPlayState = playState;
+        updatePlayToggleLabel(playState);
         // A state callback may race the seek UI handler. Clear the pending show and hide messages
         // for every state so the overlay cannot reappear after the first frame starts rendering.
         hideSeekOverlay();
@@ -1158,6 +1222,13 @@ public class VodController extends BaseController {
         }
     }
 
+    private void updatePlayToggleLabel(int playState) {
+        if (mPlayToggleBtn == null) {
+            return;
+        }
+        mPlayToggleBtn.setText(playState == VideoView.STATE_PLAYING ? "暂停" : "播放");
+    }
+
     private void updatePlaybackLoadingSpeedVisibility(int playState) {
         boolean seekOverlayVisible = mProgressRoot != null && mProgressRoot.getVisibility() != GONE;
         if (mPlayLoadNetSpeed != null) {
@@ -1170,7 +1241,8 @@ public class VodController extends BaseController {
     @Override
     protected boolean shouldShowLoadingIndicator(int playState) {
         return PlaybackLoadingOverlayPolicy.shouldShowControllerLoading(
-                playState, embeddedPreviewMode);
+                playState, embeddedPreviewMode,
+                mProgressRoot != null && mProgressRoot.getVisibility() != GONE);
     }
 
     boolean isBottomVisible() {
@@ -1412,6 +1484,7 @@ public class VodController extends BaseController {
             mGridParseView.setFocusableInTouchMode(false);
         }
         applyVisibleFocusState(mResumeAnchor, false);
+        applyVisibleFocusState(mPlayToggleBtn, allowControls && isActuallyVisible(mPlayToggleBtn));
         applyVisibleFocusState(mNextBtn, allowControls && isActuallyVisible(mNextBtn));
         applyVisibleFocusState(mPreBtn, allowControls && isActuallyVisible(mPreBtn));
         applyVisibleFocusState(mPlayerRetry, allowControls && isActuallyVisible(mPlayerRetry));
@@ -1512,6 +1585,7 @@ public class VodController extends BaseController {
 
     private List<View> bottomMenuButtonCandidates() {
         return Arrays.asList(
+                mPlayToggleBtn,
                 mNextBtn,
                 mPreBtn,
                 mPlayerRetry,
@@ -2259,21 +2333,9 @@ public class VodController extends BaseController {
         if (!isPlayerFullScreen()) {
             return enterFullScreenFromPreview();
         }
-        // Touch transport follows the TVOS interaction model: a single tap
-        // first reveals the transport bar, and only a tap while that bar is
-        // visible toggles playback. A hidden bar therefore cannot be toggled
-        // accidentally by a single touch.
-        if (isTouchPlaybackDevice() && isInPlaybackState() && !isLocked()) {
-            myHandle.removeCallbacks(myRunnable);
-            if (!isBottomVisible()) {
-                showBottom();
-                myHandle.postDelayed(myRunnable, myHandleSeconds);
-            } else {
-                togglePlay();
-                myHandle.postDelayed(myRunnable, myHandleSeconds);
-            }
-            return true;
-        }
+        // A single touch only controls transport visibility. Touch playback
+        // changes require a deliberate double tap or the visible play/pause
+        // button in the transport bar.
         myHandle.removeCallbacks(myRunnable);
         if (!isBottomVisible()) {
             showBottom();
@@ -2287,14 +2349,12 @@ public class VodController extends BaseController {
 
     @Override
     public boolean onDoubleTap(MotionEvent e) {
-        // A hidden transport bar requires a deliberate double tap for direct
-        // play/pause. Once the bar is visible, single tap owns the action and
-        // this callback is intentionally ignored to avoid double toggles.
+        // Touch devices use double tap for direct play/pause regardless of
+        // whether the transport bar is visible.
         if (isTouchPlaybackDevice()
                 && isPlayerFullScreen()
                 && isInPlaybackState()
-                && !isLocked()
-                && !isBottomVisible()) {
+                && !isLocked()) {
             togglePlay();
             return true;
         }

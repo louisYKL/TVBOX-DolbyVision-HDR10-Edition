@@ -945,21 +945,16 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         String sampleMimeType = nullToEmpty(format.sampleMimeType).toLowerCase(Locale.US);
         String codecs = nullToEmpty(format.codecs).toLowerCase(Locale.US);
         ColorInfo colorInfo = format.colorInfo;
-        boolean dolbyVision = "video/dolby-vision".equals(sampleMimeType)
-                || codecs.contains("dvhe") || codecs.contains("dvh1") || codecs.contains("dovi");
-        boolean hdrTransfer = colorInfo != null
-                && (colorInfo.colorTransfer == C.COLOR_TRANSFER_ST2084
-                || colorInfo.colorTransfer == C.COLOR_TRANSFER_HLG);
-        boolean hdrColorspace = colorInfo != null && colorInfo.colorSpace == C.COLOR_SPACE_BT2020;
-        boolean hdrStaticInfo = colorInfo != null
-                && colorInfo.hdrStaticInfo != null && colorInfo.hdrStaticInfo.length > 0;
-        // A few Android extractors (notably older MediaParser builds and some
-        // vendor Matroska extractors) omit ColorInfo even though the codec
-        // string carries the HDR transfer/metadata marker. Keep the runtime
-        // promotion path aligned with the preflight probe in that case.
-        boolean hdrCodecMarker = containsHdrCodecMarker(codecs);
+        // Read individual container metadata entries. HEVC Main10 and BT.2020
+        // alone are not HDR evidence because both are also valid for SDR video.
+        String metadataText = SystemCodecHdrPolicy.metadataText(format.metadata);
+        boolean dolbyVision = SystemCodecHdrPolicy.isDolbyVision(
+                sampleMimeType, codecs, metadataText);
+        boolean hdrCodecMarker = SystemCodecHdrPolicy.hasExplicitHdrMarker(codecs)
+                || SystemCodecHdrPolicy.hasExplicitHdrMarker(metadataText);
         lastRuntimeDolbyVision = dolbyVision;
-        lastRuntimeHdr = dolbyVision || hdrTransfer || hdrColorspace || hdrStaticInfo || hdrCodecMarker;
+        lastRuntimeHdr = SystemCodecHdrPolicy.isHdr(
+                sampleMimeType, codecs, colorInfo, metadataText);
         lastRuntimeOutputMode = dolbyVision
                 ? (nativeDolbyVisionCapable ? "native-dv" : "dv-base-hdr")
                 : (lastRuntimeHdr ? "base-hdr" : "sdr");
@@ -974,25 +969,9 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 + " colorSpace=" + (colorInfo == null ? "none" : colorInfo.colorSpace)
                 + " hdrStatic=" + (colorInfo != null && colorInfo.hdrStaticInfo != null)
                 + " hdrCodecMarker=" + hdrCodecMarker
+                + " metadata=" + (TextUtils.isEmpty(metadataText) ? "none" : "present")
                 + " -> dv=" + dolbyVision + " hdr=" + lastRuntimeHdr + " mode=" + lastRuntimeOutputMode);
         dispatchRuntimeVideoModeIfNeeded(reason);
-    }
-
-    private static boolean containsHdrCodecMarker(String codecs) {
-        if (TextUtils.isEmpty(codecs)) {
-            return false;
-        }
-        String lower = codecs.toLowerCase(Locale.US);
-        return lower.contains("smpte2084")
-                || lower.contains("smpte 2084")
-                || lower.contains("smpte2094")
-                || lower.contains("smpte 2094")
-                || lower.contains("arib-std-b67")
-                || lower.contains("hlg")
-                || lower.contains("hdr10")
-                || lower.contains("hdr10+")
-                || lower.contains("hdr10plus")
-                || lower.contains("bt2020");
     }
 
     private void dispatchRuntimeVideoModeIfNeeded(String reason) {

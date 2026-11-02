@@ -1838,8 +1838,23 @@ public class PlayActivity extends BaseActivity {
             }
             activeHeaders = mergedHeaders.isEmpty() ? null : mergedHeaders;
             boolean matroska = isMatroskaPlaybackUrl(rawUrl) || isMatroskaPlaybackUrl(playbackUrl);
-            VideoStreamProbe.Result probe = VideoStreamProbe.Result.unknownContainer(
-                    "unified-system-runtime", matroska);
+            VideoStreamProbe.Result probe;
+            if (App.isJava64Build() && !isTvDevice()) {
+                // Phone extractors commonly deliver ColorInfo only after the first video
+                // callback. A bounded preflight lets us request the HDR window before the
+                // first frame without adding a probe to the TV startup path.
+                probe = VideoStreamProbe.probeForPlaybackPreflight(
+                        mContext, playbackUrl, activeHeaders, resolveProbeTimeoutMs(playbackUrl));
+                if (probe == null) {
+                    probe = VideoStreamProbe.Result.unknownContainer("java64-preflight-null", matroska);
+                }
+                LOG.i("echo-probe-prefetch activity java64-phone probed=" + probe.probed
+                        + " hdr10=" + probe.hasHdr10 + " hdr10Plus=" + probe.hasHdr10Plus
+                        + " dv=" + probe.hasDolbyVision + " summary=" + probe.summary);
+            } else {
+                probe = VideoStreamProbe.Result.unknownContainer(
+                        "unified-system-runtime", matroska);
+            }
             DolbyVisionPlaybackRouter.Decision decision = DolbyVisionPlaybackRouter.resolve(mContext,
                     PlayerHelper.PLAYER_TYPE_SYSTEM, playbackUrl, activeHeaders, probe,
                     buildContainerHintText(rawUrl, playbackUrl));

@@ -18,6 +18,7 @@ public class VideoHdrMetadataTest {
     public void wideGamutAloneDoesNotActivateHdrMode() {
         assertFalse(VideoStreamProbe.containsHdr10TextMarker("BT.2020 color standard"));
         assertFalse(VideoStreamProbe.containsHdr10TextMarker("color-standard=6"));
+        assertFalse(VideoStreamProbe.containsHdr10TextMarker("dialogue: hlg is a channel name"));
     }
 
     @Test

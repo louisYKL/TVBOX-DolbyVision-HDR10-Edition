@@ -187,13 +187,11 @@
                     android:nextFocusRight="@id/play_next"
                     android:nextFocusUp="@id/play_next" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="@dimen/vs_8"
+                <com.github.tvbox.osc.ui.tv.widget.LiquidGlassTextView
+                    android:id="@+id/play_toggle"
+                    style="@style/AppleTvControlChip"
                     android:text="播放"
-                    android:textColor="@color/apple_tv_text_secondary"
-                    android:textSize="@dimen/ts_18" />
+                    android:contentDescription="播放或暂停" />
 
                 <com.github.tvbox.osc.ui.tv.widget.LiquidGlassTextView
                     android:id="@+id/play_next"

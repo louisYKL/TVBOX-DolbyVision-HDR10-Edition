@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.9.2
+
+### 中文
+
+- 触屏播放时，视频画面只允许双击直接切换播放/暂停；单击画面只呼出或收起底部播放栏。
+- 底部播放栏显示时，最左侧改为与其他控件一致的播放/暂停按钮，点击该按钮切换播放状态。
+- 拖动进度条时，在同一提示中显示目标时间、缓冲状态/百分比和网络速度，并隐藏重复的缓冲提示。
+- 修复手机和小屏设备详情页右侧操作按钮布局，并突出显示上次播放的剧集。
+- HDR 运行时识别使用 PQ/HLG、静态 HDR 信息和明确的 HDR10+/DV 标记；Main10 位深或 BT.2020 色域本身不再误判为 HDR。
+- 检测到 HDR 视频轨后请求系统 HDR 窗口模式；HDR 亮度继续由设备管理。
+- 统一普通、聚焦和禁用状态的按钮明暗对比度，浅色背景使用深色文字，深色背景使用浅色文字。
+- 三端版本统一为 `0.2.9.2`、`versionCode 2092`，沿用 `0.2.9.1` 的签名证书，支持覆盖安装。
+
+### English
+
+- On touch devices, double-tapping the video surface is the only direct play/pause gesture; a single tap only reveals or hides the bottom transport bar.
+- The leftmost control in the visible transport bar is now a normal play/pause button and toggles playback when pressed.
+- Seeking shows the target time, buffer state/percentage, and network speed in one overlay, with duplicate loading indicators suppressed.
+- Fixed action-button visibility on phone and small-screen detail pages, and highlighted the last-played episode.
+- Runtime HDR detection uses PQ/HLG, static HDR information, and explicit HDR10+/Dolby Vision markers; Main10 bit depth or BT.2020 gamut alone no longer causes false HDR classification.
+- The system HDR window mode is requested when an HDR video track is detected; display brightness remains device-controlled.
+- Button contrast is consistent across normal, focused, and disabled states: dark text on light backgrounds and light text on dark backgrounds.
+- Unified all three variants under `0.2.9.2` with `versionCode 2092`, retaining the `0.2.9.1` signing certificate for in-place updates.
+
 ## 0.2.9.1
 
 ### 中文

@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.view.View;
 import android.widget.TextView;
 
+import androidx.core.content.ContextCompat;
+
 import com.chad.library.adapter.base.BaseQuickAdapter;
 import com.chad.library.adapter.base.BaseViewHolder;
 import com.github.tvbox.osc.R;
@@ -27,7 +29,10 @@ public class SeriesAdapter extends BaseQuickAdapter<VodInfo.VodSeries, BaseViewH
     @Override
     protected void convert(BaseViewHolder helper, VodInfo.VodSeries item) {
         TextView tvSeries = helper.getView(R.id.tvSeries);
-        tvSeries.setTextColor(mContext.getResources().getColor(R.color.apple_tv_text_primary));
+        tvSeries.setTextColor(ContextCompat.getColorStateList(mContext,
+                R.color.apple_tv_button_text_series));
+        helper.itemView.setSelected(item.selected);
+        helper.itemView.setActivated(item.selected);
         helper.setText(R.id.tvSeries, item.name);
 
         if (getData().size() == 1 && helper.getLayoutPosition() == 0) {

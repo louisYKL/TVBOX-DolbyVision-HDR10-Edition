@@ -121,6 +121,9 @@ public class DetailActivity extends BaseActivity {
     private TvRecyclerView mSeriesGroupView;
     private LinearLayout mEmptyPlayList;
     private LinearLayout tvSeriesGroup;
+    private LinearLayout topLayout;
+    private LinearLayout detailInfoColumn;
+    private LinearLayout detailActionsRow;
     private SourceViewModel sourceViewModel;
     private Movie.Video mVideo;
     private VodInfo vodInfo;
@@ -164,6 +167,9 @@ public class DetailActivity extends BaseActivity {
 
     private void initView() {
         llLayout = findViewById(R.id.llLayout);
+        topLayout = findViewById(R.id.topLayout);
+        detailInfoColumn = findViewById(R.id.detailInfoColumn);
+        detailActionsRow = findViewById(R.id.detailActionsRow);
         llPlayerPlace = findViewById(R.id.previewPlayerPlace);
         llPlayerFragmentContainer = findViewById(R.id.previewPlayer);
         llPlayerFragmentContainerBlock = findViewById(R.id.previewPlayerBlock);
@@ -175,6 +181,7 @@ public class DetailActivity extends BaseActivity {
         ivThumb = findViewById(R.id.ivThumb);
         llPlayerPlace.setVisibility(showPreview ? View.VISIBLE : View.GONE);
         ivThumb.setVisibility(!showPreview ? View.VISIBLE : View.GONE);
+        configureTouchDetailLayout();
         tvName = findViewById(R.id.tvName);
         tvYear = findViewById(R.id.tvYear);
         tvSite = findViewById(R.id.tvSite);
@@ -503,6 +510,44 @@ public class DetailActivity extends BaseActivity {
         setLoadSir(llLayout);
     }
 
+    /**
+     * The phone build intentionally disables the embedded preview. Keep the
+     * detail actions in the viewport instead of retaining the TV-only fixed
+     * poster width and placing the action column off the right edge.
+     */
+    private void configureTouchDetailLayout() {
+        if (!isJava64PhoneDevice() || topLayout == null || detailInfoColumn == null || mediaColumn == null) {
+            return;
+        }
+        topLayout.setOrientation(LinearLayout.HORIZONTAL);
+        ViewGroup.LayoutParams posterParams = mediaColumn.getLayoutParams();
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        posterParams.width = Math.max(1, Math.round(screenWidth * 0.27f));
+        posterParams.height = Math.max(1, Math.round(screenHeight * 0.35f));
+        mediaColumn.setLayoutParams(posterParams);
+        LinearLayout.LayoutParams infoParams = (LinearLayout.LayoutParams) detailInfoColumn.getLayoutParams();
+        infoParams.width = 0;
+        infoParams.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        infoParams.weight = 1f;
+        detailInfoColumn.setLayoutParams(infoParams);
+        if (detailActionsRow != null) {
+            int buttonWidth = Math.max(1, Math.round(screenWidth * 0.155f));
+            int buttonHeight = Math.max(1, Math.round(screenHeight * 0.085f));
+            int[] buttonIds = {R.id.tvPlay, R.id.tvQuickSearch, R.id.tvDesc, R.id.tvCollect};
+            for (int id : buttonIds) {
+                View button = detailActionsRow.findViewById(id);
+                if (button == null) {
+                    continue;
+                }
+                LinearLayout.LayoutParams buttonParams = (LinearLayout.LayoutParams) button.getLayoutParams();
+                buttonParams.width = buttonWidth;
+                buttonParams.height = buttonHeight;
+                button.setLayoutParams(buttonParams);
+            }
+        }
+    }
+
     //解决类似海贼王的超长动漫 焦点滚动失败的问题
     void customSeriesScrollPos(int targetPos)
     {
@@ -615,14 +660,10 @@ public class DetailActivity extends BaseActivity {
         }
 
         if (vodInfo.seriesMap.get(vodInfo.playFlag) != null) {
-            boolean canSelect = true;
-            for (int j = 0; j < vodInfo.seriesMap.get(vodInfo.playFlag).size(); j++) {
-                if(vodInfo.seriesMap.get(vodInfo.playFlag).get(j).selected){
-                    canSelect = false;
-                    break;
-                }
+            List<VodInfo.VodSeries> currentSeries = vodInfo.seriesMap.get(vodInfo.playFlag);
+            for (int j = 0; j < currentSeries.size(); j++) {
+                currentSeries.get(j).selected = j == vodInfo.playIndex;
             }
-            if(canSelect)vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex).selected = true;
         }
 
         Paint pFont = new Paint();

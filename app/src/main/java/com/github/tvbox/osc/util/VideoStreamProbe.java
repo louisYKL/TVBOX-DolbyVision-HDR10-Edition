@@ -1712,9 +1712,14 @@ public final class VideoStreamProbe {
                 || lower.contains("smpte2084")
                 || lower.contains("smpte 2084")
                 || lower.contains("arib-std-b67")
-                || lower.contains("hlg")
                 || lower.contains("color-transfer=6")
                 || lower.contains("color-transfer=7")
+                || lower.contains("color_transfer=6")
+                || lower.contains("color_transfer=7")
+                || lower.contains("transfer=st2084")
+                || lower.contains("transfer=smpte2084")
+                || lower.contains("transfer=hlg")
+                || lower.contains("transfer:hlg")
                 || lower.contains("hdr-static-info");
     }
 

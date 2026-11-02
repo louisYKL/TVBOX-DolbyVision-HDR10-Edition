@@ -32,8 +32,8 @@ public class PlaybackLoadingOverlayPolicyTest {
     }
 
     @Test
-    public void seekOverlayKeepsActiveLoadingStatusVisible() {
-        assertTrue(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
+    public void seekOverlaySuppressesDuplicateNetworkStatus() {
+        assertFalse(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
                 VideoView.STATE_BUFFERING, true, false));
     }
 
@@ -45,6 +45,20 @@ public class PlaybackLoadingOverlayPolicyTest {
                 VideoView.STATE_BUFFERING, true));
         assertTrue(PlaybackLoadingOverlayPolicy.shouldShowControllerLoading(
                 VideoView.STATE_BUFFERING, false));
+    }
+
+    @Test
+    public void seekOverlayCombinesPositionBufferingAndSpeed() {
+        assertFalse(PlaybackLoadingOverlayPolicy.shouldShowControllerLoading(
+                VideoView.STATE_BUFFERING, false, true));
+        org.junit.Assert.assertEquals(
+                "00:12 / 01:20\n缓冲 37%\n5.2MB/s",
+                PlaybackLoadingOverlayPolicy.formatSeekStatus(
+                        "00:12", "01:20", VideoView.STATE_BUFFERING, 37, "5.2MB/s"));
+        org.junit.Assert.assertEquals(
+                "00:12 / 01:20\n缓冲 中",
+                PlaybackLoadingOverlayPolicy.formatSeekStatus(
+                        "00:12", "01:20", VideoView.STATE_BUFFERING, -1, ""));
     }
 
     @Test

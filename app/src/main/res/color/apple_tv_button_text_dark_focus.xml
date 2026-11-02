@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false" android:color="@color/apple_tv_text_muted" />
     <item android:state_focused="true" android:color="@color/apple_tv_chip_text_active" />
     <item android:state_selected="true" android:color="@color/apple_tv_chip_text_active" />
     <item android:state_activated="true" android:color="@color/apple_tv_chip_text_active" />

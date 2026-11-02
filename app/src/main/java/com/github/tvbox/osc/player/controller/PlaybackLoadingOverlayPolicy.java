@@ -12,14 +12,52 @@ public final class PlaybackLoadingOverlayPolicy {
         if (embeddedPreviewMode) {
             return false;
         }
-        return playState == VideoView.STATE_PREPARING
-                || playState == VideoView.STATE_BUFFERING;
+        // The seek overlay is the single transport status surface during a
+        // drag. Suppress the separate network-speed label so buffering does
+        // not render two competing overlays at once.
+        return !seekOverlayVisible
+                && (playState == VideoView.STATE_PREPARING
+                || playState == VideoView.STATE_BUFFERING);
     }
 
     public static boolean shouldShowControllerLoading(int playState, boolean embeddedPreviewMode) {
+        return shouldShowControllerLoading(playState, embeddedPreviewMode, false);
+    }
+
+    public static boolean shouldShowControllerLoading(int playState,
+                                                      boolean embeddedPreviewMode,
+                                                      boolean seekOverlayVisible) {
         return !embeddedPreviewMode
+                && !seekOverlayVisible
                 && (playState == VideoView.STATE_PREPARING
                 || playState == VideoView.STATE_BUFFERING);
+    }
+
+    public static String formatSeekStatus(String position,
+                                          String duration,
+                                          int playState,
+                                          int bufferedPercent,
+                                          String speed) {
+        StringBuilder status = new StringBuilder()
+                .append(position == null ? "--:--" : position)
+                .append(" / ")
+                .append(duration == null ? "--:--" : duration);
+        boolean loading = playState == VideoView.STATE_PREPARING
+                || playState == VideoView.STATE_BUFFERING;
+        if (loading) {
+            status.append('\n')
+                    .append(playState == VideoView.STATE_PREPARING ? "加载 " : "缓冲 ");
+            if (bufferedPercent < 0) {
+                status.append("中");
+            } else {
+                status.append(Math.max(0, Math.min(100, bufferedPercent))).append('%');
+            }
+        }
+        String safeSpeed = speed == null ? "" : speed.trim();
+        if (!safeSpeed.isEmpty()) {
+            status.append('\n').append(safeSpeed);
+        }
+        return status.toString();
     }
 
     public static String formatLoadingStatus(int playState, int bufferedPercent, String speed) {

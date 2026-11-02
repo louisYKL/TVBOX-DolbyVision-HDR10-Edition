@@ -12,6 +12,7 @@ import android.widget.TextView;
 
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.ListAdapter;
 import androidx.recyclerview.widget.RecyclerView;
@@ -20,7 +21,6 @@ import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.bean.SourceBean;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.SearchHelper;
-import androidx.core.content.ContextCompat;
 
 import org.jetbrains.annotations.NotNull;
 
@@ -71,7 +71,7 @@ public class CheckboxSearchAdapter extends ListAdapter<SourceBean, CheckboxSearc
         holder.oneSearchSource.setText(sourceBean.getName());
         holder.oneSearchSource.setOnCheckedChangeListener(null);
         holder.oneSearchSource.setButtonDrawable(android.R.color.transparent);
-        holder.oneSearchSource.setTextColor(ContextCompat.getColor(holder.oneSearchSource.getContext(), R.color.apple_tv_text_primary));
+        holder.oneSearchSource.setTextColor(ContextCompat.getColorStateList(holder.oneSearchSource.getContext(), R.color.apple_tv_button_text_light_focus));
         if (mCheckedSources != null) {
             holder.oneSearchSource.setChecked(mCheckedSources.containsKey(sourceBean.getKey()));
         }

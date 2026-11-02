@@ -2,12 +2,12 @@ package com.github.tvbox.osc.ui.dialog;
 
 import android.content.Context;
 import android.content.DialogInterface;
-import android.graphics.Color;
 import android.view.View;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 
 import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.util.FastClickCheckUtil;
@@ -48,7 +48,10 @@ public class XWalkInitDialog extends BaseDialog {
 
             private void setTextEnable(boolean enable) {
                 downText.setEnabled(enable);
-                downText.setTextColor(enable ? Color.BLACK : Color.GRAY);
+                // The button stays on the dark glass surface while downloading. Keep both
+                // enabled and disabled states readable instead of forcing dark text.
+                downText.setTextColor(ContextCompat.getColorStateList(context,
+                        R.color.apple_tv_button_text_light_focus));
             }
 
             @Override

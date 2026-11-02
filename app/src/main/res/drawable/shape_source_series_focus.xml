@@ -1,5 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_selected="true">
+        <shape>
+            <corners android:radius="@dimen/vs_16" />
+            <gradient
+                android:angle="315"
+                android:endColor="@color/apple_tv_chip_active"
+                android:startColor="@color/apple_tv_glass_focus_top" />
+            <stroke android:width="@dimen/vs_1" android:color="@color/apple_tv_focus" />
+        </shape>
+    </item>
+    <item android:state_activated="true">
+        <shape>
+            <corners android:radius="@dimen/vs_16" />
+            <gradient
+                android:angle="315"
+                android:endColor="@color/apple_tv_chip_active"
+                android:startColor="@color/apple_tv_glass_focus_top" />
+            <stroke android:width="@dimen/vs_1" android:color="@color/apple_tv_focus" />
+        </shape>
+    </item>
     <item android:state_focused="true">
         <shape>
             <corners android:radius="@dimen/vs_16" />

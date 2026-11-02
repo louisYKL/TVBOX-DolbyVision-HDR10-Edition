@@ -71,8 +71,9 @@ public class SearchCheckboxDialog extends BaseDialog{
                 return oldItem.getName().equals(newItem.getName());
             }
         });
-        checkAll.setTextColor(ContextCompat.getColor(getContext(), R.color.apple_tv_text_primary));
-        clearAll.setTextColor(ContextCompat.getColor(getContext(), R.color.apple_tv_text_primary));
+        ColorStateList buttonText = ContextCompat.getColorStateList(getContext(), R.color.apple_tv_button_text_light_focus);
+        checkAll.setTextColor(buttonText);
+        clearAll.setTextColor(buttonText);
         mGridView.setHasFixedSize(true);
 
         int size = mSourceList.size();
