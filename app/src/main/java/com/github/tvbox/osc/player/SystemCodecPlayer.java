@@ -1660,6 +1660,26 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                                              int tunnelingAudioSessionId) {
             MediaFormat mediaFormat = super.getMediaFormat(format, codecMimeType, codecMaxValues,
                     codecOperatingRate, deviceNeedsNoPostProcessWorkaround, tunnelingAudioSessionId);
+            if (hdr10CompatMode
+                    && MimeTypes.VIDEO_DOLBY_VISION.equals(format.sampleMimeType)
+                    && MimeTypes.VIDEO_H265.equals(codecMimeType)
+                    && isDolbyVisionProfile5(format.codecs)) {
+                // Profile 5 is single-layer Dolby Vision. It has no HDR10 base-layer metadata;
+                // treating it as PQ/BT.2020 makes the TV PQ pipeline interpret the decoded
+                // samples incorrectly. Keep hardware decode and request a predictable SDR
+                // BT.709 output instead of doing CPU-side frame conversion.
+                mediaFormat.setInteger(MediaFormat.KEY_COLOR_TRANSFER,
+                        MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
+                mediaFormat.setInteger(MediaFormat.KEY_COLOR_STANDARD,
+                        MediaFormat.COLOR_STANDARD_BT709);
+                mediaFormat.setInteger(MediaFormat.KEY_COLOR_RANGE,
+                        MediaFormat.COLOR_RANGE_LIMITED);
+                mediaFormat.removeKey(MediaFormat.KEY_HDR_STATIC_INFO);
+                Log.i(TAG, "echo-system-codec dv-profile5-sdr-mapping codecMime="
+                        + codecMimeType + " color=BT709/SDR range=limited");
+                LOG.i("echo-system-codec dv-profile5-sdr-mapping color=BT709/SDR");
+                return mediaFormat;
+            }
             // Dolby Vision Profile 8 (and 8.1) carries an HDR10 / HLG base layer inside an HEVC
             // stream. On a device with no single-layer DV decoder, ExoPlayer falls back to the
             // HEVC decoder (video/hevc) to decode that base layer — but the DV track's Format
@@ -1699,6 +1719,14 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                         + codecMimeType + " injected BT2020/ST2084+staticInfo");
             }
             return mediaFormat;
+        }
+
+        private boolean isDolbyVisionProfile5(String codecs) {
+            if (codecs == null) {
+                return false;
+            }
+            String normalized = codecs.toLowerCase(Locale.US).trim();
+            return normalized.startsWith("dvhe.05") || normalized.startsWith("dvh1.05");
         }
 
         // Builds a 25-byte CTA-861.3 HDR static metadata descriptor for a generic HDR10 master
@@ -1758,8 +1786,18 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                                                    boolean requiresSecureDecoder,
                                                    boolean requiresTunnelingDecoder)
                 throws MediaCodecUtil.DecoderQueryException {
+            String queryMimeType = mimeType;
+            if (MimeTypes.VIDEO_DOLBY_VISION.equals(mimeType)) {
+                // The TV exposes no usable DV renderer, but the DV track contains an HEVC
+                // base layer. Ask the platform for HEVC decoders so ExoPlayer can select the
+                // video renderer; SafeSurfaceMediaCodecVideoRenderer strips the DV RPU and
+                // supplies the HDR10-compatible MediaFormat below.
+                queryMimeType = MimeTypes.VIDEO_H265;
+                Log.i(TAG, "echo-system-codec dv-decoder-query-as-hevc");
+                LOG.i("echo-system-codec dv-decoder-query-as-hevc");
+            }
             List<MediaCodecInfo> decoders = MediaCodecSelector.DEFAULT.getDecoderInfos(
-                    mimeType, requiresSecureDecoder, requiresTunnelingDecoder);
+                    queryMimeType, requiresSecureDecoder, requiresTunnelingDecoder);
             if (MimeTypes.isAudio(mimeType)) {
                 ArrayList<MediaCodecInfo> ordered = new ArrayList<>(decoders.size());
                 for (MediaCodecInfo decoder : decoders) {

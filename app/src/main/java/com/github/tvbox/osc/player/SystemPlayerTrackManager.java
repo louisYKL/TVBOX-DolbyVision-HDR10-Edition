@@ -551,6 +551,15 @@ public final class SystemPlayerTrackManager {
         boolean explicitChinese = containsExplicitChineseMarker(key);
         boolean genericChineseOnly = !explicitChinese && containsGenericChineseMarker(key);
         int score = scoreChinesePreference(key);
+        // Keep the default deterministic: simplified Chinese first, then traditional Chinese.
+        // The selected flag is only a stable tie-breaker and must not override this preference.
+        if (containsSimplifiedChinese(key)) {
+            score += 10_000;
+        } else if (containsTraditionalChinese(key)) {
+            score += 9_000;
+        } else if (containsChinese(key)) {
+            score += 8_000;
+        }
         if (isEmpty(bean.rawLanguage) && isEmpty(bean.rawTitle) && isEmpty(bean.name)) {
             score -= 40;
         }

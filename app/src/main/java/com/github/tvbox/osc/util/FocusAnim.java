@@ -8,6 +8,8 @@ import android.view.animation.PathInterpolator;
 import android.view.animation.DecelerateInterpolator;
 
 public class FocusAnim {
+    private static final int FOCUS_DURATION_MS = 180;
+    private static final int RELEASE_DURATION_MS = 140;
     private static final TimeInterpolator INTERPOLATOR =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
                     ? new PathInterpolator(0.22f, 1f, 0.36f, 1f)
@@ -34,8 +36,12 @@ public class FocusAnim {
         }
 
         private static void animate(View view, boolean focused, float targetScale, float targetAlpha, float targetTranslationX, float targetTranslationY) {
+            if (Math.abs(view.getScaleX() - targetScale) < 0.001f
+                    && Math.abs(view.getAlpha() - targetAlpha) < 0.001f
+                    && Math.abs(view.getTranslationY() - targetTranslationY) < 0.2f) {
+                return;
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                float targetTranslationZ = focused ? 20f : 0f;
                 view.animate()
                         .cancel();
                 view.animate()
@@ -44,8 +50,8 @@ public class FocusAnim {
                         .alpha(targetAlpha)
                         .translationX(targetTranslationX)
                         .translationY(targetTranslationY)
-                        .translationZ(targetTranslationZ)
-                        .setDuration(focused ? 360 : 300)
+                        .translationZ(0f)
+                        .setDuration(focused ? FOCUS_DURATION_MS : RELEASE_DURATION_MS)
                         .setInterpolator(focused ? INTERPOLATOR : RELEASE_INTERPOLATOR)
                         .start();
             } else {
@@ -57,7 +63,7 @@ public class FocusAnim {
                         .alpha(targetAlpha)
                         .translationX(targetTranslationX)
                         .translationY(targetTranslationY)
-                        .setDuration(focused ? 360 : 300)
+                        .setDuration(focused ? FOCUS_DURATION_MS : RELEASE_DURATION_MS)
                         .setInterpolator(focused ? INTERPOLATOR : RELEASE_INTERPOLATOR)
                         .start();
             }

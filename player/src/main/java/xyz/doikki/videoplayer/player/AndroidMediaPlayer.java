@@ -2019,9 +2019,6 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         if (mNativeBuffering) {
             return false;
         }
-        if (usesExtendedTv32DirectHdrMatroskaFirstFrameWait()) {
-            return false;
-        }
         if (mState != STATE_STARTED && mState != STATE_PREPARED && mState != STATE_PREPARING) {
             return false;
         }

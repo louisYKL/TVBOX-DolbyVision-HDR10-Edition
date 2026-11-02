@@ -119,7 +119,10 @@ public class VodController extends BaseController {
                         mTopContainer.setVisibility(isPlayerFullScreen() ? GONE : VISIBLE);
                         mTopRoot1.setVisibility(isPlayerFullScreen() ? GONE : VISIBLE);
                         mTopRoot2.setVisibility(isPlayerFullScreen() ? GONE : VISIBLE);
-                        mPlayLoadNetSpeedRightTop.setVisibility(isPlayerFullScreen() ? GONE : VISIBLE);
+                        // Keep the live buffering/network status visible in fullscreen. The
+                        // center loading label is transient; this status remains useful while
+                        // the control bar is open during a slow Matroska startup or seek.
+                        mPlayLoadNetSpeedRightTop.setVisibility(VISIBLE);
                         if(Hawk.get(HawkConfig.SCREEN_DISPLAY,GONE)==GONE){
                             mPlayPauseTime.setVisibility(VISIBLE);
                         }else {
@@ -413,6 +416,7 @@ public class VodController extends BaseController {
                 long duration = mControlWrapper.getDuration();
                 long newPosition = (duration * seekBar.getProgress()) / seekBar.getMax();
                 cachedProgressPosition = safeTimeMs(newPosition);
+                notifySeekCommitted();
                 mControlWrapper.seekTo(newPosition);
                 resumePlaybackAfterSeek("touch");
                 mIsDragging = false;
@@ -802,6 +806,10 @@ public class VodController extends BaseController {
         void startPlayUrl(String url, HashMap<String, String> headers);
 
         void setAllowSwitchPlayer(boolean isAllow);
+
+        /** Called immediately when a user seek is committed, before the player seek call. */
+        default void onSeekCommitted() {
+        }
     }
 
     public void setListener(VodControlListener listener) {
@@ -943,6 +951,7 @@ public class VodController extends BaseController {
         lastRemoteSeekCommitTime = now;
         Log.i(TAG, "commitRemoteSeek reason=" + reason + " pos=" + target);
         cachedProgressPosition = target;
+        notifySeekCommitted();
         mControlWrapper.seekTo(target);
         simSeekCommitted = true;
         resumePlaybackAfterSeek(reason);
@@ -961,6 +970,12 @@ public class VodController extends BaseController {
         pendingSeekResumeTriggered = false;
         restorePlaybackAfterSeek(reason);
         mHandler.postDelayed(seekResumeCheckRunnable, 220);
+    }
+
+    private void notifySeekCommitted() {
+        if (listener != null) {
+            listener.onSeekCommitted();
+        }
     }
 
     private void restorePlaybackAfterSeek(String reason) {
@@ -2028,6 +2043,7 @@ public class VodController extends BaseController {
     @Override
     protected void onGestureSeekCompleted(int seekPosition) {
         cachedProgressPosition = Math.max(0, seekPosition);
+        notifySeekCommitted();
         resumePlaybackAfterSeek("gesture");
     }
 

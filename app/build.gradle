@@ -15,8 +15,8 @@ android {
     defaultConfig {
         applicationId 'com.github.tvbox.osc'
         targetSdkVersion 34
-        versionCode 2080
-        versionName '0.2.8'
+        versionCode 20933
+        versionName '0.2.9.3.3'
         multiDexEnabled true
         //设置room的Schema的位置
         javaCompileOptions {
@@ -110,7 +110,15 @@ android {
 
     applicationVariants.configureEach { variant ->
         variant.outputs.configureEach { output ->
-            def flavorNames = variant.productFlavors.collect { it.name == "normal" ? "java32" : it.name }.join('-')
+            def flavorNames = variant.productFlavors.collect {
+                if (it.name == "normal") {
+                    return "java32"
+                }
+                if (it.name == "hisense") {
+                    return "hisense32"
+                }
+                return it.name
+            }.join('-')
             // 构建自定义文件名
             def fileName = "TVBox_v${variant.versionName}_${flavorNames}.apk"
             outputFileName = fileName

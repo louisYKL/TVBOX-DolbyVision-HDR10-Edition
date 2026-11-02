@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.9.3.3
+
+### 中文
+
+- 修复触摸进度条和遥控器快进/回退提交后只显示 seek 提示的问题：seek 会进入统一真实缓冲监视器，持续显示缓冲百分比与当前网速，直到播放器报告缓冲结束。
+- 统一 HDR 文本字幕与 PGS/VobSub 位图字幕为淡灰色字形和黑色描边，避免 HDR 下纯白过曝或深灰难以辨认；SDR 字幕仍保留源文件颜色。
+- 保留三端硬解、HDR/Dolby Vision 路由、字幕轨道恢复、触控/遥控器焦点链和原签名证书。版本为 `0.2.9.3.3`，`versionCode 20933`，可覆盖安装 `0.2.8` 及更早版本。
+
+### English
+
+- Fixed touch-bar and remote seek commits that only showed the seek hint: every seek now enters the same real buffering monitor used at startup and keeps buffered percentage plus current transfer speed visible until the player reports buffering end.
+- Unified HDR text and PGS/VobSub bitmap subtitles to a light-grey glyph with a black outline, avoiding clipped white or unreadable dark-grey output. SDR subtitles keep source-provided colors.
+- Retained hardware decode, HDR/Dolby Vision routing, subtitle-track restoration, touch/remote focus behavior, and the existing signing certificate across all variants. Version `0.2.9.3.3` (`versionCode 20933`) installs over `0.2.8` and earlier releases.
+
 ## 0.2.8
 
 ### 中文

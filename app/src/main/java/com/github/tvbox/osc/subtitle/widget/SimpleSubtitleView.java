@@ -78,6 +78,12 @@ public class SimpleSubtitleView extends TextView
     private TextView backGroundText = null;//用于描边的TextView
     private boolean hdrSubtitleMode = false;
     private static final int DEFAULT_SUBTITLE_COLOR = Color.WHITE;
+    /**
+     * HDR subtitle luminance is deliberately below clipping white while remaining readable on
+     * bright HDR panels. Keep one neutral tone for every text/ASS/TTML span instead of preserving
+     * source colors that can become either crushed or clipped after the HDR transfer function.
+     */
+    private static final int HDR_SUBTITLE_TONE = 224;
     private int requestedTextColor = DEFAULT_SUBTITLE_COLOR;
     private String lastRawSubtitleText = EMPTY_TEXT;
 
@@ -307,15 +313,7 @@ public class SimpleSubtitleView extends TextView
     }
 
     private int dimForHdr(int color) {
-        int red = Math.round(Color.red(color) * 0.68f);
-        int green = Math.round(Color.green(color) * 0.68f);
-        int blue = Math.round(Color.blue(color) * 0.68f);
-        int max = Math.max(red, Math.max(green, blue));
-        if (max <= 160) {
-            return Color.rgb(red, green, blue);
-        }
-        float scale = 160f / max;
-        return Color.rgb(Math.round(red * scale), Math.round(green * scale), Math.round(blue * scale));
+        return Color.rgb(HDR_SUBTITLE_TONE, HDR_SUBTITLE_TONE, HDR_SUBTITLE_TONE);
     }
 
     private int opaque(int color) {
@@ -347,9 +345,7 @@ public class SimpleSubtitleView extends TextView
             int flags = builder.getSpanFlags(span);
             builder.removeSpan(span);
             if (start >= 0 && end > start) {
-                int color = hdrSubtitleMode
-                        ? dimForHdr(span.getBackgroundColor())
-                        : opaque(span.getBackgroundColor());
+                int color = opaque(span.getBackgroundColor());
                 builder.setSpan(new BackgroundColorSpan(color), start, end, flags);
             }
         }
@@ -464,7 +460,7 @@ public class SimpleSubtitleView extends TextView
         tp.setStrokeJoin(Paint.Join.ROUND);
         tp.setStrokeMiter(10f);
         tp.setAntiAlias(true);
-        backGroundText.setTextColor(hdrSubtitleMode ? dimForHdr(Color.BLACK) : Color.BLACK);
+        backGroundText.setTextColor(Color.BLACK);
         //将背景的文字对齐方式做同步
         backGroundText.setGravity(getGravity());
     }

@@ -22,9 +22,11 @@ import java.util.WeakHashMap;
  * readable without changing the cue's placement, timing, or scale.</p>
  */
 public final class BitmapSubtitleRenderer {
-    private static final int HDR_FILL_RED = 180;
-    private static final int HDR_FILL_GREEN = 180;
-    private static final int HDR_FILL_BLUE = 180;
+    // Keep bitmap subtitles in the same light-neutral HDR tone as SimpleSubtitleView. Pure white
+    // clips on HDR panels, while the previous dark grey was hard to read over bright scenes.
+    private static final int HDR_FILL_RED = 224;
+    private static final int HDR_FILL_GREEN = 224;
+    private static final int HDR_FILL_BLUE = 224;
     private static final int SDR_FILL_RED = 255;
     private static final int SDR_FILL_GREEN = 255;
     private static final int SDR_FILL_BLUE = 255;
