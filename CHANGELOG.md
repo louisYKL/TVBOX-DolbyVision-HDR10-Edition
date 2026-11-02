@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.9.3.3
+
+### 中文
+
+- 修复触摸进度条、遥控器快进/回退和手势 Seek 提交后只显示快进提示的问题：统一显示真实缓冲百分比与当前网速，直到播放器报告缓冲结束。
+- 统一 HDR 文本字幕与 PGS/VobSub 位图字幕为淡灰色 `RGB 224` 字形和黑色描边；SDR 字幕保留字幕源颜色。
+- 三端版本统一为 `0.2.9.3.3`、`versionCode 20933`，沿用原签名证书，支持覆盖安装。
+
+### English
+
+- Fixed touch-bar, remote, and gesture seek commits that only showed the seek hint. The shared real buffering monitor now keeps buffered percentage and current transfer speed visible until buffering ends.
+- Unified HDR text and PGS/VobSub bitmap subtitles to a light-grey `RGB 224` glyph with a black outline; SDR subtitles retain source-provided colors.
+- Unified all variants under `0.2.9.3.3` with `versionCode 20933`, retaining the existing signing certificate for in-place updates.
+
 ## 0.2.9.3.2
 
 ### 中文

@@ -152,6 +152,7 @@ public class PlayFragment extends BaseLazyFragment {
     private static final long UNKNOWN_PROGRESS_LIVENESS_CEILING_MS = 120 * 1000L;
     private static final long BUFFER_PROGRESS_POLL_MS = 500L;
     private static final long BUFFER_TIMEOUT_REFRESH_MS = 5_000L;
+    private static final long SEEK_BUFFER_MIN_VISIBLE_MS = 750L;
     private static final long PLAYER_RELEASE_SETTLE_MS = 260L;
     private static final int SUBTITLE_INIT_MAX_ATTEMPTS = 12;
     private static final long SUBTITLE_INIT_FIRST_DELAY_MS = 300L;
@@ -182,10 +183,24 @@ public class PlayFragment extends BaseLazyFragment {
     private long lastBufferTimeoutRefreshAtMs;
     private long activeBufferingEpisodeStartAtMs = 0L;
     private long loadingEpisodeStartAtMs = 0L;
+    private boolean seekBufferingPending;
+    private long seekBufferingStartedAtMs;
     private final Runnable bufferingProgressRunnable = new Runnable() {
         @Override
         public void run() {
             pollBufferingProgress();
+        }
+    };
+    private final Runnable seekBufferingFinishRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!seekBufferingPending || mVideoView == null) {
+                return;
+            }
+            if (PlaybackBufferProgressPolicy.isLoadingState(mVideoView.getCurrentPlayState())) {
+                return;
+            }
+            finishSeekBufferingOverlay();
         }
     };
 
@@ -674,13 +689,30 @@ public class PlayFragment extends BaseLazyFragment {
                 syncEmbeddedControllerMode();
                 boolean loadingState = playState == VideoView.STATE_PREPARING
                         || playState == VideoView.STATE_BUFFERING;
-                if (!loadingState) {
-                    stopBufferingProgressMonitor();
+                boolean holdSeekOverlay = seekBufferingPending
+                        && System.currentTimeMillis() - seekBufferingStartedAtMs
+                        < SEEK_BUFFER_MIN_VISIBLE_MS;
+                if (!loadingState && !holdSeekOverlay) {
+                    finishSeekBufferingOverlay();
                 }
                 if (playState == VideoView.STATE_PLAYING) {
                     playbackRenderedFirstFrame = true;
                     cancelPlayTimeout();
-                    hideTipSafe();
+                    if (holdSeekOverlay) {
+                        showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
+                                VideoView.STATE_BUFFERING,
+                                PlaybackBufferProgressPolicy.displayPercent(
+                                        mVideoView.getBufferedPercentage()),
+                                PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
+                        if (mHandler != null) {
+                            mHandler.removeCallbacks(seekBufferingFinishRunnable);
+                            mHandler.postDelayed(seekBufferingFinishRunnable,
+                                    SEEK_BUFFER_MIN_VISIBLE_MS
+                                            - (System.currentTimeMillis() - seekBufferingStartedAtMs));
+                        }
+                    } else {
+                        hideTipSafe();
+                    }
                     syncHdrWindowForCurrentPlayback("fragment-state-" + playState);
                     if (!resumePendingSubtitleInitWhenPlaybackReady(playState)) {
                         scheduleSubtitleInitRetry(currentPlayGeneration(), 0);
@@ -728,6 +760,11 @@ public class PlayFragment extends BaseLazyFragment {
             }
         });
         mController.setListener(new VodController.VodControlListener() {
+            @Override
+            public void onSeekCommitted() {
+                beginSeekBufferingOverlay();
+            }
+
             @Override
             public void playNext(boolean rmProgress) {
                 LOG.i("echo-play-next request auto=" + rmProgress
@@ -1353,6 +1390,29 @@ public class PlayFragment extends BaseLazyFragment {
                 + " count=" + (trackInfo == null ? 0 : trackInfo.getSubtitle().size()));
     }
 
+    private void beginSeekBufferingOverlay() {
+        if (mVideoView == null || mHandler == null) {
+            return;
+        }
+        seekBufferingPending = true;
+        seekBufferingStartedAtMs = System.currentTimeMillis();
+        startBufferingProgressMonitor(VideoView.STATE_BUFFERING);
+        showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
+                VideoView.STATE_BUFFERING,
+                PlaybackBufferProgressPolicy.displayPercent(mVideoView.getBufferedPercentage()),
+                PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
+        mHandler.removeCallbacks(seekBufferingFinishRunnable);
+    }
+
+    private void finishSeekBufferingOverlay() {
+        seekBufferingPending = false;
+        seekBufferingStartedAtMs = 0L;
+        if (mHandler != null) {
+            mHandler.removeCallbacks(seekBufferingFinishRunnable);
+        }
+        stopBufferingProgressMonitor();
+    }
+
     private boolean startBufferingProgressMonitor(int playState) {
         int generation = currentPlayGeneration();
         if (bufferingProgressMonitorActive
@@ -1391,16 +1451,24 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private void pollBufferingProgress() {
+        long now = System.currentTimeMillis();
+        boolean nativeLoading = mVideoView != null
+                && PlaybackBufferProgressPolicy.isLoadingState(mVideoView.getCurrentPlayState());
+        boolean holdSeekOverlay = seekBufferingPending
+                && now - seekBufferingStartedAtMs < SEEK_BUFFER_MIN_VISIBLE_MS;
         if (!bufferingProgressMonitorActive
                 || mHandler == null
                 || mVideoView == null
                 || !isCurrentPlayGeneration(bufferingProgressGeneration)
-                || (mVideoView.getCurrentPlayState() != VideoView.STATE_PREPARING
-                && mVideoView.getCurrentPlayState() != VideoView.STATE_BUFFERING)) {
-            stopBufferingProgressMonitor();
+                || (!nativeLoading && !holdSeekOverlay)) {
+            if (seekBufferingPending) {
+                finishSeekBufferingOverlay();
+            } else {
+                stopBufferingProgressMonitor();
+            }
             return;
         }
-        int playState = mVideoView.getCurrentPlayState();
+        int playState = nativeLoading ? mVideoView.getCurrentPlayState() : VideoView.STATE_BUFFERING;
         int rawPercent = mVideoView.getBufferedPercentage();
         int percent = PlaybackBufferProgressPolicy.displayPercent(rawPercent);
         int watchdogPercent = PlaybackBufferProgressPolicy.clampPercent(rawPercent);
@@ -1421,7 +1489,7 @@ public class PlayFragment extends BaseLazyFragment {
         } else {
             hideTipSafe();
         }
-        long now = System.currentTimeMillis();
+        now = System.currentTimeMillis();
         // Track when the current native buffering episode began so the outer safety-net can treat
         // sustained native buffering as liveness (bounded by an absolute ceiling) instead of
         // killing a healthy player whose byte-count-driven percent has merely plateaued.

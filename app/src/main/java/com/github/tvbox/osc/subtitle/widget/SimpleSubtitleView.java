@@ -79,7 +79,7 @@ public class SimpleSubtitleView extends TextView
     private boolean hdrSubtitleMode = false;
     private static final int DEFAULT_SUBTITLE_COLOR = Color.WHITE;
     /** A single neutral HDR caption tone shared by text and bitmap subtitles. */
-    private static final int HDR_SUBTITLE_TONE = 192;
+    private static final int HDR_SUBTITLE_TONE = 224;
     private int requestedTextColor = DEFAULT_SUBTITLE_COLOR;
     private String lastRawSubtitleText = EMPTY_TEXT;
 
