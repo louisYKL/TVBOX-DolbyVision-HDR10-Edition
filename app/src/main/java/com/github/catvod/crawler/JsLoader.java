@@ -121,8 +121,8 @@ public class JsLoader {
                 }
             }
             prepareDexJarForLoad(cache);
-            StorageBudgetManager.trimCaches();
             loadClassLoader(cache.getAbsolutePath(), key);
+            StorageBudgetManager.trimCaches();
             return classes.get(key);
         } catch (Throwable e) {
             e.printStackTrace();

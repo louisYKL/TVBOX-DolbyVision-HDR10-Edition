@@ -408,7 +408,6 @@ public class ApiConfig {
                             }
                             fos.flush();
                             prepareDexJarForLoad(cache);
-                            StorageBudgetManager.trimCaches();
                         } catch (IOException e) {
                             return null;
                         }
@@ -421,6 +420,7 @@ public class ApiConfig {
                         if (file != null && file.exists()) {
                             try {
                                 if (jarLoader.load(file.getAbsolutePath())) {
+                                    StorageBudgetManager.trimCaches();
                                     LOG.i("echo---load-jar-success");
                                     callback.success();
                                 } else {
