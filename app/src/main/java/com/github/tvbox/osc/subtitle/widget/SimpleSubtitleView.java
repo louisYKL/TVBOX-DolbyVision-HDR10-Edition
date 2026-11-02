@@ -78,8 +78,8 @@ public class SimpleSubtitleView extends TextView
     private TextView backGroundText = null;//用于描边的TextView
     private boolean hdrSubtitleMode = false;
     private static final int DEFAULT_SUBTITLE_COLOR = Color.WHITE;
-    private static final float HDR_SUBTITLE_SCALE = 0.92f;
-    private static final int HDR_SUBTITLE_PEAK = 232;
+    /** A single neutral HDR caption tone shared by text and bitmap subtitles. */
+    private static final int HDR_SUBTITLE_TONE = 232;
     private int requestedTextColor = DEFAULT_SUBTITLE_COLOR;
     private String lastRawSubtitleText = EMPTY_TEXT;
 
@@ -309,17 +309,10 @@ public class SimpleSubtitleView extends TextView
     }
 
     private int dimForHdr(int color) {
-        // Keep HDR captions below peak white while retaining enough luminance for
-        // comfortable reading on panels that already apply HDR tone mapping.
-        int red = Math.round(Color.red(color) * HDR_SUBTITLE_SCALE);
-        int green = Math.round(Color.green(color) * HDR_SUBTITLE_SCALE);
-        int blue = Math.round(Color.blue(color) * HDR_SUBTITLE_SCALE);
-        int max = Math.max(red, Math.max(green, blue));
-        if (max <= HDR_SUBTITLE_PEAK) {
-            return Color.rgb(red, green, blue);
-        }
-        float scale = (float) HDR_SUBTITLE_PEAK / max;
-        return Color.rgb(Math.round(red * scale), Math.round(green * scale), Math.round(blue * scale));
+        // HDR10, HDR10+, HLG and Dolby Vision use one neutral tone regardless of
+        // the source subtitle's ASS/HTML color. This keeps peak luminance and
+        // perceived color consistent across text and bitmap subtitle tracks.
+        return Color.rgb(HDR_SUBTITLE_TONE, HDR_SUBTITLE_TONE, HDR_SUBTITLE_TONE);
     }
 
     private int opaque(int color) {

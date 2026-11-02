@@ -360,6 +360,25 @@
         </LinearLayout>
     </LinearLayout>
 
+    <TextView
+        android:id="@+id/hdr_status_badge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="@dimen/vs_24"
+        android:layout_marginEnd="@dimen/vs_24"
+        android:background="@drawable/bg_apple_tv_overlay"
+        android:includeFontPadding="false"
+        android:paddingStart="@dimen/vs_12"
+        android:paddingTop="@dimen/vs_6"
+        android:paddingEnd="@dimen/vs_12"
+        android:paddingBottom="@dimen/vs_6"
+        android:text="SDR"
+        android:textColor="@color/apple_tv_text_primary"
+        android:textSize="@dimen/ts_18"
+        android:visibility="gone"
+        tools:visibility="visible" />
+
     <FrameLayout
         android:id="@+id/tv_pause_container"
         android:layout_width="match_parent"

@@ -948,13 +948,27 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         // Read individual container metadata entries. HEVC Main10 and BT.2020
         // alone are not HDR evidence because both are also valid for SDR video.
         String metadataText = SystemCodecHdrPolicy.metadataText(format.metadata);
+        String formatDump;
+        try {
+            formatDump = format.toString();
+        } catch (Throwable ignored) {
+            formatDump = "";
+        }
+        if (!TextUtils.isEmpty(formatDump)) {
+            metadataText = TextUtils.isEmpty(metadataText)
+                    ? formatDump : metadataText + " " + formatDump;
+        }
         boolean dolbyVision = SystemCodecHdrPolicy.isDolbyVision(
                 sampleMimeType, codecs, metadataText);
         boolean hdrCodecMarker = SystemCodecHdrPolicy.hasExplicitHdrMarker(codecs)
                 || SystemCodecHdrPolicy.hasExplicitHdrMarker(metadataText);
         lastRuntimeDolbyVision = dolbyVision;
+        // Use the complete ExoPlayer Format as well as the explicit fields. On
+        // several phone extractors PQ/HLG is present only in Format.toString(),
+        // so relying on ColorInfo alone leaves HDR10/HDR10+ on the SDR path.
         lastRuntimeHdr = SystemCodecHdrPolicy.isHdr(
-                sampleMimeType, codecs, colorInfo, metadataText);
+                sampleMimeType, codecs, colorInfo, metadataText)
+                || SystemCodecHdrPolicy.isHdr(format);
         lastRuntimeOutputMode = dolbyVision
                 ? (nativeDolbyVisionCapable ? "native-dv" : "dv-base-hdr")
                 : (lastRuntimeHdr ? "base-hdr" : "sdr");

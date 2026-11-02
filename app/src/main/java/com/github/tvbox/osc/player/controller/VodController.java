@@ -111,11 +111,13 @@ public class VodController extends BaseController {
                     case 1002: { // 显示底部菜单
                         if (!isPlayerFullScreen()) {
                             mBottomRoot.setVisibility(GONE);
+                            updateHdrStatusBadgeVisibility(false);
                             updateBottomMenuFocusMode(false);
                             applyEmbeddedPreviewMode();
                             break;
                         }
                         mBottomRoot.setVisibility(VISIBLE);
+                        updateHdrStatusBadgeVisibility(true);
                         mTopContainer.setVisibility(isPlayerFullScreen() ? GONE : VISIBLE);
                         mTopRoot1.setVisibility(isPlayerFullScreen() ? GONE : VISIBLE);
                         mTopRoot2.setVisibility(isPlayerFullScreen() ? GONE : VISIBLE);
@@ -133,6 +135,7 @@ public class VodController extends BaseController {
                     }
                     case 1003: { // 隐藏底部菜单
                         mBottomRoot.setVisibility(GONE);
+                        updateHdrStatusBadgeVisibility(false);
                         mTopContainer.setVisibility(GONE);
                         mTopRoot1.setVisibility(GONE);
                         mTopRoot2.setVisibility(GONE);
@@ -196,6 +199,7 @@ public class VodController extends BaseController {
     public TextView mPlayerTimeResetBtn;
     TextView mPlayPauseTime;
     TextView mPlayLoadNetSpeed;
+    TextView mHdrStatusBadge;
     TextView mVideoSize;
     public SimpleSubtitleView mSubtitleView;
     public com.google.android.exoplayer2.ui.SubtitleView mBitmapSubtitleView;
@@ -245,6 +249,21 @@ public class VodController extends BaseController {
         applyHdrUiAlpha(mTopRoot2, alpha);
         applyHdrUiAlpha(mProgressRoot, alpha);
         applyHdrUiAlpha(mParseRoot, alpha);
+        applyHdrUiAlpha(mHdrStatusBadge, alpha);
+    }
+
+    @Override
+    public void setHdrMode(boolean hdrMode) {
+        super.setHdrMode(hdrMode);
+        if (mHdrStatusBadge != null) {
+            mHdrStatusBadge.setText(hdrMode ? "HDR" : "SDR");
+        }
+    }
+
+    private void updateHdrStatusBadgeVisibility(boolean visible) {
+        if (mHdrStatusBadge != null) {
+            mHdrStatusBadge.setVisibility(visible && isPlayerFullScreen() ? VISIBLE : GONE);
+        }
     }
 
     private static void applyHdrUiAlpha(View view, float alpha) {
@@ -321,6 +340,7 @@ public class VodController extends BaseController {
         mPlayerTimeResetBtn = findViewById(R.id.play_time_reset);
         mPlayPauseTime = findViewById(R.id.tv_sys_time);
         mPlayLoadNetSpeed = findViewById(R.id.tv_play_load_net_speed);
+        mHdrStatusBadge = findViewById(R.id.hdr_status_badge);
         mVideoSize = findViewById(R.id.tv_videosize);
         mSubtitleView = findViewById(R.id.subtitle_view);
         mBitmapSubtitleView = findViewById(R.id.bitmap_subtitle_view);
@@ -1307,6 +1327,7 @@ public class VodController extends BaseController {
         if (mBottomRoot != null) {
             mBottomRoot.setVisibility(GONE);
         }
+        updateHdrStatusBadgeVisibility(false);
         if (mTopContainer != null) {
             mTopContainer.setVisibility(GONE);
         }

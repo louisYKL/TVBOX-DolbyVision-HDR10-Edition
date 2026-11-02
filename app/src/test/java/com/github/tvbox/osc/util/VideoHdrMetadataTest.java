@@ -28,4 +28,18 @@ public class VideoHdrMetadataTest {
         assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("dvhe.08.06"));
         assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("Dolby Vision profile 7"));
     }
+
+    @Test
+    public void transferMarkerMustBeExplicit() {
+        assertFalse(VideoStreamProbe.containsHdr10TextMarker("color-transfer=3 BT.2020 Main10"));
+        assertTrue(VideoStreamProbe.containsHdr10TextMarker("transfer=hlg"));
+    }
+
+    @Test
+    public void hlsDynamicRangeMarkersAreRecognized() {
+        assertTrue(VideoStreamProbe.containsHlsDynamicRangeMarker("VIDEO-RANGE=PQ"));
+        assertTrue(VideoStreamProbe.containsHlsDynamicRangeMarker("VIDEO-RANGE=HLG"));
+        assertTrue(VideoStreamProbe.containsHlsDynamicRangeMarker("transfer=smpte-st-2084"));
+        assertFalse(VideoStreamProbe.containsHlsDynamicRangeMarker("VIDEO-RANGE=SDR"));
+    }
 }

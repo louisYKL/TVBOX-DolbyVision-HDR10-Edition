@@ -520,6 +520,10 @@ public class DetailActivity extends BaseActivity {
             return;
         }
         topLayout.setOrientation(LinearLayout.HORIZONTAL);
+        topLayout.setClipChildren(false);
+        topLayout.setClipToPadding(false);
+        detailInfoColumn.setClipChildren(false);
+        detailInfoColumn.setClipToPadding(false);
         ViewGroup.LayoutParams posterParams = mediaColumn.getLayoutParams();
         int screenWidth = getResources().getDisplayMetrics().widthPixels;
         int screenHeight = getResources().getDisplayMetrics().heightPixels;
@@ -528,12 +532,22 @@ public class DetailActivity extends BaseActivity {
         mediaColumn.setLayoutParams(posterParams);
         LinearLayout.LayoutParams infoParams = (LinearLayout.LayoutParams) detailInfoColumn.getLayoutParams();
         infoParams.width = 0;
-        infoParams.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        // The java64 touch layout gives the top panel a weighted height and
+        // the info column fills that panel. Using wrap_content here lets the
+        // description/actions extend past the weighted panel and be clipped
+        // by its parent. Keep the original match-parent contract for that
+        // layout, while retaining wrap-content for the main TV layout.
+        LinearLayout.LayoutParams topParams = (LinearLayout.LayoutParams) topLayout.getLayoutParams();
+        infoParams.height = topParams.height == 0 && topParams.weight > 0f
+                ? ViewGroup.LayoutParams.MATCH_PARENT
+                : ViewGroup.LayoutParams.WRAP_CONTENT;
         infoParams.weight = 1f;
         detailInfoColumn.setLayoutParams(infoParams);
         if (detailActionsRow != null) {
-            int buttonWidth = Math.max(1, Math.round(screenWidth * 0.155f));
             int buttonHeight = Math.max(1, Math.round(screenHeight * 0.085f));
+            detailActionsRow.setVisibility(View.VISIBLE);
+            detailActionsRow.setClipChildren(false);
+            detailActionsRow.setClipToPadding(false);
             int[] buttonIds = {R.id.tvPlay, R.id.tvQuickSearch, R.id.tvDesc, R.id.tvCollect};
             for (int id : buttonIds) {
                 View button = detailActionsRow.findViewById(id);
@@ -541,8 +555,12 @@ public class DetailActivity extends BaseActivity {
                     continue;
                 }
                 LinearLayout.LayoutParams buttonParams = (LinearLayout.LayoutParams) button.getLayoutParams();
-                buttonParams.width = buttonWidth;
+                // Let the row divide its measured width evenly. Fixed pixel widths
+                // combined with the XML weight caused the rightmost controls to be
+                // laid out beyond the info column on portrait and split-screen phones.
+                buttonParams.width = 0;
                 buttonParams.height = buttonHeight;
+                buttonParams.weight = 1f;
                 button.setLayoutParams(buttonParams);
             }
         }

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.9.3
+
+### 中文
+
+- 修复手机和小屏设备视频详情页右上角简介/操作按钮被遮挡或裁切的问题，按钮现在会在可用宽度内均分布局。
+- HDR 预检扩展到所有三端，识别 HDR10、HDR10+、HLG、静态 HDR 元数据、杜比视界，以及厂商丢失 transfer 字段时的 HEVC Main10/BT.2020 HDR 轨道；带保存进度的视频在恢复播放前先请求 HDR 窗口模式。
+- HDR 文本字幕和位图字幕统一为中性灰色（RGB 232），不再因 ASS/HTML 字体颜色或 Dolby Vision/HDR10 类型不同而出现亮度和颜色差异；SDR 字幕保持原设置。
+- 底部播放菜单显示期间，在右上角显示 `HDR` 或 `SDR` 角标；菜单隐藏、退出全屏或回到嵌入式预览时角标同步消失。
+- 三端版本统一为 `0.2.9.3`、`versionCode 2093`，沿用 `0.2.9.2` 的签名证书，支持覆盖安装。
+
+### English
+
+- Fixed clipped or covered description/action buttons in the upper-right area of phone and small-screen detail pages; the action row now divides its available width evenly.
+- Extended HDR preflight to all three variants. HDR10, HDR10+, HLG, static HDR metadata, Dolby Vision, and vendor tracks that expose HEVC Main10/BT.2020 with an unspecified transfer are classified before playback; saved-progress playback requests HDR before resume.
+- Text and bitmap subtitles use one neutral HDR tone (RGB 232) across Dolby Vision, HDR10, HDR10+, and HLG. SDR subtitles retain their configured color.
+- While the bottom playback menu is visible, the upper-right badge shows `HDR` or `SDR`; it disappears with the menu, on fullscreen exit, or in embedded preview.
+- Unified all three variants under `0.2.9.3` with `versionCode 2093`, retaining the `0.2.9.2` signing certificate for in-place updates.
+
 ## 0.2.9.2
 
 ### 中文

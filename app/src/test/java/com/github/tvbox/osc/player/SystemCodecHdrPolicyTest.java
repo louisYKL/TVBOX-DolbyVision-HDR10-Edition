@@ -1,6 +1,7 @@
 package com.github.tvbox.osc.player;
 
 import com.google.android.exoplayer2.C;
+import com.google.android.exoplayer2.Format;
 import com.google.android.exoplayer2.metadata.Metadata;
 import com.google.android.exoplayer2.metadata.id3.TextInformationFrame;
 import com.google.android.exoplayer2.video.ColorInfo;
@@ -22,6 +23,14 @@ public class SystemCodecHdrPolicyTest {
         ColorInfo colorInfo = new ColorInfo(
                 C.COLOR_SPACE_BT2020, C.COLOR_RANGE_LIMITED, C.COLOR_TRANSFER_SDR, null);
         assertFalse(SystemCodecHdrPolicy.isHdr(
+                "video/hevc", "hvc1.2.4.L153.B0", colorInfo, ""));
+    }
+
+    @Test
+    public void main10Bt2020WithUnknownTransferPromotesHdr() {
+        ColorInfo colorInfo = new ColorInfo(
+                C.COLOR_SPACE_BT2020, C.COLOR_RANGE_LIMITED, -1, null);
+        assertTrue(SystemCodecHdrPolicy.isHdr(
                 "video/hevc", "hvc1.2.4.L153.B0", colorInfo, ""));
     }
 
@@ -72,5 +81,15 @@ public class SystemCodecHdrPolicyTest {
                 "video/dolby-vision", "dvhe.08.06", ""));
         assertTrue(SystemCodecHdrPolicy.isHdr(
                 "video/dolby-vision", "dvhe.08.06", null, ""));
+    }
+
+    @Test
+    public void formatIdVideoRangePromotesHdrWithoutColorInfo() {
+        Format format = new Format.Builder()
+                .setId("video-range=pq")
+                .setSampleMimeType("video/hevc")
+                .setCodecs("hvc1.1.6.L120.B0")
+                .build();
+        assertTrue(SystemCodecHdrPolicy.isHdr(format));
     }
 }

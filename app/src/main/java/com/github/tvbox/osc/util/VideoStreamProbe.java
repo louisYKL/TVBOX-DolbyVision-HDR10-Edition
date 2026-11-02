@@ -340,7 +340,9 @@ public final class VideoStreamProbe {
     private static Result probeExtractorResult(Context context, String url, Map<String, String> headers) {
         HttpRangeMediaDataSource rangeDataSource = null;
         MediaExtractor extractor = new MediaExtractor();
+        HlsDynamicRange hlsDynamicRange = HlsDynamicRange.EMPTY;
         try {
+            hlsDynamicRange = probeHlsDynamicRange(url, headers, 0);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                     && shouldUseRangeBackedExtractor(context, url)) {
                 rangeDataSource = new HttpRangeMediaDataSource(url, headers);
@@ -354,8 +356,8 @@ public final class VideoStreamProbe {
             int trackCount = extractor.getTrackCount();
             boolean sawVideo = false;
             boolean sawDolbyVision = false;
-            boolean sawHdr10 = false;
-            boolean sawHdr10Plus = false;
+            boolean sawHdr10 = hlsDynamicRange.hdr10;
+            boolean sawHdr10Plus = hlsDynamicRange.hdr10Plus;
             boolean hdr10BaseLayerDetected = false;
             int detectedDolbyVisionProfile = -1;
             String primaryVideoMime = null;
@@ -435,7 +437,9 @@ public final class VideoStreamProbe {
                 hasAvcVideo = hasAvcVideo || containsAvcCodecMarker(combined);
                 hasHevcVideo = hasHevcVideo || containsHevcCodecTextMarker(combined);
                 boolean hdr10Plus = containsHdr10PlusTextMarker(combined);
-                boolean hdr10 = containsHdr10TextMarker(combined) || hasHdrColorFormat(format);
+                boolean hdr10 = containsHdr10TextMarker(combined)
+                        || hasHdrColorFormat(format)
+                        || hasMain10Bt2020WithoutTransfer(format, normalizedMime, codecString);
                 int dvProfile = extractDolbyVisionProfile(combined);
                 if (dvProfile > 0) {
                     detectedDolbyVisionProfile = dvProfile;
@@ -501,6 +505,9 @@ public final class VideoStreamProbe {
                         TextUtils.isEmpty(hdrSummary) ? null : hdrSummary,
                         byteResult == null ? null : byteResult.summary,
                         byteProbeMatroska ? "matroska-container" : "video-track-no-hdr");
+                if (hlsDynamicRange.hasEvidence()) {
+                    summary = summary + " + " + hlsDynamicRange.summary;
+                }
                 return new Result(true, hasDolbyVision, hasHdr10, hasHdr10Plus, byteProbeMatroska,
                         dvProfile, hdr10BaseLayer,
                         primaryVideoMime, primaryAudioMime,
@@ -510,14 +517,35 @@ public final class VideoStreamProbe {
                         mergedSubtitleTracks,
                         summary);
             }
+            if (hlsDynamicRange.hasEvidence()) {
+                return new Result(true, false, hlsDynamicRange.hdr10,
+                        hlsDynamicRange.hdr10Plus, false, -1, false,
+                        "video/unknown", null, false, false,
+                        false, false, false, false, false, 0, null,
+                        hlsDynamicRange.summary);
+            }
             return Result.unknown("no-video-track");
         } catch (Throwable th) {
             if (th instanceof android.os.NetworkOnMainThreadException) {
+                if (hlsDynamicRange.hasEvidence()) {
+                    return new Result(true, false, hlsDynamicRange.hdr10,
+                            hlsDynamicRange.hdr10Plus, false, -1, false,
+                            "video/unknown", null, false, false,
+                            false, false, false, false, false, 0, null,
+                            hlsDynamicRange.summary + " + extractor-NetworkOnMainThread");
+                }
                 return Result.unknown("extractor-NetworkOnMainThread");
             }
             Result byteResult = probeContainerBytes(url, headers, "extractor-error-" + th.getClass().getSimpleName(), PROBE_BYTES, true);
             if (byteResult != null && byteResult.probed) {
                 return byteResult;
+            }
+            if (hlsDynamicRange.hasEvidence()) {
+                return new Result(true, false, hlsDynamicRange.hdr10,
+                        hlsDynamicRange.hdr10Plus, false, -1, false,
+                        "video/unknown", null, false, false,
+                        false, false, false, false, false, 0, null,
+                        hlsDynamicRange.summary + " + extractor-" + th.getClass().getSimpleName());
             }
             return Result.unknown("extractor-" + th.getClass().getSimpleName());
         } finally {
@@ -1218,6 +1246,62 @@ public final class VideoStreamProbe {
         return Result.unknown("hls-avc-profile-no-sps");
     }
 
+    /**
+     * HLS can carry dynamic range in the playlist rather than in the first
+     * media segment. Android's MediaExtractor often drops VIDEO-RANGE, so read
+     * the bounded playlist metadata before asking the extractor for tracks.
+     */
+    private static HlsDynamicRange probeHlsDynamicRange(String url,
+                                                         Map<String, String> headers,
+                                                         int depth) {
+        if (TextUtils.isEmpty(url) || !PlaybackUrlNormalizer.isHlsLike(url) || depth > 1) {
+            return HlsDynamicRange.EMPTY;
+        }
+        try {
+            byte[] playlistBytes = readUrlLimited(url, headers, HLS_PLAYLIST_PROBE_BYTES);
+            String playlist = new String(playlistBytes, StandardCharsets.UTF_8);
+            String lower = playlist.toLowerCase(Locale.US);
+            boolean hdr10 = containsHlsDynamicRangeMarker(lower);
+            boolean hdr10Plus = containsHdr10PlusTextMarker(lower);
+            HlsDynamicRange nested = HlsDynamicRange.EMPTY;
+            String variantUrl = findFirstHlsVariantUrl(url, playlist);
+            if (!TextUtils.isEmpty(variantUrl) && depth < 1) {
+                nested = probeHlsDynamicRange(variantUrl, headers, depth + 1);
+                hdr10 = hdr10 || nested.hdr10;
+                hdr10Plus = hdr10Plus || nested.hdr10Plus;
+            }
+            if (!hdr10 && !hdr10Plus) {
+                return HlsDynamicRange.EMPTY;
+            }
+            String summary = "hls-playlist-hdr"
+                    + (hdr10Plus ? "10+" : "10")
+                    + (nested.hasEvidence() ? "+variant" : "");
+            return new HlsDynamicRange(hdr10, hdr10Plus, summary);
+        } catch (Throwable ignored) {
+            return HlsDynamicRange.EMPTY;
+        }
+    }
+
+    static boolean containsHlsDynamicRangeMarker(String lowerPlaylist) {
+        if (TextUtils.isEmpty(lowerPlaylist)) {
+            return false;
+        }
+        lowerPlaylist = lowerPlaylist.toLowerCase(Locale.US);
+        // HLS uses VIDEO-RANGE on EXT-X-STREAM-INF rather than exposing
+        // Android MediaFormat color-transfer fields. PQ and HLG are both HDR
+        // output modes; accept the equivalent transfer spellings too.
+        return containsHdr10TextMarker(lowerPlaylist)
+                || lowerPlaylist.contains("video-range=pq")
+                || lowerPlaylist.contains("video_range=pq")
+                || lowerPlaylist.contains("video-range=hlg")
+                || lowerPlaylist.contains("video_range=hlg")
+                || lowerPlaylist.contains("video-range=hdr")
+                || lowerPlaylist.contains("video_range=hdr")
+                || lowerPlaylist.contains("transfer=pq")
+                || lowerPlaylist.contains("transfer=hlg")
+                || lowerPlaylist.contains("smpte-st-2084");
+    }
+
     private static byte[] readUrlLimited(String url, Map<String, String> headers, int maxBytes) throws Exception {
         Request.Builder builder = new Request.Builder()
                 .url(url)
@@ -1716,10 +1800,25 @@ public final class VideoStreamProbe {
                 || lower.contains("color-transfer=7")
                 || lower.contains("color_transfer=6")
                 || lower.contains("color_transfer=7")
+                || lower.contains("colortransfer=6")
+                || lower.contains("colortransfer=7")
+                || lower.contains("transfer=6")
+                || lower.contains("transfer=7")
+                || lower.contains("transfer:6")
+                || lower.contains("transfer:7")
                 || lower.contains("transfer=st2084")
                 || lower.contains("transfer=smpte2084")
+                || lower.contains("transfer=smpte-st-2084")
+                || lower.contains("transfer=pq")
                 || lower.contains("transfer=hlg")
                 || lower.contains("transfer:hlg")
+                || lower.contains("video-range=pq")
+                || lower.contains("video-range=hlg")
+                || lower.contains("video_range=pq")
+                || lower.contains("video_range=hlg")
+                || lower.contains("video range=pq")
+                || lower.contains("video range=hlg")
+                || lower.contains("smpte-st-2084")
                 || lower.contains("hdr-static-info");
     }
 
@@ -1745,6 +1844,27 @@ public final class VideoStreamProbe {
         }
         int transfer = safeGetInteger(format, "color-transfer", -1);
         return transfer == 6 || transfer == 7;
+    }
+
+    /**
+     * A few Android extractors expose a 10-bit BT.2020 video track but leave
+     * color-transfer unspecified. Keep explicit SDR transfer on the SDR path,
+     * while treating this otherwise-unclassified HDR10 shape as HDR.
+     */
+    private static boolean hasMain10Bt2020WithoutTransfer(MediaFormat format,
+                                                            String normalizedMime,
+                                                            String codecString) {
+        if (format == null || !"video/hevc".equals(normalizedMime)) {
+            return false;
+        }
+        int transfer = safeGetInteger(format, MediaFormat.KEY_COLOR_TRANSFER, -1);
+        int standard = safeGetInteger(format, MediaFormat.KEY_COLOR_STANDARD, -1);
+        if (transfer != -1 || standard != MediaFormat.COLOR_STANDARD_BT2020) {
+            return false;
+        }
+        int profile = safeGetInteger(format, MediaFormat.KEY_PROFILE, -1);
+        String lowerCodec = codecString == null ? "" : codecString.toLowerCase(Locale.US);
+        return profile == 2 || lowerCodec.startsWith("hvc1.2.") || lowerCodec.startsWith("hev1.2.");
     }
 
     private static int safeGetInteger(MediaFormat format, String key, int fallback) {
@@ -3565,6 +3685,23 @@ public final class VideoStreamProbe {
         return lower.contains("atmos")
                 || lower.contains("dolby atmos")
                 || lower.contains("joc");
+    }
+
+    private static final class HlsDynamicRange {
+        private static final HlsDynamicRange EMPTY = new HlsDynamicRange(false, false, "");
+        private final boolean hdr10;
+        private final boolean hdr10Plus;
+        private final String summary;
+
+        private HlsDynamicRange(boolean hdr10, boolean hdr10Plus, String summary) {
+            this.hdr10 = hdr10;
+            this.hdr10Plus = hdr10Plus;
+            this.summary = summary == null ? "" : summary;
+        }
+
+        private boolean hasEvidence() {
+            return hdr10 || hdr10Plus;
+        }
     }
 
     public static final class Result {
