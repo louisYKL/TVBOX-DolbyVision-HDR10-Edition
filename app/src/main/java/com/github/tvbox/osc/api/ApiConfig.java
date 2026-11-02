@@ -29,6 +29,7 @@ import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.M3u8;
 import com.github.tvbox.osc.util.MD5;
 import com.github.tvbox.osc.util.OkGoHelper;
+import com.github.tvbox.osc.util.StorageBudgetManager;
 import com.github.tvbox.osc.util.VideoParseRuler;
 import com.github.tvbox.osc.util.live.TxtSubscribe;
 import com.google.gson.Gson;
@@ -87,6 +88,32 @@ public class ApiConfig {
     private final String requestAccept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9";
 
     private static final String DEFAULT_LIVE_OBJ_TEMPLATE = "{\"lives\":[{\"name\":\"txt_m3u\",\"type\":0,\"url\":\"txt_m3u_url\"}]}";
+
+    /**
+     * Keep network/configuration artifacts in the app cache tree so the shared
+     * storage budget can rotate them. Older releases wrote these files directly
+     * under filesDir; those paths remain read-compatible for one-way migration.
+     */
+    private static File apiCacheFile(String name) {
+        File dir = new File(App.getInstance().getCacheDir(), "api");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        return new File(dir, name);
+    }
+
+    private static File legacyFilesCacheFile(String name) {
+        return new File(App.getInstance().getFilesDir(), name);
+    }
+
+    private static File readableCacheFile(String name) {
+        File current = apiCacheFile(name);
+        if (current.exists()) {
+            return current;
+        }
+        File legacy = legacyFilesCacheFile(name);
+        return legacy.exists() ? legacy : current;
+    }
     private ApiConfig() {
         clearLoader();
         sourceBeanList = new LinkedHashMap<>();
@@ -185,11 +212,12 @@ public class ApiConfig {
                 initLiveSettings();
                 parseLiveJson(liveApiUrl, wrapDirectLiveConfig(liveApiConfigUrl));
             }else {
-                File live_cache = new File(App.getInstance().getFilesDir().getAbsolutePath() + "/" + MD5.encode(liveApiUrl));
+                final File live_cache = apiCacheFile(MD5.encode(liveApiUrl));
+                final File live_read_cache = readableCacheFile(MD5.encode(liveApiUrl));
                 LOG.i("echo-加载独立直播");
-                if (useCache && live_cache.exists()) {
+                if (useCache && live_read_cache.exists()) {
                     try {
-                        parseLiveJson(liveApiUrl, live_cache);
+                        parseLiveJson(liveApiUrl, live_read_cache);
                     } catch (Throwable th) {
                         th.printStackTrace();
                     }
@@ -214,9 +242,9 @@ public class ApiConfig {
                                 @Override
                                 public void onError(Response<String> response) {
                                     super.onError(response);
-                                    if (live_cache.exists()) {
+                                    if (live_read_cache.exists()) {
                                         try {
-                                            parseLiveJson(liveApiUrl, live_cache);
+                                            parseLiveJson(liveApiUrl, live_read_cache);
                                             callback.success();
                                             return;
                                         } catch (Throwable th) {
@@ -249,10 +277,11 @@ public class ApiConfig {
             callback.error("-1");
             return;
         }
-        File cache = new File(App.getInstance().getFilesDir().getAbsolutePath() + "/" + MD5.encode(apiUrl));
-        if (useCache && cache.exists()) {
+        final File cache = apiCacheFile(MD5.encode(apiUrl));
+        final File readableCache = readableCacheFile(MD5.encode(apiUrl));
+        if (useCache && readableCache.exists()) {
             try {
-                parseJson(apiUrl, cache);
+                parseJson(apiUrl, readableCache);
                 callback.success();
                 return;
             } catch (Throwable th) {
@@ -261,7 +290,7 @@ public class ApiConfig {
         }
         String configUrl=configUrl(apiUrl);
         // 使用内部存储，将当前配置地址写入到应用的私有目录中
-        File configUrlFile = new File(App.getInstance().getFilesDir().getAbsolutePath() + "/config_url");
+        File configUrlFile = apiCacheFile("config_url");
         FileUtils.saveCache(configUrlFile,configUrl);
 
         OkGo.<String>get(configUrl)
@@ -285,9 +314,9 @@ public class ApiConfig {
                     @Override
                     public void onError(Response<String> response) {
                         super.onError(response);
-                        if (cache.exists()) {
+                        if (readableCache.exists()) {
                             try {
-                                parseJson(apiUrl, cache);
+                                parseJson(apiUrl, readableCache);
                                 callback.success();
                                 return;
                             } catch (Throwable th) {
@@ -379,6 +408,7 @@ public class ApiConfig {
                             }
                             fos.flush();
                             prepareDexJarForLoad(cache);
+                            StorageBudgetManager.trimCaches();
                         } catch (IOException e) {
                             return null;
                         }

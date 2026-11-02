@@ -1,15 +1,19 @@
 # Local Build Environment
 
-All Android build dependencies for this project are already vendored under `E:\apk\tvbox\TVBoxOS-main\_runtime`.
+All Android build dependencies and caches for this project are kept under this repository's `_runtime` directory.
 
 Do not re-download SDK, JDK, Gradle, or write build caches to `C:`.
 
-Before touching playback routing or player code, also read `DEBUG_MEMORY.md`.
+Prepare the local runtime once with:
+
+```powershell
+.\setup-local-runtime.ps1
+```
 
 ## Vendored paths
 
-- JDK: `_runtime/jdk/temurin11/jdk-11.0.31+11`
-- Android SDK: `_runtime/android-sdk`
+- JDK: `_runtime/jdk/temurin11/jdk-11.0.32.1+1`
+- Android SDK: `_runtime/android-sdk` (platforms/android-34 and build-tools/34.0.0)
 - Gradle cache/home: `_runtime/gradle-home`
 - Android user home: `_runtime/android-user-home`
 - HOME / USERPROFILE: `_runtime/home`
@@ -44,4 +48,4 @@ into both `_runtime/android-user-home/debug.keystore` and `_runtime/home/.androi
 so signing stays inside the repo.
 
 Do not set `ANDROID_SDK_HOME` together with `ANDROID_USER_HOME`.
-AGP 7.3.3 treats that as an invalid conflicting configuration and aborts before evaluation.
+AGP treats that as an invalid conflicting configuration and aborts before evaluation.

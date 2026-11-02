@@ -223,6 +223,33 @@ public class VodController extends BaseController {
     private boolean pendingResumeConfirm = false;
     private boolean menuNavigationStarted = false;
     private int bottomMenuFocusIndex = -1;
+    private boolean hdrUiDimmed;
+
+    /**
+     * HDR video is mastered for a brighter transfer function than the SDR
+     * controls around it. Keep the controls readable while reducing their
+     * luminance so they do not compete with the HDR picture. This only changes
+     * overlay alpha; it never changes the video surface or device brightness.
+     */
+    public void setHdrUiDimmed(boolean dimmed) {
+        if (hdrUiDimmed == dimmed) {
+            return;
+        }
+        hdrUiDimmed = dimmed;
+        float alpha = dimmed ? 0.72f : 1.0f;
+        applyHdrUiAlpha(mBottomRoot, alpha);
+        applyHdrUiAlpha(mTopContainer, alpha);
+        applyHdrUiAlpha(mTopRoot1, alpha);
+        applyHdrUiAlpha(mTopRoot2, alpha);
+        applyHdrUiAlpha(mProgressRoot, alpha);
+        applyHdrUiAlpha(mParseRoot, alpha);
+    }
+
+    private static void applyHdrUiAlpha(View view, float alpha) {
+        if (view != null) {
+            view.setAlpha(alpha);
+        }
+    }
 
     private final Runnable myRunnable2 = new Runnable() {
         @SuppressLint("SetTextI18n")

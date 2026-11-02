@@ -3,6 +3,7 @@ package com.github.tvbox.osc.player;
 import org.junit.Test;
 
 import java.util.Collections;
+import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -51,5 +52,40 @@ public class SystemPlayerTrackManagerTest {
 
         assertEquals(1, merged.getSubtitle().size());
         assertTrue(merged.getSubtitle().get(0).metadataOnly);
+    }
+
+    @Test
+    public void probeMetadataAddsDistinctLanguageWhenVendorOnlyReportsOneTrack() {
+        TrackInfo runtime = new TrackInfo();
+        TrackInfoBean chinese = new TrackInfoBean();
+        chinese.trackId = 4;
+        chinese.rawLanguage = "chi";
+        chinese.language = "中文字幕";
+        chinese.rawTitle = "Chinese";
+        runtime.addSubtitle(chinese);
+
+        TrackInfoBean duplicateChinese = new TrackInfoBean();
+        duplicateChinese.trackId = 2;
+        duplicateChinese.extractorTrackIndex = 2;
+        duplicateChinese.rawLanguage = "zho";
+        duplicateChinese.rawTitle = "Chinese duplicate";
+        duplicateChinese.rawCodec = "subrip";
+        duplicateChinese.metadataOnly = true;
+
+        TrackInfoBean english = new TrackInfoBean();
+        english.trackId = 3;
+        english.extractorTrackIndex = 3;
+        english.rawLanguage = "eng";
+        english.rawTitle = "English";
+        english.rawCodec = "subrip";
+        english.metadataOnly = true;
+
+        TrackInfo merged = SystemPlayerTrackManager.mergeSubtitleMetadata(
+                runtime, Arrays.asList(duplicateChinese, english));
+
+        assertEquals(2, merged.getSubtitle().size());
+        assertEquals(4, merged.getSubtitle().get(0).trackId);
+        assertEquals(3, merged.getSubtitle().get(1).trackId);
+        assertTrue(merged.getSubtitle().get(1).metadataOnly);
     }
 }

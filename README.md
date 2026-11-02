@@ -5,13 +5,13 @@
 > 为电视而做的 TVBox 分支，重点优化设备硬解、HDR 激发、杜比视界能力路由与大屏交互体验。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.8"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.8-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.9-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.8">下载 0.2.8</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9">下载 0.2.9</a> ·
   <a href="README.en.md">English</a>
 </p>
 
@@ -25,9 +25,9 @@
 
 | 文件 | 适用设备 | 说明 |
 | --- | --- | --- |
-| `TVBox_v0.2.8_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本，可覆盖安装 0.2.7 及更早版本 |
-| `TVBox_v0.2.8_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本，可覆盖安装 0.2.7 及更早版本 |
-| `TVBox_v0.2.8_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本，可覆盖安装 0.2.7 及更早版本 |
+| `TVBox_v0.2.9_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本，可覆盖安装 0.2.8 及更早版本 |
+| `TVBox_v0.2.9_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本，可覆盖安装 0.2.8 及更早版本 |
+| `TVBox_v0.2.9_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本，可覆盖安装 0.2.8 及更早版本 |
 
 ## 项目观感
 
@@ -57,7 +57,7 @@
 - 保持字幕、全屏控制、遥控器焦点和返回逻辑在电视场景下更连贯。
 - 把项目拆成更明确的 32 位电视版、64 位 Android 版和海信 32 位版，便于后续长期维护。
 
-## 0.2.8 当前版本包含
+## 0.2.9 当前版本包含
 
 | 版本 | ABI | 面向设备 | 说明 |
 | --- | --- | --- | --- |
@@ -65,7 +65,7 @@
 | `java64` | `arm64-v8a` | 64 位 Android 手机 / 平板 / 盒子 | 当前 64 位版本 |
 | `hisense` | `armeabi-v7a` | 海信 32 位电视 | 当前海信专用版本 |
 
-## 0.2.8 这次重点修了什么
+## 0.2.9 这次重点修了什么
 
 - 将受控的应用内 `do=m3u8` / `proxyM3u8` 源统一路由到 `go=live&type=m3u8`；播放列表和分片继续走本地受控 HLS 链路。
 - URL 规范化保留嵌套签名地址的原始转义层级，避免 `%2B`、`%25` 等编码被二次解码后失效。
@@ -171,15 +171,15 @@ pyramid/    Python 扩展模块
 
 运行环境：
 
-- Android SDK: `E:\tvbox\TVBoxOS-main\_runtime\android-sdk`
-- JDK: `E:\tvbox\TVBoxOS-main\_runtime\jdk\temurin11\jdk-11.0.31+11`
-- Gradle Home: `E:\tvbox\TVBoxOS-main\_runtime\gradle-home`
+- Android SDK: `_runtime\android-sdk`
+- JDK: `_runtime\jdk\temurin11`
+- Gradle Home: `_runtime\gradle-home`
 
 PowerShell：
 
 ```powershell
-$env:JAVA_HOME='E:\tvbox\TVBoxOS-main\_runtime\jdk\temurin11\jdk-11.0.31+11'
-$env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
+$env:JAVA_HOME='E:\TV\TVBOX-DolbyVision-HDR10-Edition\_runtime\jdk\temurin11'
+$env:GRADLE_USER_HOME='E:\TV\TVBOX-DolbyVision-HDR10-Edition\_runtime\gradle-home'
 
 .\gradlew.bat :app:assembleNormalDebug
 .\gradlew.bat :app:assembleJava64Debug
@@ -190,9 +190,9 @@ $env:GRADLE_USER_HOME='E:\tvbox\TVBoxOS-main\_runtime\gradle-home'
 
 仓库内置基础 Android 构建工作流，可直接产出：
 
-- `TVBox_v0.2.8_java32.apk`
-- `TVBox_v0.2.8_java64.apk`
-- `TVBox_v0.2.8_hisense32.apk`
+- `TVBox_v0.2.9_java32.apk`
+- `TVBox_v0.2.9_java64.apk`
+- `TVBox_v0.2.9_hisense32.apk`
 
 ## 社区协作
 

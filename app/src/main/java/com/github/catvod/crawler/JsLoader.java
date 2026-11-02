@@ -8,6 +8,7 @@ import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.util.FileUtils;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
+import com.github.tvbox.osc.util.StorageBudgetManager;
 
 import com.github.tvbox.osc.util.js.JsSpider;
 import com.lzy.okgo.OkGo;
@@ -120,6 +121,7 @@ public class JsLoader {
                 }
             }
             prepareDexJarForLoad(cache);
+            StorageBudgetManager.trimCaches();
             loadClassLoader(cache.getAbsolutePath(), key);
             return classes.get(key);
         } catch (Throwable e) {

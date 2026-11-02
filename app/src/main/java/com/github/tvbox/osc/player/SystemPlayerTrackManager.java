@@ -123,7 +123,12 @@ public final class SystemPlayerTrackManager {
                 String key = buildSubtitleIdentityKey(subtitle);
                 TrackInfoBean existing = ordered.get(key);
                 if (existing == null) {
-                    if (preferSystemSubtitleList) {
+                    // Vendor MediaPlayer implementations often expose only the first
+                    // subtitle track. Keep probe-discovered tracks that have a real
+                    // extractor index so the user can map/select every language, while
+                    // suppressing a metadata duplicate of an already exposed language.
+                    if (preferSystemSubtitleList
+                            && hasEquivalentRuntimeSubtitle(ordered.values(), subtitle)) {
                         continue;
                     }
                     // Metadata may describe the list, but it is not a native-selectable track.
@@ -153,6 +158,64 @@ public final class SystemPlayerTrackManager {
             merged.addSubtitle(subtitle);
         }
         return merged;
+    }
+
+    private static boolean hasEquivalentRuntimeSubtitle(
+            Iterable<TrackInfoBean> runtimeTracks, @Nullable TrackInfoBean candidate) {
+        if (runtimeTracks == null || candidate == null) {
+            return false;
+        }
+        String candidateLanguage = safeLower(firstNonEmpty(candidate.language, candidate.rawLanguage));
+        String candidateRawLanguage = normalizeLanguageCode(candidate.rawLanguage);
+        String candidateTitle = safeLower(candidate.rawTitle);
+        for (TrackInfoBean runtime : runtimeTracks) {
+            if (runtime == null || runtime.metadataOnly) {
+                continue;
+            }
+            String runtimeLanguage = safeLower(firstNonEmpty(runtime.language, runtime.rawLanguage));
+            String runtimeRawLanguage = normalizeLanguageCode(runtime.rawLanguage);
+            if (!isEmpty(candidateLanguage) && candidateLanguage.equals(runtimeLanguage)) {
+                return true;
+            }
+            if (!isEmpty(candidateRawLanguage) && candidateRawLanguage.equals(runtimeRawLanguage)) {
+                return true;
+            }
+            if (!isEmpty(candidateTitle) && candidateTitle.equals(safeLower(runtime.rawTitle))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String normalizeLanguageCode(String value) {
+        String normalized = safeLower(value);
+        if (normalized.isEmpty()) {
+            return "";
+        }
+        int separator = normalized.indexOf('-');
+        if (separator > 0) {
+            normalized = normalized.substring(0, separator);
+        }
+        separator = normalized.indexOf('_');
+        if (separator > 0) {
+            normalized = normalized.substring(0, separator);
+        }
+        if ("zho".equals(normalized) || "cmn".equals(normalized)) {
+            return "zh";
+        }
+        if ("chi".equals(normalized)) {
+            return "zh";
+        }
+        if ("eng".equals(normalized)) {
+            return "en";
+        }
+        if ("jpn".equals(normalized)) {
+            return "ja";
+        }
+        if ("kor".equals(normalized)) {
+            return "ko";
+        }
+        return normalized;
     }
 
     public static void selectTrack(AndroidMediaPlayer mediaPlayer, @Nullable TrackInfoBean track) {

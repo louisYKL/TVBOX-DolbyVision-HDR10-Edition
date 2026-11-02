@@ -1202,6 +1202,8 @@ public class PlayFragment extends BaseLazyFragment {
             return;
         }
         mController.mSubtitleView.setHdrSubtitleMode(currentPlaybackRequiresHdrOutput);
+        mController.setHdrMode(currentPlaybackRequiresHdrOutput);
+        mController.setHdrUiDimmed(currentPlaybackRequiresHdrOutput);
         renderBitmapSubtitleCues();
     }
 
@@ -2098,12 +2100,9 @@ public class PlayFragment extends BaseLazyFragment {
     }
 
     private boolean shouldBoostHdrBrightness() {
-        Activity activity = getActivity();
-        boolean tvLike = activity instanceof BaseActivity && ((BaseActivity) activity).isTvDevice();
-        if (!App.isJava64Build() || tvLike) {
-            return mVideoView != null && mVideoView.isFullScreen();
-        }
-        return currentPlaybackRequiresHdrOutput;
+        // HDR brightness belongs to the panel/OS. Keep this compatibility
+        // hook false so older call sites cannot request an app-side boost.
+        return false;
     }
 
     private JSONObject copyPlayerConfigForPlayback() {

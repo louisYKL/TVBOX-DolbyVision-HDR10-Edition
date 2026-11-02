@@ -10,7 +10,8 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runtimeRoot = Join-Path $repoRoot "_runtime"
-$jdkRoot = Join-Path $runtimeRoot "jdk\\temurin11\\jdk-11.0.31+11"
+$jdkParent = Join-Path $runtimeRoot "jdk\\temurin11"
+$jdkRoot = Join-Path $jdkParent "jdk-11.0.32.1+1"
 $sdkRoot = Join-Path $runtimeRoot "android-sdk"
 $gradleHome = Join-Path $runtimeRoot "gradle-home"
 $androidUserHome = Join-Path $runtimeRoot "android-user-home"
@@ -35,6 +36,15 @@ $requiredDirs = @(
     $tmpRoot,
     $androidHomeDir
 )
+
+if (-not (Test-Path (Join-Path $jdkRoot "bin\\java.exe"))) {
+    $detectedJdk = Get-ChildItem $jdkParent -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName "bin\\java.exe") } |
+        Select-Object -First 1
+    if ($null -ne $detectedJdk) {
+        $jdkRoot = $detectedJdk.FullName
+    }
+}
 
 foreach ($dir in $requiredDirs) {
     New-Item -ItemType Directory -Force $dir | Out-Null

@@ -104,9 +104,13 @@ public final class HdrDeviceSupport {
             this.dolbyVision = codecListDolbyVisionDecoder && displayDolbyVision;
         }
 
-        /** 显示端能进 HDR（HDR10/HDR10+/HLG 任一），是“能否激发电视 HDR 模式”的依据。 */
+        /**
+         * 显示端能进入任一种 HDR output mode. Dolby Vision is included because
+         * Android exposes it as a separate HDR capability on TVs/phones; treating
+         * a DV-only panel as SDR would incorrectly choose the SDR fallback route.
+         */
         public boolean displaySupportsHdr() {
-            return displayHdr10 || displayHdr10Plus || displayHlg;
+            return displayHdr10 || displayHdr10Plus || displayHlg || displayDolbyVision;
         }
 
         /** 能显示 HDR 但不能端到端原生 DV —— 需要把 DV 映射成 HDR10/HDR10+。 */

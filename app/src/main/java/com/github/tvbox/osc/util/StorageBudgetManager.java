@@ -12,7 +12,12 @@ import java.util.Comparator;
 import java.util.List;
 
 public final class StorageBudgetManager {
-    public static final long MAX_CACHE_BYTES = 100L * 1024L * 1024L;
+    /**
+     * Shared on-device cache budget.  Keep this bound at 64 MiB so API/config,
+     * subtitle, JS and player side caches cannot grow without limit.  Trimming
+     * is oldest-first and is invoked after cache writes and at application start.
+     */
+    public static final long MAX_CACHE_BYTES = 64L * 1024L * 1024L;
     public static final long MAX_INTERNAL_LOG_BYTES = InternalLogPolicy.MAX_TOTAL_BYTES;
     private static final Comparator<File> OLDEST_FIRST = new Comparator<File>() {
         @Override
@@ -53,11 +58,9 @@ public final class StorageBudgetManager {
         addIfExists(roots, app.getCacheDir());
         addIfExists(roots, app.getExternalCacheDir());
         addIfExists(roots, new File(app.getFilesDir(), "csp"));
-        addIfExists(roots, new File(app.getCacheDir(), "catvod_jsapi"));
-        addIfExists(roots, new File(app.getCacheDir(), "catvod_csp"));
-        addIfExists(roots, new File(app.getCacheDir(), "ijkcaches"));
-        addIfExists(roots, new File(app.getCacheDir(), "thunder"));
-        addIfExists(roots, new File(FileUtils.getExternalCachePath()));
+        // The app cache roots already include their nested JS/CSP/player
+        // directories. Adding those descendants again would double-count them
+        // and could evict recent files prematurely.
         trimDirectoriesToBudget(roots, MAX_CACHE_BYTES);
     }
 

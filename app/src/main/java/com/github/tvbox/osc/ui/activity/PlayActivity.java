@@ -1126,6 +1126,8 @@ public class PlayActivity extends BaseActivity {
             return;
         }
         mController.mSubtitleView.setHdrSubtitleMode(currentPlaybackRequiresHdrOutput);
+        mController.setHdrMode(currentPlaybackRequiresHdrOutput);
+        mController.setHdrUiDimmed(currentPlaybackRequiresHdrOutput);
         renderBitmapSubtitleCues();
     }
 
@@ -1930,10 +1932,9 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean shouldBoostHdrBrightness() {
-        if (!App.isJava64Build() || isTvDevice()) {
-            return mVideoView != null && mVideoView.isFullScreen();
-        }
-        return currentPlaybackRequiresHdrOutput;
+        // HDR brightness belongs to the panel/OS. Keep this compatibility
+        // hook false so older call sites cannot request an app-side boost.
+        return false;
     }
 
     private JSONObject copyPlayerConfigForPlayback() {

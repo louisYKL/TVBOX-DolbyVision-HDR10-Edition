@@ -46,6 +46,7 @@ public abstract class BaseController extends BaseVideoController implements Gest
     private boolean mCanChangePosition = true;
     private boolean mEnableInNormal;
     private boolean mCanSlide;
+    private boolean mHdrMode;
     private int mCurPlayState;
     private boolean mHasRenderedFirstFrame;
 
@@ -223,6 +224,15 @@ public abstract class BaseController extends BaseVideoController implements Gest
     }
 
     /**
+     * HDR tone mapping and panel brightness are owned by the device. In HDR
+     * playback, the brightness half of the swipe gesture must not write a
+     * window override; seek and volume gestures remain available.
+     */
+    public void setHdrMode(boolean hdrMode) {
+        mHdrMode = hdrMode;
+    }
+
+    /**
      * 是否开启双击播放/暂停，默认开启
      */
     public void setDoubleTapTogglePlayEnabled(boolean enabled) {
@@ -381,6 +391,9 @@ public abstract class BaseController extends BaseVideoController implements Gest
     }
 
     protected void slideToChangeBrightness(float deltaY) {
+        if (mHdrMode) {
+            return;
+        }
         Activity activity = PlayerUtils.scanForActivity(getContext());
         if (activity == null) return;
         if (shouldUseDeviceBrightnessGesture()) {

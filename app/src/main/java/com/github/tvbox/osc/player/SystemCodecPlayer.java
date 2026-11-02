@@ -953,8 +953,13 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         boolean hdrColorspace = colorInfo != null && colorInfo.colorSpace == C.COLOR_SPACE_BT2020;
         boolean hdrStaticInfo = colorInfo != null
                 && colorInfo.hdrStaticInfo != null && colorInfo.hdrStaticInfo.length > 0;
+        // A few Android extractors (notably older MediaParser builds and some
+        // vendor Matroska extractors) omit ColorInfo even though the codec
+        // string carries the HDR transfer/metadata marker. Keep the runtime
+        // promotion path aligned with the preflight probe in that case.
+        boolean hdrCodecMarker = containsHdrCodecMarker(codecs);
         lastRuntimeDolbyVision = dolbyVision;
-        lastRuntimeHdr = dolbyVision || hdrTransfer || hdrColorspace || hdrStaticInfo;
+        lastRuntimeHdr = dolbyVision || hdrTransfer || hdrColorspace || hdrStaticInfo || hdrCodecMarker;
         lastRuntimeOutputMode = dolbyVision
                 ? (nativeDolbyVisionCapable ? "native-dv" : "dv-base-hdr")
                 : (lastRuntimeHdr ? "base-hdr" : "sdr");
@@ -968,8 +973,26 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 + " colorTransfer=" + (colorInfo == null ? "none" : colorInfo.colorTransfer)
                 + " colorSpace=" + (colorInfo == null ? "none" : colorInfo.colorSpace)
                 + " hdrStatic=" + (colorInfo != null && colorInfo.hdrStaticInfo != null)
+                + " hdrCodecMarker=" + hdrCodecMarker
                 + " -> dv=" + dolbyVision + " hdr=" + lastRuntimeHdr + " mode=" + lastRuntimeOutputMode);
         dispatchRuntimeVideoModeIfNeeded(reason);
+    }
+
+    private static boolean containsHdrCodecMarker(String codecs) {
+        if (TextUtils.isEmpty(codecs)) {
+            return false;
+        }
+        String lower = codecs.toLowerCase(Locale.US);
+        return lower.contains("smpte2084")
+                || lower.contains("smpte 2084")
+                || lower.contains("smpte2094")
+                || lower.contains("smpte 2094")
+                || lower.contains("arib-std-b67")
+                || lower.contains("hlg")
+                || lower.contains("hdr10")
+                || lower.contains("hdr10+")
+                || lower.contains("hdr10plus")
+                || lower.contains("bt2020");
     }
 
     private void dispatchRuntimeVideoModeIfNeeded(String reason) {

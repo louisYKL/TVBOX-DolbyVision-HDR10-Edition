@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.9
+
+### 中文
+
+- 完善 HDR10、HDR10+、HLG、BT.2020、SMPTE 2084/2094 和杜比视界的运行时识别；播放器在可用时请求系统 HDR 色彩模式。
+- HDR 播放期间不再修改窗口或系统亮度，亮度交由电视/手机系统和面板控制；播放控制层降低透明度，字幕使用不透明灰色调。
+- 应用缓存统一限制为 64 MiB，写入后按最旧文件轮转；配置、JS、JAR 和播放器缓存均纳入预算。
+- 修复厂商只返回部分字幕轨道时的合并逻辑，保留探测到的其他语言并去除重复轨道。
+- 三端统一为 `0.2.9`、`versionCode 2090`，继续使用设备硬件解码和原有签名证书。
+
+### English
+
+- Improved runtime detection for HDR10, HDR10+, HLG, BT.2020, SMPTE 2084/2094, and Dolby Vision; the player requests the platform HDR color mode when available.
+- HDR playback no longer changes window or system brightness. Brightness remains owned by the TV/phone system and panel; playback controls are dimmed and subtitles use an opaque grey tone.
+- Unified the application cache budget at 64 MiB with oldest-first rotation after writes; configuration, JS, JAR, and player caches are included.
+- Fixed subtitle-track merging when vendor players expose only part of the embedded list, preserving other detected languages and removing duplicates.
+- All three variants are `0.2.9` with `versionCode 2090`, retaining hardware decoding and the existing signing certificate.
+
 ## 0.2.8
 
 ### 中文
