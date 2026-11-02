@@ -35,7 +35,7 @@ public class FastSearchAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHol
             Picasso.get()
                     .load(item.pic)
                     .fit()
-                    .centerCrop()
+                    .centerInside()
                     .placeholder(R.drawable.img_loading_placeholder)
                     .noFade()
                     .error(ImgUtil.createTextDrawable(item.name))

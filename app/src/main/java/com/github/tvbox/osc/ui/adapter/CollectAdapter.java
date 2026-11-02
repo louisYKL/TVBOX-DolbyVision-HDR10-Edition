@@ -50,7 +50,7 @@ public class CollectAdapter extends BaseQuickAdapter<VodCollect, BaseViewHolder>
             Picasso.get()
                     .load(DefaultConfig.checkReplaceProxy(item.pic))
                     .fit()
-                    .centerCrop()
+                    .centerInside()
                     .placeholder(R.drawable.img_loading_placeholder)
                     .noFade()
                     .error(R.drawable.img_loading_placeholder)

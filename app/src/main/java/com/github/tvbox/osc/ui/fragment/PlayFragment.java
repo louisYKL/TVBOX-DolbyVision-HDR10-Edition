@@ -153,6 +153,7 @@ public class PlayFragment extends BaseLazyFragment {
     private static final long BUFFER_PROGRESS_POLL_MS = 500L;
     private static final long BUFFER_TIMEOUT_REFRESH_MS = 5_000L;
     private static final long SEEK_BUFFER_MIN_VISIBLE_MS = 750L;
+    private static final long SEEK_BUFFER_MAX_VISIBLE_MS = 30_000L;
     private static final long PLAYER_RELEASE_SETTLE_MS = 260L;
     private static final int SUBTITLE_INIT_MAX_ATTEMPTS = 12;
     private static final long SUBTITLE_INIT_FIRST_DELAY_MS = 300L;
@@ -185,6 +186,7 @@ public class PlayFragment extends BaseLazyFragment {
     private long loadingEpisodeStartAtMs = 0L;
     private boolean seekBufferingPending;
     private long seekBufferingStartedAtMs;
+    private int seekBufferingInitialPercent = -1;
     private final Runnable bufferingProgressRunnable = new Runnable() {
         @Override
         public void run() {
@@ -689,9 +691,7 @@ public class PlayFragment extends BaseLazyFragment {
                 syncEmbeddedControllerMode();
                 boolean loadingState = playState == VideoView.STATE_PREPARING
                         || playState == VideoView.STATE_BUFFERING;
-                boolean holdSeekOverlay = seekBufferingPending
-                        && System.currentTimeMillis() - seekBufferingStartedAtMs
-                        < SEEK_BUFFER_MIN_VISIBLE_MS;
+                boolean holdSeekOverlay = shouldHoldSeekBufferingOverlay();
                 if (!loadingState && !holdSeekOverlay) {
                     finishSeekBufferingOverlay();
                 }
@@ -721,7 +721,7 @@ public class PlayFragment extends BaseLazyFragment {
                     cancelPlayTimeout();
                     boolean resumedSubtitleInit =
                             resumePendingSubtitleInitWhenPlaybackReady(playState);
-                    if (playbackRenderedFirstFrame) {
+                    if (playbackRenderedFirstFrame && !seekBufferingPending) {
                         hideTipSafe();
                         syncHdrWindowForCurrentPlayback("fragment-state-" + playState);
                         if (!resumedSubtitleInit) {
@@ -734,7 +734,15 @@ public class PlayFragment extends BaseLazyFragment {
                     // safety-net timeout so it can't fire a spurious "播放超时" while legitimately
                     // paused/finished. Buffering will re-arm it if it resumes and stalls again.
                     cancelPlayTimeout();
-                    hideTipSafe();
+                    if (!seekBufferingPending) {
+                        hideTipSafe();
+                    } else {
+                        showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
+                                VideoView.STATE_BUFFERING,
+                                PlaybackBufferProgressPolicy.displayPercent(
+                                        mVideoView.getBufferedPercentage()),
+                                PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
+                    }
                 } else if (playState == VideoView.STATE_ERROR) {
                     // Player hit an error. Disarm the play/buffer-stall timeout immediately so it
                     // cannot fire a spurious "播放超时" on top of the error UI that VodController's
@@ -1340,8 +1348,7 @@ public class PlayFragment extends BaseLazyFragment {
                         if (SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(value)) {
                             applyMappedSubtitleTrackAsync(value, true);
                         } else if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)
-                                && (!currentPlaybackRequiresHdrOutput
-                                || !SystemPlayerTrackManager.isTextSubtitleTrack(value))) {
+                                && !SystemPlayerTrackManager.isTextSubtitleTrack(value)) {
                             disableSystemSubtitleOverlayPassThrough(mediaPlayer);
                             hideOverlaySubtitleView();
                         } else {
@@ -1396,6 +1403,8 @@ public class PlayFragment extends BaseLazyFragment {
         }
         seekBufferingPending = true;
         seekBufferingStartedAtMs = System.currentTimeMillis();
+        seekBufferingInitialPercent = PlaybackBufferProgressPolicy.clampPercent(
+                mVideoView.getBufferedPercentage());
         startBufferingProgressMonitor(VideoView.STATE_BUFFERING);
         showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                 VideoView.STATE_BUFFERING,
@@ -1407,6 +1416,7 @@ public class PlayFragment extends BaseLazyFragment {
     private void finishSeekBufferingOverlay() {
         seekBufferingPending = false;
         seekBufferingStartedAtMs = 0L;
+        seekBufferingInitialPercent = -1;
         if (mHandler != null) {
             mHandler.removeCallbacks(seekBufferingFinishRunnable);
         }
@@ -1454,8 +1464,7 @@ public class PlayFragment extends BaseLazyFragment {
         long now = System.currentTimeMillis();
         boolean nativeLoading = mVideoView != null
                 && PlaybackBufferProgressPolicy.isLoadingState(mVideoView.getCurrentPlayState());
-        boolean holdSeekOverlay = seekBufferingPending
-                && now - seekBufferingStartedAtMs < SEEK_BUFFER_MIN_VISIBLE_MS;
+        boolean holdSeekOverlay = shouldHoldSeekBufferingOverlay();
         if (!bufferingProgressMonitorActive
                 || mHandler == null
                 || mVideoView == null
@@ -1537,6 +1546,35 @@ public class PlayFragment extends BaseLazyFragment {
         lastBufferingPercent = PlaybackBufferProgressPolicy.updateHighWater(
                 lastBufferingPercent, watchdogPercent);
         mHandler.postDelayed(bufferingProgressRunnable, BUFFER_PROGRESS_POLL_MS);
+    }
+
+    /** Keep the seek buffer surface visible until the native seek has actually settled. */
+    private boolean shouldHoldSeekBufferingOverlay() {
+        if (!seekBufferingPending) {
+            return false;
+        }
+        long elapsed = System.currentTimeMillis() - seekBufferingStartedAtMs;
+        if (elapsed < SEEK_BUFFER_MIN_VISIBLE_MS) {
+            return true;
+        }
+        if (mVideoView == null) {
+            return false;
+        }
+        if (PlaybackBufferProgressPolicy.isLoadingState(mVideoView.getCurrentPlayState())) {
+            return true;
+        }
+        AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
+        if (mediaPlayer instanceof AndroidMediaPlayer
+                && ((AndroidMediaPlayer) mediaPlayer).isSeekInFlight()) {
+            return true;
+        }
+        int bufferedPercent = PlaybackBufferProgressPolicy.clampPercent(
+                mVideoView.getBufferedPercentage());
+        if (bufferedPercent >= 95
+                && (seekBufferingInitialPercent < 0 || bufferedPercent >= seekBufferingInitialPercent)) {
+            return false;
+        }
+        return elapsed < SEEK_BUFFER_MAX_VISIBLE_MS;
     }
 
     void setTip(String msg, boolean loading, boolean err) {
@@ -2796,8 +2834,7 @@ public class PlayFragment extends BaseLazyFragment {
                         applyMappedSubtitleTrackAsync(preferredTrack, false);
                     } else if (mediaPlayer instanceof AndroidMediaPlayer
                             && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)
-                            && (!currentPlaybackRequiresHdrOutput
-                            || !SystemPlayerTrackManager.isTextSubtitleTrack(preferredTrack))) {
+                            && !SystemPlayerTrackManager.isTextSubtitleTrack(preferredTrack)) {
                         disableSystemSubtitleOverlayPassThrough(mediaPlayer);
                         hideOverlaySubtitleView();
                         SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, preferredTrack);

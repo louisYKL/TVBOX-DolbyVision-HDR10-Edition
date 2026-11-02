@@ -39,7 +39,7 @@ public class SearchAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHolder>
                 Picasso.get()
                         .load(item.pic)
                         .fit()
-                        .centerCrop()
+                        .centerInside()
                         .placeholder(R.drawable.img_loading_placeholder)
                         .noFade()
                         .error(ImgUtil.createTextDrawable(item.name))
