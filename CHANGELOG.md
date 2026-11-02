@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.9.1
+
+### 中文
+
+- 触屏设备全屏播放时，单击先显示底部播放栏；仅在播放栏已显示时单击才切换播放/暂停；播放栏隐藏时双击可直接切换。Android TV 保留遥控器按键行为。
+- HDR 播放字幕改为更明亮的中性灰白色，同时保持低于峰值白，文本和位图字幕显示一致。
+- 修复设置相关弹窗在浅色按钮背景上仍使用浅色文字、深色面板上使用深色文字的问题，文字颜色现在随焦点状态匹配背景。
+- 三端版本统一为 `0.2.9.1`、`versionCode 2091`，沿用 `0.2.9` 的签名证书，支持覆盖安装。
+
+### English
+
+- Touch controls now reveal the bottom bar on the first single tap, toggle playback only while the bar is visible, and allow a direct double-tap toggle while hidden. Android TV retains its remote-key behavior.
+- HDR subtitles now use a brighter neutral grey-white tone while remaining below peak white; text and bitmap subtitles are aligned.
+- Fixed contrast mismatches in settings-related dialogs so light button backgrounds use dark text and dark panels use light text, including focused states.
+- Unified all three variants under `0.2.9.1` with `versionCode 2091`, retaining the `0.2.9` signing certificate for in-place updates.
+
 ## 0.2.9
 
 ### 中文

@@ -72,7 +72,7 @@
             android:shadowDy="0"
             android:shadowRadius="5"
             android:text="否"
-            android:textColor="@color/apple_tv_text_primary"
+            android:textColor="@color/apple_tv_button_text_light_focus"
             android:textColorHint="@color/color_FFFFFF_50"
             android:textSize="@dimen/ts_20" />
 

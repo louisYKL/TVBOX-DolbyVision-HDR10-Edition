@@ -1582,8 +1582,8 @@ public final class VideoStreamProbe {
         }
     }
 
-    private static boolean containsDolbyVisionTextMarker(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static boolean containsDolbyVisionTextMarker(String text) {
+        if (text == null || text.isEmpty()) {
             return false;
         }
         String lower = text.toLowerCase(Locale.US);
@@ -1703,8 +1703,8 @@ public final class VideoStreamProbe {
         return " profile=" + dvProfile + " hdr10Base=" + hdr10BaseLayer;
     }
 
-    private static boolean containsHdr10TextMarker(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static boolean containsHdr10TextMarker(String text) {
+        if (text == null || text.isEmpty()) {
             return false;
         }
         String lower = text.toLowerCase(Locale.US);
@@ -1712,16 +1712,14 @@ public final class VideoStreamProbe {
                 || lower.contains("smpte2084")
                 || lower.contains("smpte 2084")
                 || lower.contains("arib-std-b67")
-                || lower.contains("bt2020")
-                || lower.contains("bt.2020")
+                || lower.contains("hlg")
                 || lower.contains("color-transfer=6")
                 || lower.contains("color-transfer=7")
-                || lower.contains("color-standard=6")
                 || lower.contains("hdr-static-info");
     }
 
-    private static boolean containsHdr10PlusTextMarker(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static boolean containsHdr10PlusTextMarker(String text) {
+        if (text == null || text.isEmpty()) {
             return false;
         }
         String lower = text.toLowerCase(Locale.US);
@@ -1741,8 +1739,7 @@ public final class VideoStreamProbe {
             return true;
         }
         int transfer = safeGetInteger(format, "color-transfer", -1);
-        int standard = safeGetInteger(format, "color-standard", -1);
-        return transfer == 6 || transfer == 7 || standard == 6;
+        return transfer == 6 || transfer == 7;
     }
 
     private static int safeGetInteger(MediaFormat format, String key, int fallback) {

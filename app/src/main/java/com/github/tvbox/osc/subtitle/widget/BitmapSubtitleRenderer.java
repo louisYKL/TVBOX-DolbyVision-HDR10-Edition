@@ -22,9 +22,9 @@ import java.util.WeakHashMap;
  * readable without changing the cue's placement, timing, or scale.</p>
  */
 public final class BitmapSubtitleRenderer {
-    private static final int HDR_FILL_RED = 180;
-    private static final int HDR_FILL_GREEN = 180;
-    private static final int HDR_FILL_BLUE = 180;
+    private static final int HDR_FILL_RED = 232;
+    private static final int HDR_FILL_GREEN = 232;
+    private static final int HDR_FILL_BLUE = 232;
     private static final int SDR_FILL_RED = 255;
     private static final int SDR_FILL_GREEN = 255;
     private static final int SDR_FILL_BLUE = 255;

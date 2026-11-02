@@ -10,14 +10,18 @@ import com.github.tvbox.osc.subtitle.model.Time;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.HashMap;
 
 import xyz.doikki.videoplayer.player.AndroidMediaPlayer;
 
 public final class SystemPlayerTrackManager {
+    private static final Map<String, String> ISO_LANGUAGE_NAMES = buildIsoLanguageNames();
+
     private SystemPlayerTrackManager() {
     }
 
@@ -512,23 +516,168 @@ public final class SystemPlayerTrackManager {
     }
 
     public static String getFriendlyLanguage(String language, String rawInfo) {
-        String text = ((language == null ? "" : language) + " " + (rawInfo == null ? "" : rawInfo)).toLowerCase(Locale.US);
-        if (text.contains("yue") || text.contains("cantonese") || text.contains("粤") || text.contains("广东")) {
+        String languageText = safeLower(language);
+        String infoText = safeLower(rawInfo);
+        String text = languageText + " " + infoText;
+        if (containsToken(languageText, "yue")
+                || infoText.contains("cantonese") || infoText.contains("粤") || infoText.contains("广东")) {
             return "粤语";
         }
-        if (containsChinese(text)) {
+        if (containsChinese(languageText) || containsExplicitChineseMarker(infoText)) {
             return "中文字幕";
         }
-        if (text.contains("en") || text.contains("eng") || text.contains("english") || text.contains("英")) {
+        if (containsLanguageCode(languageText, "en", "eng")
+                || containsLanguageName(infoText, "english", "英文", "英语")) {
             return "英文字幕";
         }
-        if (text.contains("ja") || text.contains("jpn") || text.contains("japanese") || text.contains("日")) {
+        if (containsLanguageCode(languageText, "ja", "jpn")
+                || containsLanguageName(infoText, "japanese", "日文", "日语")) {
             return "日文字幕";
         }
-        if (text.contains("ko") || text.contains("kor") || text.contains("korean") || text.contains("韩")) {
+        if (containsLanguageCode(languageText, "ko", "kor")
+                || containsLanguageName(infoText, "korean", "韩文", "韩语")) {
             return "韩文字幕";
         }
+        if (containsLanguageCode(languageText, "fr", "fra", "fre")
+                || containsLanguageName(infoText, "french", "法文", "法语")) {
+            return "法文字幕";
+        }
+        if (containsLanguageCode(languageText, "es", "spa")
+                || containsLanguageName(infoText, "spanish", "西班牙文", "西班牙语")) {
+            return "西班牙文字幕";
+        }
+        if (containsLanguageCode(languageText, "de", "deu", "ger")
+                || containsLanguageName(infoText, "german", "德文", "德语")) {
+            return "德文字幕";
+        }
+        if (containsLanguageCode(languageText, "it", "ita")
+                || containsLanguageName(infoText, "italian", "意大利文", "意大利语")) {
+            return "意大利文字幕";
+        }
+        if (containsLanguageCode(languageText, "pt", "por")
+                || containsLanguageName(infoText, "portuguese", "葡萄牙文", "葡萄牙语")) {
+            return "葡萄牙文字幕";
+        }
+        if (containsLanguageCode(languageText, "ru", "rus")
+                || containsLanguageName(infoText, "russian", "俄文", "俄语")) {
+            return "俄文字幕";
+        }
+        if (containsLanguageCode(languageText, "ar", "ara")
+                || containsLanguageName(infoText, "arabic", "阿拉伯文", "阿拉伯语")) {
+            return "阿拉伯文字幕";
+        }
+        String localizedLanguage = localizeIsoLanguage(languageText);
+        if (!isEmpty(localizedLanguage)) {
+            return localizedLanguage + "字幕";
+        }
         return "";
+    }
+
+    private static Map<String, String> buildIsoLanguageNames() {
+        HashMap<String, String> names = new HashMap<>();
+        for (String code : Locale.getISOLanguages()) {
+            Locale locale = new Locale(code);
+            String displayName = locale.getDisplayLanguage(Locale.SIMPLIFIED_CHINESE);
+            if (!isEmpty(displayName) && !displayName.equalsIgnoreCase(code)) {
+                names.put(code.toLowerCase(Locale.US), displayName);
+            }
+        }
+        for (Locale locale : Locale.getAvailableLocales()) {
+            try {
+                String code = locale.getISO3Language();
+                String displayName = locale.getDisplayLanguage(Locale.SIMPLIFIED_CHINESE);
+                if (!isEmpty(code) && !isEmpty(displayName)) {
+                    names.putIfAbsent(code.toLowerCase(Locale.US), displayName);
+                }
+            } catch (java.util.MissingResourceException ignored) {
+            }
+        }
+        names.put("chi", "中文");
+        names.put("zho", "中文");
+        names.put("cmn", "中文");
+        names.put("yue", "粤语");
+        return Collections.unmodifiableMap(names);
+    }
+
+    @Nullable
+    private static String localizeIsoLanguage(String rawLanguage) {
+        if (isEmpty(rawLanguage)) {
+            return "";
+        }
+        String normalized = rawLanguage.trim().toLowerCase(Locale.US);
+        int separator = normalized.indexOf('-');
+        if (separator < 0) {
+            separator = normalized.indexOf('_');
+        }
+        if (separator >= 0) {
+            normalized = normalized.substring(0, separator);
+        }
+        if (!(normalized.length() == 2 || normalized.length() == 3)) {
+            return "";
+        }
+        for (int i = 0; i < normalized.length(); i++) {
+            char ch = normalized.charAt(i);
+            if (ch < 'a' || ch > 'z') {
+                return "";
+            }
+        }
+        String displayName = ISO_LANGUAGE_NAMES.get(normalized);
+        if (isEmpty(displayName) || "und".equals(normalized) || "mul".equals(normalized)
+                || "zxx".equals(normalized)) {
+            return "";
+        }
+        return displayName;
+    }
+
+    /**
+     * Returns only subtitle tracks whose language can be identified from the
+     * track metadata. Codec names, track numbers, and an `und` language tag
+     * are deliberately not enough to expose a choice to the user.
+     */
+    public static List<TrackInfoBean> filterKnownSubtitleTracks(@Nullable List<TrackInfoBean> tracks) {
+        if (tracks == null || tracks.isEmpty()) {
+            return Collections.emptyList();
+        }
+        ArrayList<TrackInfoBean> known = new ArrayList<>();
+        for (TrackInfoBean track : tracks) {
+            if (isKnownSubtitleTrack(track)) {
+                known.add(track);
+            }
+        }
+        return known.isEmpty() ? Collections.emptyList() : known;
+    }
+
+    public static boolean isKnownSubtitleTrack(@Nullable TrackInfoBean track) {
+        if (track == null) {
+            return false;
+        }
+        String language = firstNonEmpty(track.rawLanguage, track.language);
+        String info = firstNonEmpty(track.rawTitle, track.rawCodec, track.rawMimeType);
+        return !isEmpty(getFriendlyLanguage(language, info));
+    }
+
+    private static boolean containsLanguageCode(String value, String... codes) {
+        if (isEmpty(value) || codes == null) {
+            return false;
+        }
+        for (String code : codes) {
+            if (containsToken(value, code)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsLanguageName(String value, String... names) {
+        if (isEmpty(value) || names == null) {
+            return false;
+        }
+        for (String name : names) {
+            if (!isEmpty(name) && value.contains(name.toLowerCase(Locale.US))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static String buildTrackDetail(String rawInfo) {

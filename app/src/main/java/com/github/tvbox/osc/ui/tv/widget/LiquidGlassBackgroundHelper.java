@@ -17,6 +17,11 @@ import com.github.tvbox.osc.R;
 
 final class LiquidGlassBackgroundHelper {
     private final RectF rect = new RectF();
+    private final RectF highlightRect = new RectF();
+    private final RectF causticRect = new RectF();
+    private final RectF rippleRect = new RectF();
+    private final RectF innerRect = new RectF();
+    private final RectF glowRect = new RectF();
     private final Path path = new Path();
     private final Paint basePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -70,7 +75,8 @@ final class LiquidGlassBackgroundHelper {
                 Shader.TileMode.CLAMP));
         canvas.drawRoundRect(rect, radius, radius, basePaint);
 
-        RectF highlightRect = new RectF(rect.left, rect.top, rect.right, rect.top + Math.min(height * 0.58f, highlightHeight * 3.4f));
+        highlightRect.set(rect.left, rect.top, rect.right,
+                rect.top + Math.min(height * 0.58f, highlightHeight * 3.4f));
         highlightPaint.setShader(new LinearGradient(
                 0f, 0f, width * 0.94f, highlightRect.bottom,
                 Color.argb((focused ? 44 : 36) + dynamicBoost / 2, 255, 255, 255),
@@ -93,7 +99,8 @@ final class LiquidGlassBackgroundHelper {
                 Shader.TileMode.CLAMP));
         canvas.drawRoundRect(rect, radius, radius, movingHighlightPaint);
 
-        RectF causticRect = new RectF(rect.left + glowInset, rect.top + height * 0.18f, rect.right - glowInset, rect.bottom - height * 0.26f);
+        causticRect.set(rect.left + glowInset, rect.top + height * 0.18f,
+                rect.right - glowInset, rect.bottom - height * 0.26f);
         causticPaint.setShader(new LinearGradient(
                 causticRect.left, causticRect.top,
                 causticRect.right, causticRect.bottom,
@@ -102,7 +109,7 @@ final class LiquidGlassBackgroundHelper {
                 Shader.TileMode.CLAMP));
         canvas.drawOval(causticRect, causticPaint);
 
-        RectF rippleRect = new RectF(
+        rippleRect.set(
                 rect.left + width * (0.08f + (focused ? progress * 0.12f : 0f)),
                 rect.top + height * (0.44f - sway * 0.03f),
                 rect.right - width * (0.14f - (focused ? progress * 0.06f : 0f)),
@@ -121,7 +128,9 @@ final class LiquidGlassBackgroundHelper {
 
         if (focused) {
             glowPaint.setColor(Color.argb(22 + dynamicBoost / 2, Color.red(glow), Color.green(glow), Color.blue(glow)));
-            canvas.drawRoundRect(new RectF(rect.left + innerInset, rect.top + innerInset, rect.right - innerInset, rect.bottom - innerInset), radius - innerInset, radius - innerInset, glowPaint);
+            glowRect.set(rect.left + innerInset, rect.top + innerInset,
+                    rect.right - innerInset, rect.bottom - innerInset);
+            canvas.drawRoundRect(glowRect, radius - innerInset, radius - innerInset, glowPaint);
         }
 
         strokePaint.setColor(stroke);
@@ -130,7 +139,8 @@ final class LiquidGlassBackgroundHelper {
 
         innerStrokePaint.setColor(innerStroke);
         innerStrokePaint.setStrokeWidth(Math.max(1f, innerInset * 0.68f));
-        RectF innerRect = new RectF(rect.left + innerInset, rect.top + innerInset, rect.right - innerInset, rect.bottom - innerInset);
+        innerRect.set(rect.left + innerInset, rect.top + innerInset,
+                rect.right - innerInset, rect.bottom - innerInset);
         canvas.drawRoundRect(innerRect, Math.max(0f, radius - innerInset), Math.max(0f, radius - innerInset), innerStrokePaint);
 
         canvas.restoreToCount(save);

@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import java.util.Collections;
 import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -87,5 +88,35 @@ public class SystemPlayerTrackManagerTest {
         assertEquals(4, merged.getSubtitle().get(0).trackId);
         assertEquals(3, merged.getSubtitle().get(1).trackId);
         assertTrue(merged.getSubtitle().get(1).metadataOnly);
+    }
+
+    @Test
+    public void languageDetectionDoesNotTreatCodecTextAsEnglish() {
+        assertEquals("", SystemPlayerTrackManager.getFriendlyLanguage("und", "text/x-subrip"));
+        assertEquals("英文字幕", SystemPlayerTrackManager.getFriendlyLanguage("eng", "text/x-subrip"));
+        assertEquals("中文字幕", SystemPlayerTrackManager.getFriendlyLanguage("zh-Hans", "subrip"));
+        assertEquals("日文字幕", SystemPlayerTrackManager.getFriendlyLanguage("", "Japanese"));
+    }
+
+    @Test
+    public void unknownSubtitleTracksAreHiddenFromManualSelection() {
+        TrackInfoBean unknown = new TrackInfoBean();
+        unknown.rawLanguage = "und";
+        unknown.rawCodec = "text/x-subrip";
+        TrackInfoBean english = new TrackInfoBean();
+        english.rawLanguage = "en-US";
+        english.rawCodec = "text/vtt";
+        List<TrackInfoBean> filtered = SystemPlayerTrackManager.filterKnownSubtitleTracks(
+                Arrays.asList(unknown, english));
+        assertEquals(1, filtered.size());
+        assertEquals(english, filtered.get(0));
+    }
+
+    @Test
+    public void knownIsoLanguagesBeyondCommonUiLanguagesRemainSelectable() {
+        assertTrue(SystemPlayerTrackManager.getFriendlyLanguage("tha-TH", "text/vtt")
+                .endsWith("字幕"));
+        assertEquals("", SystemPlayerTrackManager.getFriendlyLanguage("mul", "text/vtt"));
+        assertEquals("", SystemPlayerTrackManager.getFriendlyLanguage("zxx", "text/vtt"));
     }
 }

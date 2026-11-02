@@ -78,6 +78,8 @@ public class SimpleSubtitleView extends TextView
     private TextView backGroundText = null;//用于描边的TextView
     private boolean hdrSubtitleMode = false;
     private static final int DEFAULT_SUBTITLE_COLOR = Color.WHITE;
+    private static final float HDR_SUBTITLE_SCALE = 0.92f;
+    private static final int HDR_SUBTITLE_PEAK = 232;
     private int requestedTextColor = DEFAULT_SUBTITLE_COLOR;
     private String lastRawSubtitleText = EMPTY_TEXT;
 
@@ -307,14 +309,16 @@ public class SimpleSubtitleView extends TextView
     }
 
     private int dimForHdr(int color) {
-        int red = Math.round(Color.red(color) * 0.68f);
-        int green = Math.round(Color.green(color) * 0.68f);
-        int blue = Math.round(Color.blue(color) * 0.68f);
+        // Keep HDR captions below peak white while retaining enough luminance for
+        // comfortable reading on panels that already apply HDR tone mapping.
+        int red = Math.round(Color.red(color) * HDR_SUBTITLE_SCALE);
+        int green = Math.round(Color.green(color) * HDR_SUBTITLE_SCALE);
+        int blue = Math.round(Color.blue(color) * HDR_SUBTITLE_SCALE);
         int max = Math.max(red, Math.max(green, blue));
-        if (max <= 160) {
+        if (max <= HDR_SUBTITLE_PEAK) {
             return Color.rgb(red, green, blue);
         }
-        float scale = 160f / max;
+        float scale = (float) HDR_SUBTITLE_PEAK / max;
         return Color.rgb(Math.round(red * scale), Math.round(green * scale), Math.round(blue * scale));
     }
 

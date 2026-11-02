@@ -22,7 +22,7 @@ import com.github.tvbox.osc.R;
 
 public class LiquidGlassTextView extends AppCompatTextView {
     private static final long GLASS_FRAME_DELAY_MS = 16L;
-    private static final long GLASS_PULSE_DURATION_MS = 320L;
+    private static final long GLASS_PULSE_DURATION_MS = 420L;
     private final RectF outlineRect = new RectF();
     private final Path clipPath = new Path();
     private final Paint backdropPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
@@ -151,7 +151,9 @@ public class LiquidGlassTextView extends AppCompatTextView {
             return focused ? 1f : 0f;
         }
         float elapsed = (SystemClock.uptimeMillis() - glassPulseStartMs) / (float) GLASS_PULSE_DURATION_MS;
-        return Math.max(0f, Math.min(1f, elapsed));
+        float linear = Math.max(0f, Math.min(1f, elapsed));
+        float inverse = 1f - linear;
+        return 1f - inverse * inverse * inverse;
     }
 
     private boolean shouldUseFocusedGlass() {

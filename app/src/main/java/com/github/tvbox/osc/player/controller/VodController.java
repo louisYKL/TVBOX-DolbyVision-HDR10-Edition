@@ -2259,6 +2259,21 @@ public class VodController extends BaseController {
         if (!isPlayerFullScreen()) {
             return enterFullScreenFromPreview();
         }
+        // Touch transport follows the TVOS interaction model: a single tap
+        // first reveals the transport bar, and only a tap while that bar is
+        // visible toggles playback. A hidden bar therefore cannot be toggled
+        // accidentally by a single touch.
+        if (isTouchPlaybackDevice() && isInPlaybackState() && !isLocked()) {
+            myHandle.removeCallbacks(myRunnable);
+            if (!isBottomVisible()) {
+                showBottom();
+                myHandle.postDelayed(myRunnable, myHandleSeconds);
+            } else {
+                togglePlay();
+                myHandle.postDelayed(myRunnable, myHandleSeconds);
+            }
+            return true;
+        }
         myHandle.removeCallbacks(myRunnable);
         if (!isBottomVisible()) {
             showBottom();
@@ -2268,6 +2283,35 @@ public class VodController extends BaseController {
             hideBottom();
         }
         return true;
+    }
+
+    @Override
+    public boolean onDoubleTap(MotionEvent e) {
+        // A hidden transport bar requires a deliberate double tap for direct
+        // play/pause. Once the bar is visible, single tap owns the action and
+        // this callback is intentionally ignored to avoid double toggles.
+        if (isTouchPlaybackDevice()
+                && isPlayerFullScreen()
+                && isInPlaybackState()
+                && !isLocked()
+                && !isBottomVisible()) {
+            togglePlay();
+            return true;
+        }
+        return super.onDoubleTap(e);
+    }
+
+    private boolean isTouchPlaybackDevice() {
+        Activity activity = PlayerUtils.scanForActivity(getContext());
+        if (activity instanceof BaseActivity && ((BaseActivity) activity).isTvDevice()) {
+            return false;
+        }
+        try {
+            return getContext().getPackageManager().hasSystemFeature(
+                    "android.hardware.touchscreen");
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     @Override

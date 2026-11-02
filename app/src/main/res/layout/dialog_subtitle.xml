@@ -106,7 +106,7 @@
                     android:layout_marginRight="@dimen/vs_40"
                     android:text="16"
                     android:textStyle="bold"
-                    android:textColor="@color/color_CC000000"
+                    android:textColor="@color/apple_tv_text_primary"
                     android:textSize="@dimen/ts_40" />
 
                 <TextView
@@ -192,7 +192,7 @@
                     android:layout_gravity="center"
                     android:gravity="center"
                     android:text="字幕延时仅对外挂字幕有效"
-                    android:textColor="@color/color_6C3D3D3D"
+                    android:textColor="@color/apple_tv_text_muted"
                     android:textSize="@dimen/ts_20" />
 
             </LinearLayout>
@@ -227,7 +227,7 @@
                     android:layout_marginRight="@dimen/vs_40"
                     android:text="0"
                     android:textStyle="bold"
-                    android:textColor="@color/color_CC000000"
+                    android:textColor="@color/apple_tv_text_primary"
                     android:textSize="@dimen/ts_40" />
 
                 <TextView

@@ -1200,8 +1200,19 @@ public class PlayActivity extends BaseActivity {
             Toast.makeText(mContext, "没有内置字幕", Toast.LENGTH_SHORT).show();
             return;
         }
-        List<TrackInfoBean> bean = trackInfo.getSubtitle();
-        if (bean.size() < 1) return;
+        List<TrackInfoBean> bean = SystemPlayerTrackManager.filterKnownSubtitleTracks(
+                trackInfo.getSubtitle());
+        if (bean.isEmpty()) {
+            Toast.makeText(mContext, "没有可识别语言的内置字幕", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int selectedIndex = 0;
+        for (int i = 0; i < bean.size(); i++) {
+            if (bean.get(i) != null && bean.get(i).selected) {
+                selectedIndex = i;
+                break;
+            }
+        }
         SelectDialog<TrackInfoBean> dialog = new SelectDialog<>(PlayActivity.this);
         dialog.setTip("切换内置字幕");
         dialog.setAdapter(new SelectDialogAdapter.SelectDialogInterface<TrackInfoBean>() {
@@ -1248,7 +1259,7 @@ public class PlayActivity extends BaseActivity {
             public boolean areContentsTheSame(@NonNull @NotNull TrackInfoBean oldItem, @NonNull @NotNull TrackInfoBean newItem) {
                 return isSameTrack(oldItem, newItem);
             }
-        }, bean, trackInfo.getSubtitleSelected(false));
+        }, bean, selectedIndex);
         dialog.show();
     }
 

@@ -1,6 +1,7 @@
 package com.github.tvbox.osc.ui.tv.widget;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
@@ -108,11 +109,19 @@ public final class LiquidGlassSnapshotManager {
             }
         };
         Bitmap bitmap;
-        final int downsample = DOWNSAMPLE;
+        final int downsample;
+        final boolean reducedQuality;
         boolean scheduled;
 
         SnapshotHolder(View root) {
             this.root = root;
+            ActivityManager manager = (ActivityManager) root.getContext()
+                    .getSystemService(Activity.ACTIVITY_SERVICE);
+            reducedQuality = manager != null && manager.isLowRamDevice();
+            // Keep the cached backdrop bounded on low-memory TV firmware. The
+            // glass gradient remains full quality; only the blurred backdrop is
+            // sampled more coarsely because it is a supporting visual layer.
+            downsample = reducedQuality ? 8 : DOWNSAMPLE;
         }
 
         void schedule() {

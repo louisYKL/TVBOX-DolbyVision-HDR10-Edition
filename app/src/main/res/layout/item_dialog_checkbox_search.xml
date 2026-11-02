@@ -18,6 +18,7 @@
             android:background="@drawable/button_dialog_main"
             android:clickable="true"
             android:focusable="true"
+            android:textColor="@color/apple_tv_button_text_light_focus"
             android:textSize="@dimen/ts_24"
             android:text="1111"/>
     </LinearLayout>

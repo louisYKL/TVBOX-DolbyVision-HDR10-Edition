@@ -27,7 +27,7 @@
             android:singleLine="true"
             android:maxLines="1"
             android:text="字幕搜索结果"
-            android:textColor="@color/apple_tv_text_primary"
+            android:textColor="@color/apple_tv_button_text_light_focus"
             android:textSize="@dimen/ts_22" />
         <TextView
             android:id="@+id/subtitleNameInfo"
@@ -36,7 +36,7 @@
             android:singleLine="true"
             android:maxLines="1"
             android:text="压缩包"
-            android:textColor="@color/apple_tv_text_secondary"
+            android:textColor="@color/apple_tv_button_text_light_focus"
             android:textSize="@dimen/ts_22" />
 
     </LinearLayout>
