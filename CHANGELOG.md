@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.9.3.1
+
+### 中文
+
+- 修复 HDR 文本字幕绕过应用字幕层、由 Android 原生字幕渲染器显示为纯白的问题。HDR 文本轨道现在统一走带黑色描边的中性灰叠加层；PGS/VobSub 等位图轨道保持位图渲染路径。
+- 三端版本统一为 `0.2.9.3.1`、`versionCode 20931`，沿用 `0.2.9.3` 的签名证书，支持覆盖安装。
+
+### English
+
+- Fixed HDR text subtitles bypassing the app subtitle overlay and being rendered as bright white by Android's native subtitle renderer. HDR text tracks now use the neutral-grey overlay with a black outline; PGS/VobSub bitmap tracks keep their bitmap path.
+- Unified all three variants under `0.2.9.3.1` with `versionCode 20931`, retaining the `0.2.9.3` signing certificate for in-place updates.
+
 ## 0.2.9.3
 
 ### 中文

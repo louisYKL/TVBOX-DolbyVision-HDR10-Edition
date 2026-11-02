@@ -1226,7 +1226,9 @@ public class PlayActivity extends BaseActivity {
                     if (mediaPlayer instanceof AndroidMediaPlayer) {
                         if (SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(value)) {
                             applyMappedSubtitleTrackAsync(value, true);
-                        } else if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)) {
+                        } else if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)
+                                && (!currentPlaybackRequiresHdrOutput
+                                || !SystemPlayerTrackManager.isTextSubtitleTrack(value))) {
                             disableSystemSubtitleOverlayPassThrough(mediaPlayer);
                             hideOverlaySubtitleView();
                         } else {
@@ -2564,7 +2566,9 @@ public class PlayActivity extends BaseActivity {
                             && SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(preferredTrack)) {
                         applyMappedSubtitleTrackAsync(preferredTrack, false);
                     } else if (mediaPlayer instanceof AndroidMediaPlayer
-                            && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)) {
+                            && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)
+                            && (!currentPlaybackRequiresHdrOutput
+                            || !SystemPlayerTrackManager.isTextSubtitleTrack(preferredTrack))) {
                         disableSystemSubtitleOverlayPassThrough(mediaPlayer);
                         hideOverlaySubtitleView();
                         SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, preferredTrack);

@@ -1302,15 +1302,14 @@ public class PlayFragment extends BaseLazyFragment {
                     if (mediaPlayer instanceof AndroidMediaPlayer) {
                         if (SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(value)) {
                             applyMappedSubtitleTrackAsync(value, true);
-                        } else if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)) {
+                        } else if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)
+                                && (!currentPlaybackRequiresHdrOutput
+                                || !SystemPlayerTrackManager.isTextSubtitleTrack(value))) {
                             disableSystemSubtitleOverlayPassThrough(mediaPlayer);
                             hideOverlaySubtitleView();
                         } else {
                             prepareInternalSubtitleOverlay(mediaPlayer);
                             enableSystemSubtitleOverlayPassThrough(mediaPlayer);
-                            SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
-                        }
-                        if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)) {
                             SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
                         }
                     } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
@@ -2698,7 +2697,9 @@ public class PlayFragment extends BaseLazyFragment {
                             && SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(preferredTrack)) {
                         applyMappedSubtitleTrackAsync(preferredTrack, false);
                     } else if (mediaPlayer instanceof AndroidMediaPlayer
-                            && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)) {
+                            && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)
+                            && (!currentPlaybackRequiresHdrOutput
+                            || !SystemPlayerTrackManager.isTextSubtitleTrack(preferredTrack))) {
                         disableSystemSubtitleOverlayPassThrough(mediaPlayer);
                         hideOverlaySubtitleView();
                         SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, preferredTrack);

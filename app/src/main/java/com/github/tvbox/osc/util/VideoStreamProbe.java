@@ -1283,7 +1283,7 @@ public final class VideoStreamProbe {
     }
 
     static boolean containsHlsDynamicRangeMarker(String lowerPlaylist) {
-        if (TextUtils.isEmpty(lowerPlaylist)) {
+        if (lowerPlaylist == null || lowerPlaylist.isEmpty()) {
             return false;
         }
         lowerPlaylist = lowerPlaylist.toLowerCase(Locale.US);
