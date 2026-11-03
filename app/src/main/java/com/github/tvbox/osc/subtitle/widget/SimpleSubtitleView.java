@@ -127,7 +127,11 @@ public class SimpleSubtitleView extends TextView
         String text = subtitle.content;
         text = text.replaceAll("^.*?,.*?,.*?,.*?,.*?,.*?,.*?,.*?,.*?,", "");
         lastRawSubtitleText = text;
-        setText(buildStyledSubtitleText(text));
+        // HDR captions must not inherit any source style span. Non-Chinese ASS/TTML
+        // tracks commonly carry a white TextAppearance/foreground span which can
+        // override TextView's neutral HDR base color after each cue arrives.
+        setText(hdrSubtitleMode ? buildHdrSubtitleText(text) : buildStyledSubtitleText(text));
+        applyEffectiveTextColor();
     }
 
     private CharSequence buildStyledSubtitleText(String rawText) {
@@ -282,9 +286,21 @@ public class SimpleSubtitleView extends TextView
         hdrSubtitleMode = enabled;
         applyEffectiveTextColor();
         if (!TextUtils.isEmpty(lastRawSubtitleText)) {
-            setText(buildStyledSubtitleText(lastRawSubtitleText));
+            // Rebuild HDR captions without source color spans. Some ASS/TTML tracks
+            // carry a white ForegroundColorSpan that can override TextView's base
+            // color on non-Chinese tracks and remain white after the HDR transition.
+            setText(enabled
+                    ? buildHdrSubtitleText(lastRawSubtitleText)
+                    : buildStyledSubtitleText(lastRawSubtitleText));
+            applyEffectiveTextColor();
         }
         postInvalidate();
+    }
+
+    private CharSequence buildHdrSubtitleText(String rawText) {
+        CharSequence styled = buildStyledSubtitleText(rawText);
+        String plain = styled == null ? "" : styled.toString();
+        return plain.replace("\r\n", "\n").replace('\r', '\n');
     }
 
     public void prepareForInternalSubtitle() {

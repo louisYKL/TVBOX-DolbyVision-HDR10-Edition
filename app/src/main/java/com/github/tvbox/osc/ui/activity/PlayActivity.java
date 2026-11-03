@@ -1185,6 +1185,13 @@ public class PlayActivity extends BaseActivity {
             return;
         }
         mController.mSubtitleView.setHdrSubtitleMode(currentPlaybackRequiresHdrOutput);
+        // Rebind the Android timed-text callback whenever HDR is promoted. Vendor
+        // players may otherwise keep a native white renderer for a track selected
+        // before the HDR probe completed.
+        if (currentPlaybackRequiresHdrOutput && mVideoView != null
+                && mVideoView.getMediaPlayer() instanceof AndroidMediaPlayer) {
+            enableSystemSubtitleOverlayPassThrough(mVideoView.getMediaPlayer());
+        }
         mController.setHdrMode(currentPlaybackRequiresHdrOutput);
         mController.setHdrUiDimmed(currentPlaybackRequiresHdrOutput);
         renderBitmapSubtitleCues();

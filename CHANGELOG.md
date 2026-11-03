@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.9.3.7
+
+### 中文
+
+- 修复 HDR 非中文文本字幕仍被源文件白色颜色 span 覆盖的问题，HDR 字幕现在重建为无颜色 span 的浅灰文字并保留黑色描边。
+- HDR 状态晚于字幕轨道初始化时，重新绑定应用字幕回调并压制原生白色字幕层。
+- 三端版本统一为 `0.2.9.3.7`、`versionCode 20937`，沿用原签名证书。
+
+### English
+
+- Fixed non-Chinese HDR text captions retaining white source color spans; HDR captions are rebuilt as span-free light-grey text with a black outline.
+- Rebinds the app subtitle callback and suppresses the native white subtitle layer when HDR is promoted after track initialization.
+- Unified all variants under `0.2.9.3.7` (`versionCode 20937`) with the existing signing certificate.
+
 ## 0.2.9.3.6
 
 ### 中文

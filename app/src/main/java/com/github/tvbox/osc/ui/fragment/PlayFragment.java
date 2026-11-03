@@ -1251,6 +1251,10 @@ public class PlayFragment extends BaseLazyFragment {
             return;
         }
         mController.mSubtitleView.setHdrSubtitleMode(currentPlaybackRequiresHdrOutput);
+        if (currentPlaybackRequiresHdrOutput && mVideoView != null
+                && mVideoView.getMediaPlayer() instanceof AndroidMediaPlayer) {
+            enableSystemSubtitleOverlayPassThrough(mVideoView.getMediaPlayer());
+        }
         mController.setHdrMode(currentPlaybackRequiresHdrOutput);
         mController.setHdrUiDimmed(currentPlaybackRequiresHdrOutput);
         renderBitmapSubtitleCues();
