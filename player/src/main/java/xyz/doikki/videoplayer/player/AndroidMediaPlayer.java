@@ -1189,6 +1189,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
                 + " mode=player-thread"
                 + " source=" + dataSourceModeName(mResolvedDataSourceMode));
         mAvoidPositionQueryUntilMs = System.currentTimeMillis() + 3000L;
+        // MediaPlayer keeps reporting the previous range's 95/100% value until the new
+        // range emits its first buffering update. Clear that stale value at the seek boundary
+        // so the UI cannot hide the post-seek percentage/speed overlay as already complete.
+        mBufferedPercent = 0;
         beginDirectUriProgress("seek-" + reason, mPlaybackHasStarted);
         beginPlaybackSeek();
         // Vendor players may block for several seconds before emitting BUFFERING_START.
@@ -2120,6 +2124,17 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
 
     public boolean isSeekInFlight() {
         return mSeekCoordinator.isInFlight();
+    }
+
+    /**
+     * Returns the native buffering window used by the seek loading overlay.
+     *
+     * <p>After a seek, MediaPlayer can report STARTED/PLAYING before the requested byte range
+     * has produced its first frame. The state callback alone is therefore too early to dismiss
+     * the percentage and network-speed indicator.</p>
+     */
+    public boolean isBufferingForUi() {
+        return mIsBuffering || mNativeBuffering || mBufferingInfoVisible || isSeekInFlight();
     }
 
     public int getPendingSeekPosition() {

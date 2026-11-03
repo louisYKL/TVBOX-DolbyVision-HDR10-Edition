@@ -45,6 +45,7 @@
 
 
         <LinearLayout
+            android:id="@+id/posterFooter"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom"
@@ -65,6 +66,7 @@
                 android:background="@drawable/bg_apple_tv_tag"
                 android:ellipsize="end"
                 android:gravity="center"
+                android:maxWidth="@dimen/vs_190"
                 android:paddingStart="@dimen/vs_8"
                 android:paddingTop="@dimen/vs_4"
                 android:paddingEnd="@dimen/vs_8"

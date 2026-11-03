@@ -185,6 +185,9 @@ public class PlayFragment extends BaseLazyFragment {
     private long activeBufferingEpisodeStartAtMs = 0L;
     private long loadingEpisodeStartAtMs = 0L;
     private boolean seekBufferingPending;
+    /** Set only after the post-seek player has reached PLAYING; the previous range's
+     * buffered percentage must not be treated as completion for a new seek. */
+    private boolean seekBufferingPlaybackObserved;
     private long seekBufferingStartedAtMs;
     private int seekBufferingInitialPercent = -1;
     private final Runnable bufferingProgressRunnable = new Runnable() {
@@ -689,6 +692,11 @@ public class PlayFragment extends BaseLazyFragment {
             public void onPlayStateChanged(int playState) {
                 LOG.i("echo-play-state:" + playState + " fragment url=" + safeLogSnippet(currentPlaybackUrl));
                 syncEmbeddedControllerMode();
+                if (playState == VideoView.STATE_PLAYING && seekBufferingPending) {
+                    // Mark completion before evaluating the hold policy. Otherwise the callback
+                    // computes the old range's 95/100% state and hides the seek buffer surface.
+                    seekBufferingPlaybackObserved = true;
+                }
                 boolean loadingState = playState == VideoView.STATE_PREPARING
                         || playState == VideoView.STATE_BUFFERING;
                 boolean holdSeekOverlay = shouldHoldSeekBufferingOverlay();
@@ -1355,8 +1363,7 @@ public class PlayFragment extends BaseLazyFragment {
                     if (mediaPlayer instanceof AndroidMediaPlayer) {
                         if (SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(value)) {
                             applyMappedSubtitleTrackAsync(value, true);
-                        } else if (currentPlaybackRequiresHdrOutput
-                                && SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)
+                        } else if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)
                                 && SystemPlayerTrackManager.isTextSubtitleTrack(value)) {
                             // Android's native timed-text layer bypasses our HDR tone and outline
                             // policy. Route text tracks through the application overlay. Bitmap
@@ -1421,6 +1428,7 @@ public class PlayFragment extends BaseLazyFragment {
             return;
         }
         seekBufferingPending = true;
+        seekBufferingPlaybackObserved = false;
         seekBufferingStartedAtMs = System.currentTimeMillis();
         seekBufferingInitialPercent = PlaybackBufferProgressPolicy.clampPercent(
                 mVideoView.getBufferedPercentage());
@@ -1434,6 +1442,7 @@ public class PlayFragment extends BaseLazyFragment {
 
     private void finishSeekBufferingOverlay() {
         seekBufferingPending = false;
+        seekBufferingPlaybackObserved = false;
         seekBufferingStartedAtMs = 0L;
         seekBufferingInitialPercent = -1;
         if (mHandler != null) {
@@ -1583,14 +1592,18 @@ public class PlayFragment extends BaseLazyFragment {
             return true;
         }
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
-        if (mediaPlayer instanceof AndroidMediaPlayer
-                && ((AndroidMediaPlayer) mediaPlayer).isSeekInFlight()) {
-            return true;
+        if (mediaPlayer instanceof AndroidMediaPlayer) {
+            AndroidMediaPlayer systemPlayer = (AndroidMediaPlayer) mediaPlayer;
+            // PLAYING may be reported before the post-seek range has rendered a frame. Keep the
+            // shared percentage/speed overlay tied to the native buffering window.
+            if (systemPlayer.isBufferingForUi()) {
+                return true;
+            }
         }
-        int bufferedPercent = PlaybackBufferProgressPolicy.clampPercent(
-                mVideoView.getBufferedPercentage());
-        if (bufferedPercent >= 95
-                && (seekBufferingInitialPercent < 0 || bufferedPercent >= seekBufferingInitialPercent)) {
+        // The native player often reports the old range's 95/100% here. That value is not
+        // evidence that the new seek target has buffered. Wait for the post-seek PLAYING
+        // callback instead; the max timeout below remains the bounded vendor-firmware fallback.
+        if (seekBufferingPlaybackObserved) {
             return false;
         }
         return elapsed < SEEK_BUFFER_MAX_VISIBLE_MS;
@@ -2856,9 +2869,9 @@ public class PlayFragment extends BaseLazyFragment {
                             && SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(preferredTrack)) {
                         applyMappedSubtitleTrackAsync(preferredTrack, false);
                     } else if (mediaPlayer instanceof AndroidMediaPlayer
-                            && currentPlaybackRequiresHdrOutput
                             && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)
                             && SystemPlayerTrackManager.isTextSubtitleTrack(preferredTrack)) {
+                        // Keep text tracks on the styled overlay in both SDR and HDR.
                         prepareInternalSubtitleOverlay(mediaPlayer);
                         enableSystemSubtitleOverlayPassThrough(mediaPlayer);
                         SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, preferredTrack);

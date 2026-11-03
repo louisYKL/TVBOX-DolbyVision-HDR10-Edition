@@ -100,6 +100,7 @@ public class HomeHotVodAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHol
             ivThumb.setImageDrawable(ImgUtil.createTextDrawable(item.name));
         }
         applyStyleToImage(ivThumb);//动态设置宽高
+        ensurePosterFooterFits(ivThumb);
     }
     /**
      * 根据传入的 style 动态设置 ImageView 的高度：高度 = 宽度 / ratio
@@ -116,5 +117,41 @@ public class HomeHotVodAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHol
             container.setLayoutParams(containerParams);
             container.requestLayout();
         }
+    }
+
+    /**
+     * The poster frame is clipped to its rounded outline.  A fixed poster height
+     * can therefore cut the lower half of a two-line title on phones or on a
+     * source with a wide poster ratio. Measure the footer against the actual
+     * runtime width and expand only when its content needs more room.
+     */
+    private void ensurePosterFooterFits(final ImageView ivThumb) {
+        final ViewGroup container = (ViewGroup) ivThumb.getParent();
+        final View footer = container.findViewById(R.id.posterFooter);
+        if (footer == null) {
+            return;
+        }
+        footer.post(new Runnable() {
+            @Override
+            public void run() {
+                int width = container.getMeasuredWidth();
+                if (width <= 0) {
+                    return;
+                }
+                footer.measure(
+                        View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                int footerHeight = footer.getMeasuredHeight();
+                int breathingRoom = AutoSizeUtils.mm2px(mContext, 8);
+                int requiredHeight = footerHeight + breathingRoom;
+                ViewGroup.LayoutParams params = container.getLayoutParams();
+                int currentHeight = Math.max(container.getMeasuredHeight(), params.height);
+                if (requiredHeight > currentHeight) {
+                    params.height = requiredHeight;
+                    container.setLayoutParams(params);
+                    container.requestLayout();
+                }
+            }
+        });
     }
 }

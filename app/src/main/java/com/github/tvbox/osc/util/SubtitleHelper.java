@@ -23,10 +23,12 @@ public class SubtitleHelper {
         double diagonalInches = estimateDiagonalInches(activity, metrics, width, height);
         boolean tvLike = diagonalInches >= 18.0 || ScreenUtils.isTv(activity);
         boolean tabletLike = !tvLike && diagonalInches >= 7.0;
-        float targetPxRatio = tvLike ? 0.052f : tabletLike ? 0.040f : 0.040f;
+        // Use the short screen edge so captions stay readable on portrait phones
+        // and tablets while remaining independent from the device's raw density.
+        float targetPxRatio = tvLike ? 0.052f : tabletLike ? 0.050f : 0.052f;
         int targetSp = Math.round((height * targetPxRatio) / scaledDensity);
-        int minSp = tvLike ? 42 : tabletLike ? 24 : 16;
-        int maxSp = tvLike ? 72 : tabletLike ? 40 : 28;
+        int minSp = tvLike ? 42 : tabletLike ? 26 : 20;
+        int maxSp = tvLike ? 72 : tabletLike ? 48 : 36;
         return clamp(targetSp, minSp, maxSp);
     }
 
@@ -47,8 +49,9 @@ public class SubtitleHelper {
     public static int normalizeTextSize(Activity activity, int size) {
         int autoSize = getSubtitleTextAutoSize(activity);
         boolean tvLike = activity != null && ScreenUtils.isTv(activity);
-        int min = tvLike ? Math.max(28, autoSize - 8) : Math.max(14, autoSize - 10);
-        int max = tvLike ? autoSize + 18 : autoSize + 12;
+        int min = tvLike ? Math.max(28, autoSize - 8)
+                : Math.max(activity != null && !ScreenUtils.isTv(activity) ? 20 : 14, autoSize - 10);
+        int max = tvLike ? autoSize + 18 : autoSize + 16;
         return clamp(size, min, max);
     }
 

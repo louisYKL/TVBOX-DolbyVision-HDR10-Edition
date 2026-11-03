@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.9.3.8
+
+### 中文
+
+- 修复触摸、遥控器和手势拖动进度后，播放器在恢复播放前不显示缓冲百分比和网速的问题。Seek 会清除旧缓冲值，并持续显示统一的缓冲提示直到新的缓冲窗口结束或首帧真正渲染。
+- 修复非中文 HDR 文本字幕仍走系统白色渲染路径的问题。所有文本轨道统一走应用字幕层，HDR 使用浅灰文字和黑色描边；字幕源颜色 span 不会覆盖 HDR 样式。
+- 修复手机、平板及不同 DPI 下首页海报底部标题被裁切的问题，按实际卡片宽度测量底部信息区，并提升移动端字幕的自适应字号。
+- 三端版本统一为 `0.2.9.3.8`、`versionCode 20938`，沿用原签名证书，支持覆盖安装。
+
+### English
+
+- Fixed seek buffering status disappearing after touch, remote, or gesture seeks. The stale range percentage is cleared and one shared percentage/speed overlay remains until the new buffer window ends or a real first frame is rendered.
+- Fixed non-Chinese HDR text tracks falling back to the vendor's bright-white renderer. All text tracks use the app subtitle overlay, with light-grey HDR glyphs and a black outline independent of source color spans.
+- Fixed homepage poster footer titles being clipped on phones, tablets, and different DPIs by measuring the footer against the actual card width; mobile subtitle sizing is now adaptive.
+- Unified all variants under `0.2.9.3.8` (`versionCode 20938`) with the existing signing certificate.
+
 ## 0.2.9.3.7
 
 ### 中文
