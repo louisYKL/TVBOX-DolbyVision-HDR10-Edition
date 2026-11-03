@@ -992,12 +992,16 @@ public class PlayActivity extends BaseActivity {
         if (!(mediaPlayer instanceof AndroidMediaPlayer)) {
             return;
         }
-        ((AndroidMediaPlayer) mediaPlayer).setOnTimedTextListener(text -> {
+        AndroidMediaPlayer systemPlayer = (AndroidMediaPlayer) mediaPlayer;
+        systemPlayer.setOnTimedTextListener(text -> {
             if (!subtitleEnabled || mController == null || mController.mSubtitleView == null || !mController.mSubtitleView.isInternal) {
                 return;
             }
             mController.mSubtitleView.onSubtitleChanged(SystemPlayerTrackManager.createInternalSubtitle(text));
         });
+        // Keep the timed-text callback, but stop vendor MediaPlayer from painting a second
+        // native white caption underneath the HDR overlay.
+        systemPlayer.suppressNativeSubtitleRendering();
     }
 
     private void disableSystemSubtitleOverlayPassThrough(AbstractPlayer mediaPlayer) {
@@ -1289,6 +1293,7 @@ public class PlayActivity extends BaseActivity {
                             prepareInternalSubtitleOverlay(mediaPlayer);
                             enableSystemSubtitleOverlayPassThrough(mediaPlayer);
                             SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
+                            ((AndroidMediaPlayer) mediaPlayer).suppressNativeSubtitleRendering();
                         }
                     } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
                         prepareInternalSubtitleOverlay(mediaPlayer);
@@ -1433,6 +1438,7 @@ public class PlayActivity extends BaseActivity {
         prepareInternalSubtitleOverlay(mediaPlayer);
         enableSystemSubtitleOverlayPassThrough(mediaPlayer);
         SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, selected);
+        ((AndroidMediaPlayer) mediaPlayer).suppressNativeSubtitleRendering();
     }
 
     private void beginSeekBufferingOverlay() {
@@ -2622,6 +2628,7 @@ public class PlayActivity extends BaseActivity {
                 applyMappedSubtitleTrackAsync(preferredTrack, false);
             } else {
                 ((AndroidMediaPlayer) mediaPlayer).selectTrack(preferredTrack.trackId);
+                ((AndroidMediaPlayer) mediaPlayer).suppressNativeSubtitleRendering();
             }
         } else if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
             prepareInternalSubtitleOverlay(mediaPlayer);

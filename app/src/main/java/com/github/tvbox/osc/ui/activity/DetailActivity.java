@@ -527,6 +527,14 @@ public class DetailActivity extends BaseActivity {
         posterParams.width = Math.max(1, Math.round(screenWidth * 0.27f));
         posterParams.height = Math.max(1, Math.round(screenHeight * 0.35f));
         mediaColumn.setLayoutParams(posterParams);
+        // Keep the top panel tied to the poster's measured height.  A fixed
+        // XML height is appropriate for the TV layout, but would make the
+        // touch/phone layout taller than the viewport and push the playlist
+        // and action controls off screen.
+        LinearLayout.LayoutParams topParams = (LinearLayout.LayoutParams) topLayout.getLayoutParams();
+        topParams.height = posterParams.height + topLayout.getPaddingTop() + topLayout.getPaddingBottom();
+        topParams.weight = 0f;
+        topLayout.setLayoutParams(topParams);
         LinearLayout.LayoutParams infoParams = (LinearLayout.LayoutParams) detailInfoColumn.getLayoutParams();
         infoParams.width = 0;
         // The java64 touch layout gives the top panel a weighted height and
@@ -534,10 +542,7 @@ public class DetailActivity extends BaseActivity {
         // description/actions extend past the weighted panel and be clipped
         // by its parent. Keep the original match-parent contract for that
         // layout, while retaining wrap-content for the main TV layout.
-        LinearLayout.LayoutParams topParams = (LinearLayout.LayoutParams) topLayout.getLayoutParams();
-        infoParams.height = topParams.height == 0 && topParams.weight > 0f
-                ? ViewGroup.LayoutParams.MATCH_PARENT
-                : ViewGroup.LayoutParams.WRAP_CONTENT;
+        infoParams.height = ViewGroup.LayoutParams.MATCH_PARENT;
         infoParams.weight = 1f;
         detailInfoColumn.setLayoutParams(infoParams);
         if (detailActionsRow != null) {

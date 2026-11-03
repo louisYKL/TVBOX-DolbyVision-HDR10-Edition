@@ -113,6 +113,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
     private String mLastDispatchedSubtitleText;
     private int mSubtitleDispatchGeneration;
     private Object mSubtitleDataListenerProxy;
+    /** True after detaching the framework SubtitleController anchor for overlay text tracks. */
+    private volatile boolean mNativeSubtitleRenderingSuppressed;
     private int mDeferredTrackSelection = -1;
     private int mDeferredTrackDeselection = -1;
     private long mLastVolumeStateLogAtMs;
@@ -180,6 +182,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mBufferingInfoVisible = false;
         mAvoidPositionQueryUntilMs = 0L;
         mPlaybackHasStarted = false;
+        mNativeSubtitleRenderingSuppressed = false;
         resetDirectUriProgress();
         mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
         resetSystemTrackState();
@@ -247,6 +250,7 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mBufferedPercent = 0;
             mAvoidPositionQueryUntilMs = 0L;
             mPlaybackHasStarted = false;
+            mNativeSubtitleRenderingSuppressed = false;
             resetDirectUriProgress();
             mLastRequestedSeekTarget = SeekCoordinator.NO_TARGET;
             resetPostSeekCompletionGuardState();
@@ -2262,6 +2266,39 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
         mOnTimedTextListener = listener;
         mLastDispatchedSubtitleText = null;
         mSubtitleDispatchGeneration++;
+    }
+
+    /**
+     * Detach Android's hidden SubtitleController anchor while the app draws text cues itself.
+     *
+     * <p>Some vendor MediaPlayer builds still paint selected timed-text tracks on the video
+     * surface even when an {@link OnTimedTextListener} is installed. That creates a second,
+     * vendor-styled white caption underneath the app's HDR grey/black-outline caption. The
+     * hidden API is accessed reflectively so this remains buildable against the public SDK; a
+     * missing or blocked API is logged and leaves the listener path intact.</p>
+     */
+    public synchronized boolean suppressNativeSubtitleRendering() {
+        if (mNativeSubtitleRenderingSuppressed) {
+            return true;
+        }
+        MediaPlayer player = mMediaPlayer;
+        if (player == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) {
+            return false;
+        }
+        try {
+            Class<?> anchorClass = Class.forName("android.media.SubtitleController$Anchor");
+            Method setSubtitleAnchor = MediaPlayer.class.getDeclaredMethod(
+                    "setSubtitleAnchor", anchorClass);
+            setSubtitleAnchor.setAccessible(true);
+            // A null anchor disables framework drawing but does not remove timed-text callbacks.
+            setSubtitleAnchor.invoke(player, new Object[]{null});
+            mNativeSubtitleRenderingSuppressed = true;
+            logInfo("echo-system-subtitle-native-renderer suppressed");
+            return true;
+        } catch (Throwable th) {
+            Log.w(TAG, "suppressNativeSubtitleRendering unavailable", th);
+            return false;
+        }
     }
 
     private boolean shouldAvoidBlockingPositionQuery() {

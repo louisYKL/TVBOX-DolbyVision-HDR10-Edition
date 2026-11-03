@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.9.3.5
+
+### 中文
+
+- 修复首页海报底部标题被裁剪的问题：底部信息区增加稳定高度，标题支持两行显示并适配不同海报比例。
+- 修复视频详情页右侧简介过长挤压四个操作按钮的问题；顶部信息区固定在可用面板高度内，简介限制为两行并保留按钮可见。
+- 修复 HDR/Dolby Vision 下非中文文本字幕仍被系统渲染为纯白的问题。所有文本语言统一使用应用字幕层的浅灰字形和深色描边；PGS/VobSub 位图字幕保持独立渲染路径。
+- 三端版本统一为 `0.2.9.3.5`、`versionCode 20935`，沿用原签名证书，支持覆盖安装。
+
+### English
+
+- Fixed homepage poster titles being clipped by giving the bottom information layer a stable height and allowing two-line titles across poster ratios.
+- Fixed the detail-page description growing into the four action buttons. The top information panel now stays within the available height, with the description capped at two lines.
+- Fixed non-Chinese HDR/Dolby Vision text subtitles being painted pure white by the vendor renderer. All text languages now use the app subtitle overlay with a light-grey glyph and dark outline; PGS/VobSub bitmap subtitles keep their bitmap path.
+- Unified all variants under `0.2.9.3.5` with `versionCode 20935`, retaining the existing signing certificate for in-place updates.
+
 ## 0.2.9.3.3
 
 ### 中文

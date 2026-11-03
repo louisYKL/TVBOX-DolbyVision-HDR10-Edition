@@ -24,7 +24,7 @@
         <LinearLayout
             android:id="@+id/topLayout"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="@dimen/vs_360"
             android:background="@drawable/bg_apple_tv_panel"
             android:gravity="center_vertical"
             android:orientation="horizontal"
@@ -73,7 +73,7 @@
             <LinearLayout
                 android:id="@+id/detailInfoColumn"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
                 android:orientation="vertical">
 
@@ -82,7 +82,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:ellipsize="end"
-                    android:maxLines="2"
+                    android:maxLines="1"
                     android:textColor="@color/apple_tv_text_primary"
                     android:textSize="@dimen/ts_32"
                     android:textStyle="bold" />
@@ -215,7 +215,8 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="@dimen/vs_12"
                     android:lineSpacingMultiplier="1.2"
-                    android:maxLines="4"
+                    android:ellipsize="end"
+                    android:maxLines="2"
                     android:textColor="@color/apple_tv_text_secondary"
                     android:textSize="@dimen/ts_20" />
 

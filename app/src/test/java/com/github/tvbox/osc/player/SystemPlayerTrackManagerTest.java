@@ -119,4 +119,20 @@ public class SystemPlayerTrackManagerTest {
         assertEquals("", SystemPlayerTrackManager.getFriendlyLanguage("mul", "text/vtt"));
         assertEquals("", SystemPlayerTrackManager.getFriendlyLanguage("zxx", "text/vtt"));
     }
+
+    @Test
+    public void everyLanguageTextTrackUsesOverlayClassification() {
+        for (String language : Arrays.asList("eng", "jpn", "kor", "fra", "deu", "chi")) {
+            TrackInfoBean text = new TrackInfoBean();
+            text.rawLanguage = language;
+            text.rawCodec = "subrip";
+            assertTrue("expected text overlay for " + language,
+                    SystemPlayerTrackManager.isTextSubtitleTrack(text));
+        }
+
+        TrackInfoBean pgs = new TrackInfoBean();
+        pgs.rawLanguage = "eng";
+        pgs.rawCodec = "hdmv_pgs_subtitle";
+        assertFalse(SystemPlayerTrackManager.isTextSubtitleTrack(pgs));
+    }
 }

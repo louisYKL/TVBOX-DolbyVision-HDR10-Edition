@@ -110,6 +110,7 @@ public class HomeHotVodAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHol
             containerParams.height = AutoSizeUtils.mm2px(mContext, height); // 高度
             containerParams.width = AutoSizeUtils.mm2px(mContext, width); // 宽度
             container.setLayoutParams(containerParams);
+            container.requestLayout();
         }
     }
 }
