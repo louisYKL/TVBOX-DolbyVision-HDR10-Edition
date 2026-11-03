@@ -24,6 +24,9 @@ import java.util.ArrayList;
 import me.jessyan.autosize.utils.AutoSizeUtils;
 
 public class HomeHotVodAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHolder> {
+    // The footer contains an optional note plus a two-line title.  Keep the
+    // poster tall enough for that content when a source supplies a wide ratio.
+    private static final int MIN_POSTER_HEIGHT_MM = 120;
     private int defaultWidth;
     private final ImgUtil.Style style;
     private String  tvRateValue;
@@ -106,8 +109,9 @@ public class HomeHotVodAdapter extends BaseQuickAdapter<Movie.Video, BaseViewHol
             ViewGroup container = (ViewGroup) ivThumb.getParent();
             int width = defaultWidth;
             int height = (int) (width / style.ratio);
+            int footerMinHeight = AutoSizeUtils.mm2px(mContext, MIN_POSTER_HEIGHT_MM);
             ViewGroup.LayoutParams containerParams = container.getLayoutParams();
-            containerParams.height = AutoSizeUtils.mm2px(mContext, height); // 高度
+            containerParams.height = Math.max(AutoSizeUtils.mm2px(mContext, height), footerMinHeight); // 高度
             containerParams.width = AutoSizeUtils.mm2px(mContext, width); // 宽度
             container.setLayoutParams(containerParams);
             container.requestLayout();

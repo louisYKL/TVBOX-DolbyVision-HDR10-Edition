@@ -5,13 +5,13 @@
 > 为电视而做的 TVBox 分支，重点优化设备硬解、HDR 激发、杜比视界能力路由与大屏交互体验。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.3.5"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.9.3.5-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.3.6"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.9.3.6-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.3.5">下载 0.2.9.3.5</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.3.6">下载 0.2.9.3.6</a> ·
   <a href="README.en.md">English</a>
 </p>
 
@@ -25,9 +25,9 @@
 
 | 文件 | 适用设备 | 说明 |
 | --- | --- | --- |
-| `TVBox_v0.2.9.3.5_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本，可覆盖安装 0.2.9.3.4 及更早版本 |
-| `TVBox_v0.2.9.3.5_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本，可覆盖安装 0.2.9.3.4 及更早版本 |
-| `TVBox_v0.2.9.3.5_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本，可覆盖安装 0.2.9.3.4 及更早版本 |
+| `TVBox_v0.2.9.3.6_java32.apk` | 主流 32 位 Android TV / 智慧屏 | 当前主电视版本，可覆盖安装 0.2.9.3.5 及更早版本 |
+| `TVBox_v0.2.9.3.6_java64.apk` | 64 位 Android 手机 / 平板 / 盒子 | 64 位独立版本，可覆盖安装 0.2.9.3.5 及更早版本 |
+| `TVBox_v0.2.9.3.6_hisense32.apk` | 海信 32 位电视 | 海信电视专项版本，可覆盖安装 0.2.9.3.5 及更早版本 |
 
 ## 项目观感
 
@@ -57,7 +57,7 @@
 - 保持字幕、全屏控制、遥控器焦点和返回逻辑在电视场景下更连贯。
 - 把项目拆成更明确的 32 位电视版、64 位 Android 版和海信 32 位版，便于后续长期维护。
 
-## 0.2.9.3.5 当前版本包含
+## 0.2.9.3.6 当前版本包含
 
 | 版本 | ABI | 面向设备 | 说明 |
 | --- | --- | --- | --- |
@@ -65,13 +65,13 @@
 | `java64` | `arm64-v8a` | 64 位 Android 手机 / 平板 / 盒子 | 当前 64 位版本 |
 | `hisense` | `armeabi-v7a` | 海信 32 位电视 | 当前海信专用版本 |
 
-## 0.2.9.3.5 这次重点修了什么
+## 0.2.9.3.6 这次重点修了什么
 
 - 触摸进度条、遥控器快进/回退和手势 Seek 提交后进入统一真实缓冲监视器，持续显示缓冲百分比和当前网速，直到播放器报告缓冲结束。
-- HDR 文本字幕与 PGS/VobSub 位图字幕统一为淡灰色 `RGB 224` 字形和黑色描边，避免深灰不可读或纯白过曝；SDR 字幕保留字幕源颜色。
+- HDR 文本字幕统一为淡灰色 `RGB 224` 字形和黑色描边；PGS/VobSub 位图字幕继续使用设备位图路径，SDR 字幕保留字幕源颜色。
 - 修复首页海报底部标题裁剪，支持两行显示并适配不同海报比例。
 - 限制详情页简介高度，保证右侧四个操作按钮在电视、平板和手机比例下可见。
-- 所有语言的文本字幕统一进入应用字幕层，避免厂商原生字幕渲染成纯白；PGS/VobSub 位图字幕继续使用位图路径。
+- 所有语言的文本字幕统一进入应用字幕层，避免厂商原生字幕渲染成纯白；PGS/VobSub 位图字幕继续使用设备位图路径。
 
 - HDR 字幕固定为灰色字形 `RGB 192` 加黑色描边；播放中晚识别 HDR 时，已选文本字幕会迁移到应用叠加层，避免 Android 原生渲染器显示纯白字幕。
 - SDR 字幕仍按字幕文件正常显示。

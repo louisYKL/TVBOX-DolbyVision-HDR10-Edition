@@ -1351,6 +1351,16 @@ public class PlayFragment extends BaseLazyFragment {
                     if (mediaPlayer instanceof AndroidMediaPlayer) {
                         if (SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(value)) {
                             applyMappedSubtitleTrackAsync(value, true);
+                        } else if (currentPlaybackRequiresHdrOutput
+                                && SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)
+                                && SystemPlayerTrackManager.isTextSubtitleTrack(value)) {
+                            // Android's native timed-text layer bypasses our HDR tone and outline
+                            // policy. Route text tracks through the application overlay. Bitmap
+                            // tracks stay native because MediaPlayer exposes no bitmap callback.
+                            prepareInternalSubtitleOverlay(mediaPlayer);
+                            enableSystemSubtitleOverlayPassThrough(mediaPlayer);
+                            SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, value);
+                            ((AndroidMediaPlayer) mediaPlayer).suppressNativeSubtitleRendering();
                         } else if (SystemPlayerTrackManager.usesNativeSubtitleRenderer(value)
                                 && !SystemPlayerTrackManager.isTextSubtitleTrack(value)) {
                             disableSystemSubtitleOverlayPassThrough(mediaPlayer);
@@ -2160,7 +2170,9 @@ public class PlayFragment extends BaseLazyFragment {
         TrackInfoBean selected = null;
         for (TrackInfoBean track : trackInfo.getSubtitle()) {
             if (track != null && track.selected && !track.metadataOnly
-                    && SystemPlayerTrackManager.isTextSubtitleTrack(track)) {
+                    && (SystemPlayerTrackManager.isTextSubtitleTrack(track)
+                    || (currentPlaybackRequiresHdrOutput
+                    && SystemPlayerTrackManager.isBitmapSubtitleTrack(track)))) {
                 selected = track;
                 break;
             }
@@ -2839,6 +2851,14 @@ public class PlayFragment extends BaseLazyFragment {
                     if (mediaPlayer instanceof AndroidMediaPlayer
                             && SystemPlayerTrackManager.isMetadataOnlySubtitleTrack(preferredTrack)) {
                         applyMappedSubtitleTrackAsync(preferredTrack, false);
+                    } else if (mediaPlayer instanceof AndroidMediaPlayer
+                            && currentPlaybackRequiresHdrOutput
+                            && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)
+                            && SystemPlayerTrackManager.isTextSubtitleTrack(preferredTrack)) {
+                        prepareInternalSubtitleOverlay(mediaPlayer);
+                        enableSystemSubtitleOverlayPassThrough(mediaPlayer);
+                        SystemPlayerTrackManager.selectTrack((AndroidMediaPlayer) mediaPlayer, preferredTrack);
+                        ((AndroidMediaPlayer) mediaPlayer).suppressNativeSubtitleRendering();
                     } else if (mediaPlayer instanceof AndroidMediaPlayer
                             && SystemPlayerTrackManager.usesNativeSubtitleRenderer(preferredTrack)
                             && !SystemPlayerTrackManager.isTextSubtitleTrack(preferredTrack)) {

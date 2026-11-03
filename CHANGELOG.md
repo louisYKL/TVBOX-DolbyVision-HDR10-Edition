@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.9.3.6
+
+### 中文
+
+- 修复首页宽比例海报底部标题和播放信息被裁切的问题，动态海报为底部信息保留完整空间。
+- 限制详情页播放地址和简介的显示高度，长地址仅显示省略预览，复制操作仍保留完整地址，避免遮挡下方操作按钮。
+- HDR 下文本字幕统一经过应用侧浅灰色填充和黑色描边；PGS/VobSub 等位图字幕保留设备原生路径，避免因系统无位图回调导致字幕消失。
+- 三端版本统一为 `0.2.9.3.6`、`versionCode 20936`，沿用原签名证书，支持覆盖安装。
+
+### English
+
+- Fixed clipped homepage poster footer text by reserving stable space for the title and playback metadata on wide poster ratios.
+- Capped detail-page playback URL and description display so long parser output cannot cover the four action buttons; copying still uses the complete URL.
+- HDR text subtitles now use the app overlay with a light-grey fill and black outline; PGS/VobSub bitmap subtitles retain the native path because Android MediaPlayer does not expose bitmap callbacks.
+- Unified all variants under `0.2.9.3.6` (`versionCode 20936`) while retaining the existing signing certificate.
+
 ## 0.2.9.3.5
 
 ### 中文
@@ -375,3 +391,4 @@
 - Reworked the repository front page with Chinese and English documentation
 - Added a public-repo friendly Android build workflow
 - Preserved the native system-player-first architecture and the MKV / Dolby Vision compatibility path
+

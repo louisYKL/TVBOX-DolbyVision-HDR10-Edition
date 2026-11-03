@@ -113,6 +113,8 @@ public class DetailActivity extends BaseActivity {
     private TextView tvSeriesSort;
     private TextView tvQuickSearch;
     private TextView tvCollect;
+    /** Full playback URL retained for the copy action; the detail view only shows a bounded preview. */
+    private String currentPlayUrl = "";
     private TvRecyclerView mGridViewFlag;
     private TvRecyclerView mGridView;
     private TvRecyclerView mSeriesGroupView;
@@ -326,7 +328,7 @@ public class DetailActivity extends BaseActivity {
                 //获取剪切板管理器
                 ClipboardManager cm = (ClipboardManager)getSystemService(mContext.CLIPBOARD_SERVICE);
                 //设置内容到剪切板
-                cm.setPrimaryClip(ClipData.newPlainText(null, tvPlayUrl.getText().toString().replace("播放地址：","")));
+                cm.setPrimaryClip(ClipData.newPlainText(null, currentPlayUrl));
                 Toast.makeText(DetailActivity.this, "已复制", Toast.LENGTH_SHORT).show();
             }
         });
@@ -1481,7 +1483,13 @@ public class DetailActivity extends BaseActivity {
 
     private void setTvPlayUrl(String url)
     {
-        setTextShow(tvPlayUrl, "播放地址：", url);
+        currentPlayUrl = url == null ? "" : url;
+        setTextShow(tvPlayUrl, "播放地址：", currentPlayUrl);
+        // Keep a long parser URL from becoming a multi-line block that pushes
+        // the action row out of the detail panel on touch/small-screen builds.
+        tvPlayUrl.setSingleLine(true);
+        tvPlayUrl.setMaxLines(1);
+        tvPlayUrl.setEllipsize(TextUtils.TruncateAt.END);
     }
 
     private void setCurrentPlayingSeries(VodInfo.VodSeries series) {

@@ -210,15 +210,21 @@
                     android:id="@+id/tvPlayUrl"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:visibility="gone" />
+                    android:layout_marginTop="@dimen/vs_4"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:singleLine="true"
+                    android:textColor="@color/apple_tv_text_muted"
+                    android:textSize="@dimen/ts_16" />
 
                 <TextView
                     android:id="@+id/tvDes"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="@dimen/vs_10"
+                    android:ellipsize="end"
                     android:lineSpacingMultiplier="1.15"
-                    android:maxLines="3"
+                    android:maxLines="2"
                     android:textColor="@color/apple_tv_text_secondary"
                     android:textSize="@dimen/ts_18" />
 
