@@ -435,8 +435,18 @@ public final class SystemPlayerTrackManager {
     }
 
     public static com.github.tvbox.osc.subtitle.model.Subtitle createInternalSubtitle(String text) {
+        return createInternalSubtitle((CharSequence) text);
+    }
+
+    public static com.github.tvbox.osc.subtitle.model.Subtitle createInternalSubtitle(CharSequence text) {
         com.github.tvbox.osc.subtitle.model.Subtitle subtitle = new com.github.tvbox.osc.subtitle.model.Subtitle();
-        subtitle.content = text == null ? "" : text;
+        subtitle.styledContent = text;
+        subtitle.content = text == null ? "" : text.toString();
+        if (text instanceof android.text.Spanned) {
+            android.text.Spanned spanned = (android.text.Spanned) text;
+            subtitle.hasSourceStyle = spanned.length() > 0
+                    && spanned.getSpans(0, spanned.length(), Object.class).length > 0;
+        }
         subtitle.start = new Time("hh:mm:ss,ms", "00:00:00,000");
         subtitle.end = new Time("hh:mm:ss,ms", "00:00:00,001");
         return subtitle;

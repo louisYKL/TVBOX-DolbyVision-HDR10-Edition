@@ -122,7 +122,6 @@ public class HomeActivity extends BaseActivity {
     protected void init() {
         EventBus.getDefault().register(this);
         eventBusRegistered = true;
-        ControlManager.get().startServer();
         initView();
         initViewModel();
         useCacheConfig = false;
@@ -562,7 +561,6 @@ public class HomeActivity extends BaseActivity {
         if (System.currentTimeMillis() - mExitTime < 2000) {
             AppManager.getInstance().finishAllActivity();
             unregisterEventBus();
-            ControlManager.get().stopServer();
             finish();
             android.os.Process.killProcess(android.os.Process.myPid());
             System.exit(0);
@@ -702,9 +700,6 @@ public class HomeActivity extends BaseActivity {
     protected void onDestroy() {
         super.onDestroy();
         unregisterEventBus();
-        if (isFinishing()) {
-            ControlManager.get().stopServer();
-        }
     }
 
     private void unregisterEventBus() {

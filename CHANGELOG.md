@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.9.4
+
+### 中文
+
+- HDR 字幕仅对没有源样式的纯文字 cue 使用浅灰字和黑色描边；ASS/SSA、带 HTML/WebVTT 标记或样式 span 的文本字幕保留源颜色、字号和样式，PGS/VobSub 位图字幕不再染色。
+- 将 9978 管理服务启动移至应用进程初始化阶段，首页 Activity 重建或关闭不再停止监听；端口占用时记录原因并尝试后续端口，启动结果写入运行日志。
+- 补齐管理页 `/api` 路由；浏览器显式确认配置后只保存地址，不触发应用重启；输入框回车不再自动提交。
+- 统一选择弹窗确认行为：新选项应用后关闭，确认当前选项也关闭；API 历史选择弹窗采用相同行为。
+- 三端版本统一为 `0.2.9.4`、`versionCode 20940`，沿用原签名证书，支持覆盖安装。
+
+### English
+
+- Apply the light-grey HDR tone and black outline only to plain text cues without source styling. ASS/SSA, HTML/WebVTT-marked text and styled spans retain their source colors and presentation; PGS/VobSub bitmap subtitles remain untouched.
+- Start the port 9978 management server during application-process initialization. Home activity recreation or exit no longer stops the listener; port conflicts are logged and the next available port is tried.
+- Add the `/api` management route. Explicit browser confirmation saves configuration without restarting the app, and pressing Enter in an address field no longer submits it.
+- Make selection dialogs close consistently after a new choice or confirming the already-selected option, including API history.
+- Unified all variants under `0.2.9.4` (`versionCode 20940`) with the existing signing certificate.
+
 ## 0.2.9.3.8
 
 ### 中文

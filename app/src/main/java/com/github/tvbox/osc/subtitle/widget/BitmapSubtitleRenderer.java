@@ -17,9 +17,8 @@ import java.util.WeakHashMap;
  *
  * <p>Text subtitles are rendered by {@link SimpleSubtitleView}. Bitmap subtitle cues bypass that
  * view and are painted directly by ExoPlayer, so text alpha/style fixes cannot affect them. PGS
- * images commonly contain very low-alpha anti-aliased pixels on HDR output. Rendering those
- * images through an SDR-white or HDR-grey mask with a small black outline keeps the glyph
- * readable without changing the cue's placement, timing, or scale.</p>
+ * images already contain their source font, colors, outline, and effects. HDR output must keep
+ * those pixels intact; only plain text cues without source styling use the neutral HDR style.</p>
  */
 public final class BitmapSubtitleRenderer {
     private static final int HDR_FILL_RED = 224;
@@ -82,6 +81,9 @@ public final class BitmapSubtitleRenderer {
 
     public static Bitmap normalizeBitmap(@Nullable Bitmap source, boolean hdrOutput) {
         if (source == null || source.isRecycled() || source.getWidth() <= 0 || source.getHeight() <= 0) {
+            return source;
+        }
+        if (hdrOutput) {
             return source;
         }
         synchronized (NORMALIZED_BITMAPS) {

@@ -44,11 +44,12 @@ public class App extends MultiDexApplication {
         super.onCreate();
         instance = this;
         initParams();
+        // Start the management server as soon as app-level configuration is ready.
+        ControlManager.init(this);
+        ControlManager.get().startServer();
         // OKGo
         OkGoHelper.init(); //台标获取
         EpgUtil.init();
-        // 初始化Web服务器
-        ControlManager.init(this);
         //初始化数据库
         AppDataManager.init();
         LoadSir.beginBuilder()

@@ -4,15 +4,11 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.text.TextUtils;
+import android.util.Log;
 
-import com.github.tvbox.osc.api.ApiConfig;
 import com.github.tvbox.osc.event.RefreshEvent;
 import com.github.tvbox.osc.receiver.SearchReceiver;
-import com.github.tvbox.osc.ui.activity.HomeActivity;
-import com.github.tvbox.osc.util.AppManager;
 import com.github.tvbox.osc.util.HawkConfig;
 import com.github.tvbox.osc.util.HistoryHelper;
 import com.orhanobut.hawk.Hawk;
@@ -27,7 +23,6 @@ import java.io.IOException;
  */
 public class ControlManager {
     private static ControlManager instance;
-    private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
     private RemoteServer mServer = null;
     public static Context mContext;
 
@@ -47,7 +42,7 @@ public class ControlManager {
     }
 
     public static void init(Context context) {
-        mContext = context;
+        mContext = context.getApplicationContext();
     }
 
     public String getAddress(boolean local) {
@@ -57,13 +52,13 @@ public class ControlManager {
         return local ? mServer.getLoadAddress() : mServer.getServerAddress();
     }
 
-    public void startServer() {
+    public synchronized void startServer() {
         if (mServer != null) {
             return;
         }
-        do {
-            mServer = new RemoteServer(RemoteServer.serverPort, mContext);
-            mServer.setDataReceiver(new DataReceiver() {
+        while (RemoteServer.serverPort < 9999) {
+            RemoteServer candidate = new RemoteServer(RemoteServer.serverPort, mContext);
+            candidate.setDataReceiver(new DataReceiver() {
                 @Override
                 public void onTextReceived(String text) {
                     if (!TextUtils.isEmpty(text)) {
@@ -90,7 +85,6 @@ public class ControlManager {
 
                 @Override
                 public void onApiReceived(String url, String liveUrl, boolean hasVodChange, boolean hasLiveChange) {
-                    boolean changed = false;
                     if (hasVodChange) {
                         String newApi = url == null ? "" : url.trim();
                         String oldApi = Hawk.get(HawkConfig.API_URL, "");
@@ -99,8 +93,6 @@ public class ControlManager {
                             if (!TextUtils.isEmpty(newApi)) {
                                 HistoryHelper.setApiHistory(newApi);
                             }
-                            EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_API_URL_CHANGE, newApi));
-                            changed = true;
                         }
                     }
                     if (hasLiveChange) {
@@ -111,12 +103,7 @@ public class ControlManager {
                             if (!TextUtils.isEmpty(newLiveApi)) {
                                 HistoryHelper.setLiveApiHistory(newLiveApi);
                             }
-                            EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_LIVE_API_URL_CHANGE, newLiveApi));
-                            changed = true;
                         }
-                    }
-                    if (changed) {
-                        relaunchHomeForConfigRefresh(hasVodChange, hasLiveChange);
                     }
                 }
 
@@ -126,32 +113,22 @@ public class ControlManager {
                 }
             });
             try {
-                mServer.start();
-                break;
+                candidate.start();
+                mServer = candidate;
+                Log.i("TVBox-RemoteServer", "application startup server ready at port "
+                        + RemoteServer.serverPort);
+                return;
             } catch (IOException ex) {
+                Log.w("TVBox-RemoteServer", "port " + RemoteServer.serverPort
+                        + " unavailable; trying next port", ex);
+                candidate.stop();
                 RemoteServer.serverPort++;
-                mServer.stop();
             }
-        } while (RemoteServer.serverPort < 9999);
+        }
+        Log.e("TVBox-RemoteServer", "no available port in range 9978-9998");
     }
 
-    private void relaunchHomeForConfigRefresh(boolean hasVodChange, boolean hasLiveChange) {
-        MAIN_HANDLER.post(() -> {
-            try {
-                if (hasVodChange) {
-                    ApiConfig.get().clearLoader();
-                }
-                AppManager.getInstance().finishAllActivity();
-            } catch (Throwable ignored) {
-            }
-            Intent intent = new Intent(mContext, HomeActivity.class);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            intent.putExtra("useCache", !hasVodChange && hasLiveChange);
-            mContext.startActivity(intent);
-        });
-    }
-
-    public void stopServer() {
+    public synchronized void stopServer() {
         if (mServer != null) {
             if (mServer.isStarting()) {
                 mServer.stop();

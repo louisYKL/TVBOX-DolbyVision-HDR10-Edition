@@ -27,6 +27,14 @@
 
 package com.github.tvbox.osc.subtitle.format;
 
+import android.graphics.Color;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.BackgroundColorSpan;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
+import android.text.style.UnderlineSpan;
+
 import com.github.tvbox.osc.subtitle.exception.FatalParsingException;
 import com.github.tvbox.osc.subtitle.model.Style;
 import com.github.tvbox.osc.subtitle.model.Subtitle;
@@ -208,20 +216,20 @@ public class FormatTTML implements TimedTextFileFormat {
 				if (currentAtr != null){
 					Style style = tto.styling.get(currentAtr.getNodeValue());
 					if (style != null)
-						caption.style = style;
+						caption.style = new Style(Style.defaultID(), style);
 					else
 						//unrecognized style
 						tto.warnings += "unrecoginzed style referenced: "+currentAtr.getNodeValue()+"\n\n"; 
 				}
+				caption.style = applyInlinePresentationStyle(caption.style, attr, tto);
 				
-				//we save the text
-				NodeList textN = node.getChildNodes();
-				for (int j = 0; j < textN.getLength(); j++) {
-					if(textN.item(j).getNodeName().equals("#text"))
-						caption.content+=textN.item(j).getTextContent().trim();
-					else if (textN.item(j).getNodeName().equals("br"))
-						caption.content+="<br />";
-					
+				// Keep text nested in TTML spans and transfer supported inline styles to Android spans.
+				SpannableStringBuilder styledText = new SpannableStringBuilder();
+				caption.hasSourceStyle = caption.style != null;
+				appendTtmlNodeText(node, styledText, tto, caption);
+				caption.content = styledText.toString();
+				if (caption.hasSourceStyle) {
+					caption.styledContent = styledText;
 				}
 				//is this check worth it?
 				if (caption.content.replaceAll("<br />","").trim().isEmpty())
@@ -367,6 +375,125 @@ public class FormatTTML implements TimedTextFileFormat {
 
 
 	/* PRIVATE METHODS */
+
+	private void appendTtmlNodeText(Node node,
+									SpannableStringBuilder text,
+									TimedTextObject tto,
+									Subtitle caption) {
+		if (node == null) {
+			return;
+		}
+	if ("#text".equals(node.getNodeName())) {
+		text.append(node.getNodeValue());
+		return;
+	}
+	if ("br".equals(node.getNodeName())) {
+		text.append('\n');
+		return;
+	}
+	int start = text.length();
+	NodeList children = node.getChildNodes();
+	for (int i = 0; i < children.getLength(); i++) {
+		appendTtmlNodeText(children.item(i), text, tto, caption);
+	}
+	int end = text.length();
+	if (end <= start || node.getAttributes() == null) {
+		return;
+	}
+	NamedNodeMap attrs = node.getAttributes();
+	Node color = attrs.getNamedItem("tts:color");
+	Node background = attrs.getNamedItem("tts:backgroundColor");
+	Node fontStyle = attrs.getNamedItem("tts:fontStyle");
+	Node fontWeight = attrs.getNamedItem("tts:fontWeight");
+	Node decoration = attrs.getNamedItem("tts:textDecoration");
+	if (color != null || background != null || fontStyle != null || fontWeight != null || decoration != null) {
+		caption.hasSourceStyle = true;
+	}
+	if (color != null) {
+		text.setSpan(new ForegroundColorSpan(parseTtmlAndroidColor(color.getNodeValue(), tto)),
+				start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+	}
+	if (background != null) {
+		text.setSpan(new BackgroundColorSpan(parseTtmlAndroidColor(background.getNodeValue(), tto)),
+				start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+	}
+	int typefaceStyle = (fontWeight != null && "bold".equalsIgnoreCase(fontWeight.getNodeValue())
+			? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL)
+			| (fontStyle != null && ("italic".equalsIgnoreCase(fontStyle.getNodeValue())
+			|| "oblique".equalsIgnoreCase(fontStyle.getNodeValue()))
+			? android.graphics.Typeface.ITALIC : android.graphics.Typeface.NORMAL);
+	if (typefaceStyle != android.graphics.Typeface.NORMAL) {
+		text.setSpan(new StyleSpan(typefaceStyle), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+	}
+	if (decoration != null && decoration.getNodeValue().toLowerCase().contains("underline")) {
+		text.setSpan(new UnderlineSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+	}
+}
+
+	private int parseTtmlAndroidColor(String value, TimedTextObject tto) {
+	String rgba = parseColor(value, tto);
+	try {
+		long color = Long.parseLong(rgba, 16);
+		int red = (int) ((color >> 24) & 0xff);
+		int green = (int) ((color >> 16) & 0xff);
+		int blue = (int) ((color >> 8) & 0xff);
+		int alpha = (int) (color & 0xff);
+		return Color.argb(alpha, red, green, blue);
+	} catch (RuntimeException ignored) {
+		return Color.WHITE;
+	}
+}
+
+	private Style applyInlinePresentationStyle(Style sourceStyle, NamedNodeMap attrs, TimedTextObject tto) {
+		Style style = sourceStyle;
+		Node color = attrs.getNamedItem("tts:color");
+		Node background = attrs.getNamedItem("tts:backgroundColor");
+		Node font = attrs.getNamedItem("tts:fontFamily");
+		Node fontSize = attrs.getNamedItem("tts:fontSize");
+		Node fontStyle = attrs.getNamedItem("tts:fontStyle");
+		Node fontWeight = attrs.getNamedItem("tts:fontWeight");
+		Node align = attrs.getNamedItem("tts:textAlign");
+		Node decoration = attrs.getNamedItem("tts:textDecoration");
+		boolean hasInlineStyle = color != null || background != null || font != null || fontSize != null
+				|| fontStyle != null || fontWeight != null || align != null || decoration != null;
+		if (!hasInlineStyle) {
+			return style;
+		}
+		style = style == null ? new Style(Style.defaultID()) : new Style(Style.defaultID(), style);
+		if (color != null) {
+			style.color = parseColor(color.getNodeValue(), tto);
+		}
+		if (background != null) {
+			style.backgroundColor = parseColor(background.getNodeValue(), tto);
+		}
+		if (font != null) {
+			style.font = font.getNodeValue();
+		}
+		if (fontSize != null) {
+			style.fontSize = fontSize.getNodeValue();
+		}
+		if (fontStyle != null) {
+			style.italic = "italic".equalsIgnoreCase(fontStyle.getNodeValue())
+					|| "oblique".equalsIgnoreCase(fontStyle.getNodeValue());
+		}
+		if (fontWeight != null) {
+			style.bold = "bold".equalsIgnoreCase(fontWeight.getNodeValue());
+		}
+		if (align != null) {
+			String value = align.getNodeValue();
+			if ("left".equalsIgnoreCase(value) || "start".equalsIgnoreCase(value)) {
+				style.textAlign = "bottom-left";
+			} else if ("right".equalsIgnoreCase(value) || "end".equalsIgnoreCase(value)) {
+				style.textAlign = "bottom-right";
+			} else if ("center".equalsIgnoreCase(value)) {
+				style.textAlign = "bottom-center";
+			}
+		}
+		if (decoration != null) {
+			style.underline = decoration.getNodeValue().toLowerCase().contains("underline");
+		}
+		return style;
+	}
 	
 	/**
 	 * Identifies the color expression and obtains the RGBA equivalent value.

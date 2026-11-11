@@ -55,10 +55,17 @@ public class SelectDialogAdapter<T> extends ListAdapter<T, SelectDialogAdapter.S
     private int select = 0;
 
     private SelectDialogInterface dialogInterface;
+    private Runnable onSelectionHandled;
 
     public SelectDialogAdapter(SelectDialogInterface dialogInterface, DiffUtil.ItemCallback diffCallback) {
+        this(dialogInterface, diffCallback, null);
+    }
+
+    public SelectDialogAdapter(SelectDialogInterface dialogInterface, DiffUtil.ItemCallback diffCallback,
+                               Runnable onSelectionHandled) {
         super(diffCallback);
         this.dialogInterface = dialogInterface;
+        this.onSelectionHandled = onSelectionHandled;
     }
 
     public void setData(List<T> newData, int defaultSelect) {
@@ -91,12 +98,16 @@ public class SelectDialogAdapter<T> extends ListAdapter<T, SelectDialogAdapter.S
         holder.itemView.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (position == select)
-                    return;
-                notifyItemChanged(select);
-                select = position;
-                notifyItemChanged(select);
-                dialogInterface.click(value, position);
+                try {
+                    if (position != select) {
+                        notifyItemChanged(select);
+                        select = position;
+                        notifyItemChanged(select);
+                        dialogInterface.click(value, position);
+                    }
+                } finally {
+                    if (onSelectionHandled != null) onSelectionHandled.run();
+                }
             }
         });
     }

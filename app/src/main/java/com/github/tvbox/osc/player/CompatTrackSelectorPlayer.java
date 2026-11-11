@@ -27,7 +27,7 @@ public interface CompatTrackSelectorPlayer {
     void setOnRuntimeVideoModeListener(@Nullable RuntimeVideoModeListener listener);
 
     interface SubtitleTextListener {
-        void onSubtitleText(String text);
+        void onSubtitleText(CharSequence text);
     }
 
     interface BitmapSubtitleCueListener {

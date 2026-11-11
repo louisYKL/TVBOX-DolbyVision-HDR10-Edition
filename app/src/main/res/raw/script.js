@@ -16,7 +16,10 @@ function api() {
         warnToast('请至少填写一项地址');
         return false;
     }
-    doAction('api', payload);
+    payload['do'] = 'api';
+    $.post('/action', payload)
+        .done(function () { warnToast('配置地址已保存'); })
+        .fail(function () { warnToast('连接电视失败，请确认电视和浏览器处于同一网络'); });
 }
 
 function push() {
@@ -274,14 +277,20 @@ $(function () {
     $('.weui-tabbar__item').on('click', function () {
         showPanel(parseInt($(this).attr('id').substr(3)));
     });
+    $('#diy_api_url, #diy_live_api_url').on('keydown', function (event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            this.blur();
+        }
+    });
 });
 
-var url = window.location.href;
-if (url.indexOf('push.html') > 0)
+var pagePath = window.location.pathname.toLowerCase();
+if (pagePath.indexOf('push.html') >= 0 || pagePath === '/push')
     showPanel(2);
-else if (url.indexOf('api.html') > 0)
+else if (pagePath.indexOf('api.html') >= 0 || pagePath === '/api' || pagePath === '/api/' || pagePath === '/api/index.html')
     showPanel(3);
-else if (url.indexOf('all.html') > 0)
+else if (pagePath.indexOf('all.html') >= 0 || pagePath === '/all')
     showPanel(3);
 else
     showPanel(1);

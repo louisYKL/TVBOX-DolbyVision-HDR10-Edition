@@ -7,6 +7,7 @@ import android.content.Context;
 import android.net.wifi.WifiManager;
 import android.os.Environment;
 import android.util.Base64;
+import android.util.Log;
 
 import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.api.ApiConfig;
@@ -75,6 +76,12 @@ public class RemoteServer extends NanoHTTPD {
     private void addGetRequestProcess() {
         getRequestList.add(new RawRequestProcess(this.mContext, "/", R.raw.index, NanoHTTPD.MIME_HTML));
         getRequestList.add(new RawRequestProcess(this.mContext, "/index.html", R.raw.index, NanoHTTPD.MIME_HTML));
+        getRequestList.add(new RawRequestProcess(this.mContext, "/api", R.raw.index, NanoHTTPD.MIME_HTML));
+        getRequestList.add(new RawRequestProcess(this.mContext, "/api/", R.raw.index, NanoHTTPD.MIME_HTML));
+        getRequestList.add(new RawRequestProcess(this.mContext, "/api/index.html", R.raw.index, NanoHTTPD.MIME_HTML));
+        getRequestList.add(new RawRequestProcess(this.mContext, "/api.html", R.raw.index, NanoHTTPD.MIME_HTML));
+        getRequestList.add(new RawRequestProcess(this.mContext, "/push.html", R.raw.index, NanoHTTPD.MIME_HTML));
+        getRequestList.add(new RawRequestProcess(this.mContext, "/all.html", R.raw.index, NanoHTTPD.MIME_HTML));
         getRequestList.add(new RawRequestProcess(this.mContext, "/style.css", R.raw.style, "text/css"));
         getRequestList.add(new RawRequestProcess(this.mContext, "/ui.css", R.raw.ui, "text/css"));
         getRequestList.add(new RawRequestProcess(this.mContext, "/jquery.js", R.raw.jquery, "application/x-javascript"));
@@ -88,8 +95,9 @@ public class RemoteServer extends NanoHTTPD {
 
     @Override
     public void start(int timeout, boolean daemon) throws IOException {
-        isStarted = true;
         super.start(timeout, daemon);
+        isStarted = true;
+        Log.i("TVBox-RemoteServer", "listening on port " + getListeningPort());
         EventBus.getDefault().post(new ServerEvent(ServerEvent.SERVER_SUCCESS));
     }
 
@@ -97,6 +105,7 @@ public class RemoteServer extends NanoHTTPD {
     public void stop() {
         super.stop();
         isStarted = false;
+        Log.i("TVBox-RemoteServer", "server stopped");
     }
 
     private Response getProxy(Object[] rs){
@@ -347,31 +356,74 @@ public class RemoteServer extends NanoHTTPD {
 
     @SuppressLint("DefaultLocale")
     public static String getLocalIPAddress(Context context) {
-        WifiManager wifiManager = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
-        int ipAddress = wifiManager.getConnectionInfo().getIpAddress();
-        if (ipAddress == 0) {
-            try {
-                Enumeration<NetworkInterface> enumerationNi = NetworkInterface.getNetworkInterfaces();
-                while (enumerationNi.hasMoreElements()) {
-                    NetworkInterface networkInterface = enumerationNi.nextElement();
-                    String interfaceName = networkInterface.getDisplayName();
-                    if (interfaceName.equals("eth0") || interfaceName.equals("wlan0")) {
-                        Enumeration<InetAddress> enumIpAddr = networkInterface.getInetAddresses();
-                        while (enumIpAddr.hasMoreElements()) {
-                            InetAddress inetAddress = enumIpAddr.nextElement();
-                            if (!inetAddress.isLoopbackAddress() && inetAddress instanceof Inet4Address) {
-                                return inetAddress.getHostAddress();
-                            }
+        WifiManager wifiManager = (WifiManager) context.getApplicationContext()
+                .getSystemService(Context.WIFI_SERVICE);
+        if (wifiManager != null) {
+            int wifiIpAddress = wifiManager.getConnectionInfo().getIpAddress();
+            if (wifiIpAddress != 0) {
+                return String.format("%d.%d.%d.%d", (wifiIpAddress & 0xff), (wifiIpAddress >> 8 & 0xff),
+                        (wifiIpAddress >> 16 & 0xff), (wifiIpAddress >> 24 & 0xff));
+            }
+        }
+
+        String preferredAddress = null;
+        String fallbackAddress = null;
+        int preferredPriority = Integer.MAX_VALUE;
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                NetworkInterface networkInterface = interfaces.nextElement();
+                if (!networkInterface.isUp() || networkInterface.isLoopback()) {
+                    continue;
+                }
+
+                String name = networkInterface.getName().toLowerCase(java.util.Locale.US);
+                int priority = getNetworkInterfacePriority(name);
+                Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    if (!(address instanceof Inet4Address)
+                            || address.isLoopbackAddress()
+                            || address.isLinkLocalAddress()) {
+                        continue;
+                    }
+                    if (priority == Integer.MAX_VALUE) {
+                        if (fallbackAddress == null && !isNonLanInterface(name)) {
+                            fallbackAddress = address.getHostAddress();
                         }
+                    } else if (priority < preferredPriority) {
+                        preferredAddress = address.getHostAddress();
+                        preferredPriority = priority;
                     }
                 }
-            } catch (SocketException e) {
-                e.printStackTrace();
             }
-        } else {
-            return String.format("%d.%d.%d.%d", (ipAddress & 0xff), (ipAddress >> 8 & 0xff), (ipAddress >> 16 & 0xff), (ipAddress >> 24 & 0xff));
+        } catch (SocketException | SecurityException e) {
+            Log.w("TVBox-RemoteServer", "Unable to enumerate network interfaces", e);
+        }
+        if (preferredAddress != null) {
+            return preferredAddress;
+        }
+        if (fallbackAddress != null) {
+            return fallbackAddress;
         }
         return "0.0.0.0";
+    }
+
+    private static int getNetworkInterfacePriority(String name) {
+        if (name.startsWith("eth") || name.startsWith("en") || name.startsWith("lan")
+                || name.contains("ethernet")) {
+            return 0;
+        }
+        if (name.startsWith("wlan") || name.startsWith("wifi") || name.startsWith("wl")
+                || name.startsWith("br-lan")) {
+            return 1;
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    private static boolean isNonLanInterface(String name) {
+        return name.startsWith("tun") || name.startsWith("ppp") || name.startsWith("rmnet")
+                || name.startsWith("ccmni") || name.startsWith("wwan") || name.startsWith("dummy");
     }
 
     String fileTime(long time, String fmt) {

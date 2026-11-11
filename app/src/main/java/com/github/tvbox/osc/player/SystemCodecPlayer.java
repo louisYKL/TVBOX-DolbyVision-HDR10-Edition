@@ -10,6 +10,8 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
+import android.text.Spanned;
+import android.text.SpannableStringBuilder;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -912,25 +914,42 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     }
 
     private void dispatchSubtitleText(@Nullable List<Cue> cues) {
-        List<String> lines = new ArrayList<>();
+        SpannableStringBuilder text = new SpannableStringBuilder();
         List<Cue> bitmapCues = new ArrayList<>();
         if (cues != null) {
             for (Cue cue : cues) {
                 if (cue != null && cue.text != null && cue.text.length() > 0) {
-                    lines.add(cue.text.toString());
+                    if (text.length() > 0) {
+                        text.append('\n');
+                    }
+                    int start = text.length();
+                    text.append(cue.text);
+                    int end = text.length();
+                    if (cue.text instanceof Spanned) {
+                        Spanned styledText = (Spanned) cue.text;
+                        Object[] spans = styledText.getSpans(0, styledText.length(), Object.class);
+                        for (Object span : spans) {
+                            int spanStart = styledText.getSpanStart(span);
+                            int spanEnd = styledText.getSpanEnd(span);
+                            int flags = styledText.getSpanFlags(span);
+                            if (spanStart >= 0 && spanEnd > spanStart) {
+                                text.setSpan(span, start + spanStart, start + spanEnd, flags);
+                            }
+                        }
+                    }
                 }
                 if (cue != null && cue.bitmap != null) {
                     bitmapCues.add(cue);
                 }
             }
         }
-        final String text = TextUtils.join("\n", lines);
+        final CharSequence subtitleText = text;
         final List<Cue> immutableBitmapCues = bitmapCues.isEmpty()
                 ? Collections.emptyList()
                 : Collections.unmodifiableList(new ArrayList<>(bitmapCues));
         runOnMain(() -> {
             if (!released && subtitleTextListener != null) {
-                subtitleTextListener.onSubtitleText(text);
+                subtitleTextListener.onSubtitleText(subtitleText);
             }
             if (!released && bitmapSubtitleCueListener != null) {
                 bitmapSubtitleCueListener.onBitmapSubtitleCues(immutableBitmapCues);

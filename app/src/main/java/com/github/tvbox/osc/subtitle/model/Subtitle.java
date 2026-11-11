@@ -36,5 +36,9 @@ public class Subtitle {
 	public Time end;
 	
 	public String content="";
+	/** Optional already-styled text from the playback engine (for example ExoPlayer text cues). */
+	public CharSequence styledContent;
+	/** True when the source cue carries its own style spans or formatting. */
+	public boolean hasSourceStyle;
 
 }

@@ -161,15 +161,9 @@ public class ApiDialog extends BaseDialog {
             @Override
             public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
                 if (actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_SEARCH || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
-                    String newApi = inputApi.getText().toString().trim();
-                    if (!newApi.isEmpty()) {
-                        HistoryHelper.setApiHistory(newApi);
-                    }
-                    Hawk.put(HawkConfig.API_URL, newApi);
-                    if (listener != null) {
-                        listener.onchange(newApi);
-                    }
-                    dismiss();
+                    ((android.view.inputmethod.InputMethodManager) getContext()
+                            .getSystemService(Context.INPUT_METHOD_SERVICE))
+                            .hideSoftInputFromWindow(inputApi.getWindowToken(), 0);
                     return true;
                 }
                 return false;

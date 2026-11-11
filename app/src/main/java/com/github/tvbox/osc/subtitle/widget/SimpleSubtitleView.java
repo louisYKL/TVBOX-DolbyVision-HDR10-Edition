@@ -39,6 +39,8 @@ import android.text.TextPaint;
 import android.text.TextUtils;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.ForegroundColorSpan;
+import android.graphics.Typeface;
+import android.view.Gravity;
 import android.util.AttributeSet;
 import android.view.ViewGroup;
 import android.widget.TextView;
@@ -46,6 +48,8 @@ import android.widget.TextView;
 import com.github.tvbox.osc.cache.CacheManager;
 import com.github.tvbox.osc.subtitle.DefaultSubtitleEngine;
 import com.github.tvbox.osc.subtitle.SubtitleEngine;
+import com.github.tvbox.osc.subtitle.SubtitleHdrStylePolicy;
+import com.github.tvbox.osc.subtitle.model.Style;
 import com.github.tvbox.osc.subtitle.model.Subtitle;
 import com.github.tvbox.osc.util.MD5;
 
@@ -82,6 +86,16 @@ public class SimpleSubtitleView extends TextView
     private static final int HDR_SUBTITLE_TONE = 224;
     private int requestedTextColor = DEFAULT_SUBTITLE_COLOR;
     private String lastRawSubtitleText = EMPTY_TEXT;
+    private boolean lastSubtitleHasDefinedStyle;
+    private boolean lastSubtitleUsesHdrStyle;
+    @Nullable
+    private CharSequence lastSubtitleStyledContent;
+    @Nullable
+    private Style lastSubtitleSourceStyle;
+    private float baseTextSize;
+    private Typeface baseTypeface;
+    private int basePaintFlags;
+    private boolean applyingSourceStyle;
 
     public SimpleSubtitleView(final Context context) {
         super(context);
@@ -109,6 +123,9 @@ public class SimpleSubtitleView extends TextView
         // Keep normal output white and let HDR mode dim it to a neutral grey. The duplicated
         // background view remains an outline only, so it cannot turn the glyph body black.
         requestedTextColor = DEFAULT_SUBTITLE_COLOR;
+        baseTextSize = getTextSize();
+        baseTypeface = getTypeface();
+        basePaintFlags = getPaintFlags();
         applyEffectiveTextColor();
     }
 
@@ -121,26 +138,29 @@ public class SimpleSubtitleView extends TextView
     public void onSubtitleChanged(@Nullable final Subtitle subtitle) {
         if (subtitle == null) {
             lastRawSubtitleText = EMPTY_TEXT;
+            lastSubtitleHasDefinedStyle = false;
+            lastSubtitleUsesHdrStyle = false;
+            lastSubtitleStyledContent = null;
+            lastSubtitleSourceStyle = null;
             setText(EMPTY_TEXT);
             return;
         }
         String text = subtitle.content;
         text = text.replaceAll("^.*?,.*?,.*?,.*?,.*?,.*?,.*?,.*?,.*?,", "");
         lastRawSubtitleText = text;
-        // HDR captions must not inherit any source style span. Non-Chinese ASS/TTML
-        // tracks commonly carry a white TextAppearance/foreground span which can
-        // override TextView's neutral HDR base color after each cue arrives.
-        setText(hdrSubtitleMode ? buildHdrSubtitleText(text) : buildStyledSubtitleText(text));
-        applyEffectiveTextColor();
+        lastSubtitleHasDefinedStyle = hasSourceStyle(subtitle.style) || subtitle.hasSourceStyle;
+        lastSubtitleStyledContent = subtitle.styledContent;
+        lastSubtitleSourceStyle = subtitle.style;
+        renderSubtitleText(text, subtitle.styledContent, subtitle.style);
     }
 
-    private CharSequence buildStyledSubtitleText(String rawText) {
+    private CharSequence buildStyledSubtitleText(String rawText, boolean preserveSourceStyle) {
         String text = rawText == null ? "" : rawText;
         text = text.replaceAll("(?:\\r\\n)", "\n");
         text = text.replaceAll("(?:\\r)", "\n");
         text = text.replaceAll("\\\\N", "\n");
         if (containsAssColor(text)) {
-            return parseAssColorSubtitle(text);
+            return parseAssColorSubtitle(text, preserveSourceStyle);
         }
         text = text.replaceAll("\\{[\\s\\S]*?\\}", "");
         text = text.replaceAll("(?:\\n)", "<br />");
@@ -150,14 +170,14 @@ public class SimpleSubtitleView extends TextView
         } else {
             spanned = Html.fromHtml(text);
         }
-        return spanned == null ? "" : normalizeSubtitleColorSpans(spanned);
+        return spanned == null ? "" : normalizeSubtitleColorSpans(spanned, preserveSourceStyle);
     }
 
     private boolean containsAssColor(String text) {
         return text != null && ASS_PRIMARY_COLOR.matcher(text).find();
     }
 
-    private CharSequence parseAssColorSubtitle(String text) {
+    private CharSequence parseAssColorSubtitle(String text, boolean preserveSourceStyle) {
         SpannableStringBuilder builder = new SpannableStringBuilder();
         Integer activeColor = null;
         int activeStart = 0;
@@ -190,7 +210,7 @@ public class SimpleSubtitleView extends TextView
             builder.setSpan(new ForegroundColorSpan(activeColor), activeStart, builder.length(),
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         }
-        return normalizeSubtitleColorSpans(builder);
+        return normalizeSubtitleColorSpans(builder, preserveSourceStyle);
     }
 
     private Integer findAssPrimaryColor(String tag) {
@@ -284,21 +304,36 @@ public class SimpleSubtitleView extends TextView
 
     public void setHdrSubtitleMode(boolean enabled) {
         hdrSubtitleMode = enabled;
-        applyEffectiveTextColor();
         if (!TextUtils.isEmpty(lastRawSubtitleText)) {
-            // Rebuild HDR captions without source color spans. Some ASS/TTML tracks
-            // carry a white ForegroundColorSpan that can override TextView's base
-            // color on non-Chinese tracks and remain white after the HDR transition.
-            setText(enabled
-                    ? buildHdrSubtitleText(lastRawSubtitleText)
-                    : buildStyledSubtitleText(lastRawSubtitleText));
+            renderSubtitleText(lastRawSubtitleText, lastSubtitleStyledContent, lastSubtitleSourceStyle);
+        } else {
+            lastSubtitleUsesHdrStyle = false;
             applyEffectiveTextColor();
         }
         postInvalidate();
     }
 
+    private void renderSubtitleText(String rawText,
+                                    @Nullable CharSequence styledContent,
+                                    @Nullable Style sourceStyle) {
+        lastSubtitleUsesHdrStyle = hdrSubtitleMode
+                && SubtitleHdrStylePolicy.shouldApplyHdrStyle(lastSubtitleHasDefinedStyle, rawText);
+        applySourceStyle(sourceStyle);
+        CharSequence renderedText;
+        if (lastSubtitleUsesHdrStyle) {
+            renderedText = buildHdrSubtitleText(rawText);
+        } else if (styledContent != null && lastSubtitleHasDefinedStyle) {
+            renderedText = styledContent;
+        } else {
+            renderedText = buildStyledSubtitleText(rawText, lastSubtitleHasDefinedStyle
+                    || !SubtitleHdrStylePolicy.shouldApplyHdrStyle(false, rawText));
+        }
+        setText(renderedText);
+        applyEffectiveTextColor();
+    }
+
     private CharSequence buildHdrSubtitleText(String rawText) {
-        CharSequence styled = buildStyledSubtitleText(rawText);
+        CharSequence styled = buildStyledSubtitleText(rawText, false);
         String plain = styled == null ? "" : styled.toString();
         return plain.replace("\r\n", "\n").replace('\r', '\n');
     }
@@ -309,13 +344,20 @@ public class SimpleSubtitleView extends TextView
         clearSubtitleCache();
         isInternal = true;
         lastRawSubtitleText = EMPTY_TEXT;
+        lastSubtitleHasDefinedStyle = false;
+        lastSubtitleUsesHdrStyle = false;
+        lastSubtitleStyledContent = null;
+        lastSubtitleSourceStyle = null;
         setText(EMPTY_TEXT);
         setVisibility(VISIBLE);
         bringToFront();
     }
 
     private void applyEffectiveTextColor() {
-        int effectiveColor = hdrSubtitleMode ? dimForHdr(requestedTextColor) : requestedTextColor;
+        if (lastSubtitleHasDefinedStyle) {
+            return;
+        }
+        int effectiveColor = lastSubtitleUsesHdrStyle ? dimForHdr(requestedTextColor) : requestedTextColor;
         // Some ASS/HTML/TTML tracks carry an alpha channel. Keep the requested RGB tone but never
         // let the subtitle fill become transparent; the black outline alone is not readable.
         super.setTextColor(opaque(effectiveColor));
@@ -332,7 +374,10 @@ public class SimpleSubtitleView extends TextView
         return Color.rgb(Color.red(color), Color.green(color), Color.blue(color));
     }
 
-    private CharSequence normalizeSubtitleColorSpans(CharSequence text) {
+    private CharSequence normalizeSubtitleColorSpans(CharSequence text, boolean preserveSourceStyle) {
+        if (preserveSourceStyle) {
+            return text;
+        }
         if (!(text instanceof Spanned)) {
             return text;
         }
@@ -344,7 +389,7 @@ public class SimpleSubtitleView extends TextView
             int flags = builder.getSpanFlags(span);
             builder.removeSpan(span);
             if (start >= 0 && end > start) {
-                int color = hdrSubtitleMode
+                int color = lastSubtitleUsesHdrStyle
                         ? dimForHdr(span.getForegroundColor())
                         : opaque(span.getForegroundColor());
                 builder.setSpan(new ForegroundColorSpan(color), start, end, flags);
@@ -357,13 +402,92 @@ public class SimpleSubtitleView extends TextView
             int flags = builder.getSpanFlags(span);
             builder.removeSpan(span);
             if (start >= 0 && end > start) {
-                int color = hdrSubtitleMode
+                int color = lastSubtitleUsesHdrStyle
                         ? dimForHdr(span.getBackgroundColor())
                         : opaque(span.getBackgroundColor());
                 builder.setSpan(new BackgroundColorSpan(color), start, end, flags);
             }
         }
         return builder;
+    }
+
+    private boolean hasSourceStyle(@Nullable Style style) {
+        return style != null;
+    }
+
+    private void applySourceStyle(@Nullable Style style) {
+        super.setTextColor(requestedTextColor);
+        applyingSourceStyle = true;
+        try {
+        if (style == null) {
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, baseTextSize);
+            super.setTypeface(baseTypeface);
+            super.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            setPaintFlags(basePaintFlags);
+            applyEffectiveTextColor();
+            return;
+        }
+        if (!TextUtils.isEmpty(style.fontSize)) {
+            try {
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP,
+                        Float.parseFloat(style.fontSize.trim()));
+            } catch (NumberFormatException ignored) {
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, baseTextSize);
+            }
+        }
+        int typefaceStyle = (style.bold ? Typeface.BOLD : Typeface.NORMAL)
+                | (style.italic ? Typeface.ITALIC : Typeface.NORMAL);
+        super.setTypeface(TextUtils.isEmpty(style.font)
+                ? baseTypeface : Typeface.create(style.font, typefaceStyle), typefaceStyle);
+        if ("bottom-left".equals(style.textAlign)) {
+            super.setGravity(Gravity.BOTTOM | Gravity.LEFT);
+        } else if ("bottom-right".equals(style.textAlign)) {
+            super.setGravity(Gravity.BOTTOM | Gravity.RIGHT);
+        } else if ("mid-left".equals(style.textAlign)) {
+            super.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+        } else if ("mid-right".equals(style.textAlign)) {
+            super.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
+        } else if ("mid-center".equals(style.textAlign)) {
+            super.setGravity(Gravity.CENTER);
+        } else {
+            super.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        }
+        if (!TextUtils.isEmpty(style.color)) {
+            Integer color = parseSourceStyleColor(style.color);
+            if (color != null) {
+                super.setTextColor(color);
+            } else {
+                applyEffectiveTextColor();
+            }
+        } else {
+            applyEffectiveTextColor();
+        }
+        setPaintFlags(style.underline
+                ? basePaintFlags | Paint.UNDERLINE_TEXT_FLAG
+                : basePaintFlags & ~Paint.UNDERLINE_TEXT_FLAG);
+        } finally {
+            applyingSourceStyle = false;
+        }
+    }
+
+    @Nullable
+    private Integer parseSourceStyleColor(String rgba) {
+        String value = rgba.trim();
+        if (value.startsWith("#")) {
+            value = value.substring(1);
+        }
+        if (value.length() != 8) {
+            return null;
+        }
+        try {
+            int red = Integer.parseInt(value.substring(0, 2), 16);
+            int green = Integer.parseInt(value.substring(2, 4), 16);
+            int blue = Integer.parseInt(value.substring(4, 6), 16);
+            int alpha = Integer.parseInt(value.substring(6, 8), 16);
+            return Color.argb(alpha, red, green, blue);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     @Override
@@ -441,6 +565,20 @@ public class SimpleSubtitleView extends TextView
     public void setTextSize(float size) {
         super.setTextSize(size);
         backGroundText.setTextSize(size);
+        if (!applyingSourceStyle) {
+            baseTextSize = getTextSize();
+        }
+    }
+
+    @Override
+    public void setTextSize(int unit, float size) {
+        super.setTextSize(unit, size);
+        if (backGroundText != null) {
+            backGroundText.setTextSize(unit, size);
+        }
+        if (!applyingSourceStyle) {
+            baseTextSize = getTextSize();
+        }
     }
 
     @Override
@@ -459,9 +597,11 @@ public class SimpleSubtitleView extends TextView
 
     @Override
     protected void onDraw(Canvas canvas) {
-        //其他地方，backGroundText和super的先后顺序影响不会很大，但是此处必须要先绘制backGroundText，
-        drawBackGroundText();
-        backGroundText.draw(canvas);
+        if (!lastSubtitleHasDefinedStyle
+                && SubtitleHdrStylePolicy.shouldApplyHdrStyle(false, lastRawSubtitleText)) {
+            drawBackGroundText();
+            backGroundText.draw(canvas);
+        }
         super.onDraw(canvas);
     }
 

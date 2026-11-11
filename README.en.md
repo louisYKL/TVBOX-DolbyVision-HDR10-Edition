@@ -5,13 +5,13 @@
 > A TV-first TVBox branch focused on device hardware decoding, HDR activation, capability-aware Dolby Vision routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.3.8"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.9.3.8-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.4"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.9.4-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.3.8">Download 0.2.9.3.8</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.4">Download 0.2.9.4</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -25,9 +25,9 @@ This branch is built for real living-room playback: every video uses the current
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.2.9.3.8_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.9.3.7 and earlier builds |
-| `TVBox_v0.2.9.3.8_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.9.3.7 and earlier builds |
-| `TVBox_v0.2.9.3.8_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.9.3.7 and earlier builds |
+| `TVBox_v0.2.9.4_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.9.3.8 and earlier builds |
+| `TVBox_v0.2.9.4_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.9.3.8 and earlier builds |
+| `TVBox_v0.2.9.4_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.9.3.8 and earlier builds |
 
 ## Preview
 
@@ -57,7 +57,7 @@ The core principle is simple:
 - Keep subtitles, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
 
-## 0.2.9.3.8 Variants
+## 0.2.9.4 Variants
 
 | Variant | ABI | Target devices | Notes |
 | --- | --- | --- | --- |
@@ -65,7 +65,14 @@ The core principle is simple:
 | `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Current 64-bit build |
 | `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Current dedicated Hisense build |
 
-## What 0.2.9.3.8 focused on
+## What 0.2.9.4 focused on
+
+- Apply the HDR gray tone only to plain text cues without source styling. Subtitle colors, fonts, size, position, markup and bitmap subtitle pixels remain source-defined.
+- Start the port 9978 management server with the application process and keep it alive across home activity recreation; report port conflicts and try subsequent ports.
+- Serve the management page at `/api`. Browser confirmation saves addresses without restarting the app, and Enter no longer submits an address field.
+- Close setting selection dialogs after confirming either a new option or the current selection.
+
+## 0.2.9.3.8 Historical Release
 
 - Touch-bar, remote, and gesture seek commits enter the same real buffering monitor used at startup, keeping buffered percentage and current transfer speed visible until the player reports buffering end.
 - HDR text subtitles use a light-grey `RGB 224` glyph tone with a black outline; PGS/VobSub bitmap subtitles keep the device bitmap path. SDR subtitles retain source-provided colors.

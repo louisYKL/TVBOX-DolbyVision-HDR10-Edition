@@ -38,8 +38,13 @@ public class ApiHistoryDialogAdapter extends ListAdapter<String, ApiHistoryDialo
     private String select = "";
 
     private SelectDialogInterface dialogInterface = null;
+    private Runnable onSelectionHandled;
 
     public ApiHistoryDialogAdapter(SelectDialogInterface dialogInterface) {
+        this(dialogInterface, null);
+    }
+
+    public ApiHistoryDialogAdapter(SelectDialogInterface dialogInterface, Runnable onSelectionHandled) {
         super(new DiffUtil.ItemCallback<String>() {
             @Override
             public boolean areItemsTheSame(@NonNull @NotNull String oldItem, @NonNull @NotNull String newItem) {
@@ -52,6 +57,7 @@ public class ApiHistoryDialogAdapter extends ListAdapter<String, ApiHistoryDialo
             }
         });
         this.dialogInterface = dialogInterface;
+        this.onSelectionHandled = onSelectionHandled;
     }
 
     public void setData(List<String> newData, int defaultSelect) {
@@ -82,12 +88,16 @@ public class ApiHistoryDialogAdapter extends ListAdapter<String, ApiHistoryDialo
         holder.itemView.findViewById(R.id.tvName).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (select.equals(value))
-                    return;
-                notifyItemChanged(data.indexOf(select));
-                select = value;
-                notifyItemChanged(data.indexOf(value));
-                dialogInterface.click(value);
+                try {
+                    if (!select.equals(value)) {
+                        notifyItemChanged(data.indexOf(select));
+                        select = value;
+                        notifyItemChanged(data.indexOf(value));
+                        dialogInterface.click(value);
+                    }
+                } finally {
+                    if (onSelectionHandled != null) onSelectionHandled.run();
+                }
             }
         });
         holder.itemView.findViewById(R.id.tvDel).setOnClickListener(new View.OnClickListener() {
