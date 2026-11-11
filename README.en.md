@@ -71,6 +71,7 @@ The core principle is simple:
 - Start the port 9978 management server with the application process and keep it alive across home activity recreation; report port conflicts and try subsequent ports.
 - Serve the management page at `/api`. Browser confirmation saves addresses without restarting the app, and Enter no longer submits an address field.
 - Close setting selection dialogs after confirming either a new option or the current selection.
+- Guard subtitle rendering on the playback page; failed style parsing falls back to the original cue instead of taking down the detail/playback screen.
 
 ## 0.2.9.3.8 Historical Release
 

@@ -40,6 +40,7 @@ import android.text.TextUtils;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.ForegroundColorSpan;
 import android.graphics.Typeface;
+import android.util.Log;
 import android.view.Gravity;
 import android.util.AttributeSet;
 import android.view.ViewGroup;
@@ -68,6 +69,7 @@ public class SimpleSubtitleView extends TextView
         implements SubtitleEngine, SubtitleEngine.OnSubtitleChangeListener,
         SubtitleEngine.OnSubtitlePreparedListener {
 
+    private static final String TAG = "SimpleSubtitleView";
     private static final String EMPTY_TEXT = "";
     private static final String MANUAL_SUBTITLE_SELECTION_SUFFIX = "@manual";
 
@@ -145,13 +147,13 @@ public class SimpleSubtitleView extends TextView
             setText(EMPTY_TEXT);
             return;
         }
-        String text = subtitle.content;
+        String text = subtitle.content == null ? EMPTY_TEXT : subtitle.content;
         text = text.replaceAll("^.*?,.*?,.*?,.*?,.*?,.*?,.*?,.*?,.*?,", "");
         lastRawSubtitleText = text;
         lastSubtitleHasDefinedStyle = hasSourceStyle(subtitle.style) || subtitle.hasSourceStyle;
         lastSubtitleStyledContent = subtitle.styledContent;
         lastSubtitleSourceStyle = subtitle.style;
-        renderSubtitleText(text, subtitle.styledContent, subtitle.style);
+        renderSubtitleTextSafely(text, subtitle.styledContent, subtitle.style);
     }
 
     private CharSequence buildStyledSubtitleText(String rawText, boolean preserveSourceStyle) {
@@ -305,12 +307,33 @@ public class SimpleSubtitleView extends TextView
     public void setHdrSubtitleMode(boolean enabled) {
         hdrSubtitleMode = enabled;
         if (!TextUtils.isEmpty(lastRawSubtitleText)) {
-            renderSubtitleText(lastRawSubtitleText, lastSubtitleStyledContent, lastSubtitleSourceStyle);
+            renderSubtitleTextSafely(lastRawSubtitleText, lastSubtitleStyledContent, lastSubtitleSourceStyle);
         } else {
             lastSubtitleUsesHdrStyle = false;
             applyEffectiveTextColor();
         }
         postInvalidate();
+    }
+
+    private void renderSubtitleTextSafely(String rawText,
+                                         @Nullable CharSequence styledContent,
+                                         @Nullable Style sourceStyle) {
+        try {
+            renderSubtitleText(rawText, styledContent, sourceStyle);
+        } catch (RuntimeException exception) {
+            Log.e(TAG, "Subtitle styling failed; rendering the original cue", exception);
+            lastSubtitleHasDefinedStyle = false;
+            lastSubtitleUsesHdrStyle = hdrSubtitleMode
+                    && SubtitleHdrStylePolicy.shouldApplyHdrStyle(false, rawText);
+            try {
+                applySourceStyle(null);
+            } catch (RuntimeException styleException) {
+                Log.e(TAG, "Unable to restore base subtitle style", styleException);
+            }
+            super.setText(rawText == null ? EMPTY_TEXT : rawText);
+            applyEffectiveTextColor();
+            postInvalidate();
+        }
     }
 
     private void renderSubtitleText(String rawText,
@@ -544,12 +567,18 @@ public class SimpleSubtitleView extends TextView
     @Override
     public void setLayoutParams(ViewGroup.LayoutParams params) {
         //同步布局参数
-        backGroundText.setLayoutParams(params);
+        if (backGroundText != null) {
+            backGroundText.setLayoutParams(params);
+        }
         super.setLayoutParams(params);
     }
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        if (backGroundText == null) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            return;
+        }
         String tt = backGroundText.getText() == null ? "" : backGroundText.getText().toString();
         String current = getText() == null ? "" : getText().toString();
         //两个TextView上的文字必须一致
@@ -564,7 +593,9 @@ public class SimpleSubtitleView extends TextView
     @Override
     public void setTextSize(float size) {
         super.setTextSize(size);
-        backGroundText.setTextSize(size);
+        if (backGroundText != null) {
+            backGroundText.setTextSize(size);
+        }
         if (!applyingSourceStyle) {
             baseTextSize = getTextSize();
         }
@@ -591,7 +622,9 @@ public class SimpleSubtitleView extends TextView
 
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-        backGroundText.layout(left, top, right, bottom);
+        if (backGroundText != null) {
+            backGroundText.layout(left, top, right, bottom);
+        }
         super.onLayout(changed, left, top, right, bottom);
     }
 
@@ -599,8 +632,10 @@ public class SimpleSubtitleView extends TextView
     protected void onDraw(Canvas canvas) {
         if (!lastSubtitleHasDefinedStyle
                 && SubtitleHdrStylePolicy.shouldApplyHdrStyle(false, lastRawSubtitleText)) {
-            drawBackGroundText();
-            backGroundText.draw(canvas);
+            if (backGroundText != null) {
+                drawBackGroundText();
+                backGroundText.draw(canvas);
+            }
         }
         super.onDraw(canvas);
     }
