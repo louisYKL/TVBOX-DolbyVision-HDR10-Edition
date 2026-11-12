@@ -1,8 +1,10 @@
 package com.github.tvbox.osc.subtitle;
 
 import android.net.Uri;
+import android.database.Cursor;
 import android.text.TextUtils;
 import android.util.Log;
+import android.provider.OpenableColumns;
 
 import com.github.tvbox.osc.subtitle.exception.FatalParsingException;
 import com.github.tvbox.osc.subtitle.format.FormatASS;
@@ -14,7 +16,7 @@ import com.github.tvbox.osc.subtitle.format.FormatVTT;
 import com.github.tvbox.osc.subtitle.format.TimedTextFileFormat;
 import com.github.tvbox.osc.subtitle.model.TimedTextObject;
 import com.github.tvbox.osc.subtitle.runtime.AppTaskExecutor;
-import com.github.tvbox.osc.util.FileUtils;
+import com.github.tvbox.osc.base.App;
 import com.github.tvbox.osc.util.UnicodeReader;
 import com.lzy.okgo.OkGo;
 
@@ -23,7 +25,9 @@ import org.mozilla.universalchardet.UniversalDetector;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.BufferedInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
@@ -38,6 +42,7 @@ import okhttp3.Response;
 
 public class SubtitleLoader {
     private static final String TAG = SubtitleLoader.class.getSimpleName();
+    private static final int MAX_LOCAL_SUBTITLE_BYTES = 8 * 1024 * 1024;
 
     private SubtitleLoader() {
         throw new AssertionError("No instance for you.");
@@ -193,12 +198,39 @@ public class SubtitleLoader {
     private static SubtitleLoadSuccessResult loadFromLocal(final String localSubtitlePath)
             throws IOException, FatalParsingException {
         Log.d(TAG, "parseLocal: localSubtitlePath = " + localSubtitlePath);
+        if (localSubtitlePath.startsWith("content://")) {
+            return loadFromContentUri(localSubtitlePath);
+        }
         File file = new File(localSubtitlePath);
         if (!file.exists()) {
             Log.d(TAG, "parseLocal: localSubtitlePath = " + localSubtitlePath + " file not exsits");
             return null;
         }
-        byte[] bytes = FileUtils.readSimple(file);
+        byte[] bytes;
+        try (InputStream stream = new BufferedInputStream(new FileInputStream(file))) {
+            bytes = readLimited(stream, MAX_LOCAL_SUBTITLE_BYTES);
+        }
+        return createLocalResult(bytes, localSubtitlePath, file.getName());
+    }
+
+    private static SubtitleLoadSuccessResult loadFromContentUri(String value)
+            throws IOException, FatalParsingException {
+        Uri uri = Uri.parse(value);
+        String displayName = queryDisplayName(uri);
+        try (InputStream stream = App.getInstance().getContentResolver().openInputStream(uri)) {
+            if (stream == null) {
+                throw new IOException("Unable to open selected subtitle");
+            }
+            return createLocalResult(readLimited(stream, MAX_LOCAL_SUBTITLE_BYTES), value, displayName);
+        }
+    }
+
+    private static SubtitleLoadSuccessResult createLocalResult(byte[] bytes,
+                                                                String sourcePath,
+                                                                String fileName) throws IOException, FatalParsingException {
+        if (bytes == null || bytes.length == 0) {
+            throw new IOException("Selected subtitle is empty");
+        }
         UniversalDetector detector = new UniversalDetector(null);
         detector.handleData(bytes, 0, bytes.length);
         detector.dataEnd();
@@ -206,13 +238,49 @@ public class SubtitleLoader {
         if (TextUtils.isEmpty(encoding)) encoding = "UTF-8";
         String content = new String(bytes, encoding);
         InputStream is = new ByteArrayInputStream(content.getBytes());
-        String filePath = file.getPath();
         SubtitleLoadSuccessResult subtitleLoadSuccessResult = new SubtitleLoadSuccessResult();
-        subtitleLoadSuccessResult.timedTextObject = loadAndParse(is, filePath);
-        String fileName = filePath.substring(filePath.lastIndexOf("/") + 1);
+        subtitleLoadSuccessResult.timedTextObject = loadAndParse(is, fileName);
         subtitleLoadSuccessResult.fileName = fileName;
-        subtitleLoadSuccessResult.subtitlePath = localSubtitlePath;
+        // Only remote subtitles need their source text retained for the cache-file write.
+        subtitleLoadSuccessResult.subtitlePath = sourcePath;
         return subtitleLoadSuccessResult;
+    }
+
+    private static String queryDisplayName(Uri uri) {
+        Cursor cursor = null;
+        try {
+            cursor = App.getInstance().getContentResolver().query(uri,
+                    new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (index >= 0) {
+                    String name = cursor.getString(index);
+                    if (!TextUtils.isEmpty(name)) {
+                        return name;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        String fallback = uri.getLastPathSegment();
+        return TextUtils.isEmpty(fallback) ? "subtitle.srt" : fallback;
+    }
+
+    static byte[] readLimited(InputStream input, int maxBytes) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(64 * 1024, maxBytes));
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            if (output.size() > maxBytes - read) {
+                throw new IOException("Subtitle file exceeds " + maxBytes + " bytes");
+            }
+            output.write(buffer, 0, read);
+        }
+        return output.toByteArray();
     }
 
     private static TimedTextObject loadAndParse(final InputStream is, final String filePath)

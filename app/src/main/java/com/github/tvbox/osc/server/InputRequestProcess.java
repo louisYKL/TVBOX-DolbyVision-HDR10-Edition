@@ -33,27 +33,33 @@ public class InputRequestProcess implements RequestProcess {
         DataReceiver mDataReceiver = remoteServer.getDataReceiver();
         switch (fileName) {
             case "/action":
-                if (params.get("do") != null && mDataReceiver != null) {
+                if (params != null && params.get("do") != null) {
                     String action = params.get("do");
 
                     switch (action) {
                         case "search": {
+                            if (mDataReceiver == null) {
+                                return RemoteServer.createPlainTextResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "input receiver unavailable");
+                            }
                             mDataReceiver.onTextReceived(params.get("word").trim());
                             break;
                         }
                         case "api": {
-                            String url = params.get("url") == null ? "" : params.get("url").trim();
-                            String liveUrl = params.get("live_url") == null ? "" : params.get("live_url").trim();
-                            boolean hasVodChange = params.containsKey("url") && !url.isEmpty();
-                            boolean hasLiveChange = params.containsKey("live_url") && !liveUrl.isEmpty();
-                            if (hasVodChange || hasLiveChange) {
-                                mDataReceiver.onApiReceived(url, liveUrl, hasVodChange, hasLiveChange);
-                            } else {
-                                mDataReceiver.onApiReceived(url);
+                            if (mDataReceiver == null) {
+                                return RemoteServer.createPlainTextResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "configuration receiver unavailable");
                             }
-                            break;
+                            ApiConfigRequest request = ApiConfigRequest.from(params);
+                            if (!request.hasAnyChange()) {
+                                return RemoteServer.createPlainTextResponse(NanoHTTPD.Response.Status.BAD_REQUEST, "at least one address is required");
+                            }
+                            mDataReceiver.onApiReceived(request.subscriptionUrl, request.liveUrl,
+                                    request.hasSubscriptionChange, request.hasLiveChange);
+                            return RemoteServer.createPlainTextResponse(NanoHTTPD.Response.Status.OK, "ok");
                         }
                         case "push": {
+                            if (mDataReceiver == null) {
+                                return RemoteServer.createPlainTextResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "input receiver unavailable");
+                            }
                             // 暂未实现
                             mDataReceiver.onPushReceived(params.get("url").trim());
                             break;

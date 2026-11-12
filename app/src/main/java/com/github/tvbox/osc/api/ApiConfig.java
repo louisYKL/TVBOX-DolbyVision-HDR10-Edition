@@ -204,75 +204,107 @@ public class ApiConfig {
             Hawk.put(HawkConfig.API_URL, resolvedApiUrl);
         }
         final String apiUrl = resolvedApiUrl;
-        //独立加载直播配置
         String liveApiUrl = Hawk.get(HawkConfig.LIVE_API_URL, "");
-        String liveApiConfigUrl=configUrl(liveApiUrl);
-        if(!liveApiUrl.isEmpty() && !liveApiUrl.equals(apiUrl)){
-            if(isDirectLiveUrl(liveApiUrl)){
+        resetLiveConfig();
+        if (!liveApiUrl.isEmpty() && !liveApiUrl.equals(apiUrl)) {
+            loadIndependentLiveConfig(liveApiUrl, useCache, callback,
+                    () -> loadMainConfig(apiUrl, useCache, callback));
+            return;
+        }
+        loadMainConfig(apiUrl, useCache, callback);
+    }
+
+    private void resetLiveConfig() {
+        liveChannelGroupList.clear();
+        Hawk.put(HawkConfig.LIVE_GROUP_LIST, new JsonArray());
+        initLiveSettings();
+    }
+
+    private void loadIndependentLiveConfig(String liveApiUrl, boolean useCache,
+                                           LoadConfigCallback callback, Runnable onComplete) {
+        final String liveApiConfigUrl = configUrl(liveApiUrl);
+        if (isDirectLiveUrl(liveApiUrl)) {
+            try {
                 initLiveSettings();
                 parseLiveJson(liveApiUrl, wrapDirectLiveConfig(liveApiConfigUrl));
-            }else {
-                final File live_cache = apiCacheFile(MD5.encode(liveApiUrl));
-                final File live_read_cache = readableCacheFile(MD5.encode(liveApiUrl));
-                LOG.i("echo-加载独立直播");
-                if (useCache && live_read_cache.exists()) {
-                    try {
-                        parseLiveJson(liveApiUrl, live_read_cache);
-                    } catch (Throwable th) {
-                        th.printStackTrace();
-                    }
-                }else {
-                    OkGo.<String>get(liveApiConfigUrl)
-                            .headers("User-Agent", userAgent)
-                            .headers("Accept", requestAccept)
-                            .execute(new AbsCallback<String>() {
-                                @Override
-                                public void onSuccess(Response<String> response) {
-                                    try {
-                                        String json = response.body();
-                                        String normalized = normalizeLiveConfigContent(liveApiUrl, liveApiConfigUrl, json);
-                                        parseLiveJson(liveApiUrl, normalized);
-                                        FileUtils.saveCache(live_cache, normalized);
-                                    } catch (Throwable th) {
-                                        th.printStackTrace();
-                                        callback.notice("解析直播配置失败");
-                                    }
-                                }
+            } catch (Throwable th) {
+                th.printStackTrace();
+                callback.notice("解析直播配置失败");
+            }
+            onComplete.run();
+            return;
+        }
 
-                                @Override
-                                public void onError(Response<String> response) {
-                                    super.onError(response);
-                                    if (live_read_cache.exists()) {
-                                        try {
-                                            parseLiveJson(liveApiUrl, live_read_cache);
-                                            callback.success();
-                                            return;
-                                        } catch (Throwable th) {
-                                            th.printStackTrace();
-                                        }
-                                    }
-                                    callback.notice("直播配置拉取失败");
-                                }
-
-                                public String convertResponse(okhttp3.Response response) throws Throwable {
-                                    String result = "";
-                                    if (response.body() == null) {
-                                        result = "";
-                                    }else {
-                                        result = FindResult(response.body().string(), TempKey);
-                                        if (liveApiUrl.startsWith("clan")) {
-                                            result = clanContentFix(clanToAddress(liveApiUrl), result);
-                                        }
-                                        //假相對路徑
-                                        result = fixContentPath(liveApiUrl,result);
-                                    }
-                                    return result;
-                                }
-                            });
-                }
+        final File liveCache = apiCacheFile(MD5.encode(liveApiUrl));
+        final File liveReadableCache = readableCacheFile(MD5.encode(liveApiUrl));
+        if (useCache && liveReadableCache.exists()) {
+            try {
+                parseLiveJson(liveApiUrl, liveReadableCache);
+                onComplete.run();
+                return;
+            } catch (Throwable th) {
+                th.printStackTrace();
             }
         }
 
+        LOG.i("echo-加载独立直播");
+        OkGo.<String>get(liveApiConfigUrl)
+                .headers("User-Agent", userAgent)
+                .headers("Accept", requestAccept)
+                .execute(new AbsCallback<String>() {
+                    @Override
+                    public void onSuccess(Response<String> response) {
+                        try {
+                            String normalized = normalizeLiveConfigContent(liveApiUrl,
+                                    liveApiConfigUrl, response.body());
+                            parseLiveJson(liveApiUrl, normalized);
+                            FileUtils.saveCache(liveCache, normalized);
+                        } catch (Throwable th) {
+                            th.printStackTrace();
+                            callback.notice("解析直播配置失败");
+                            loadCachedLiveConfig(liveApiUrl, liveReadableCache);
+                        } finally {
+                            onComplete.run();
+                        }
+                    }
+
+                    @Override
+                    public void onError(Response<String> response) {
+                        super.onError(response);
+                        if (!loadCachedLiveConfig(liveApiUrl, liveReadableCache)) {
+                            callback.notice("直播配置拉取失败");
+                        }
+                        onComplete.run();
+                    }
+
+                    @Override
+                    public String convertResponse(okhttp3.Response response) throws Throwable {
+                        if (response.body() == null) {
+                            return "";
+                        }
+                        String result = FindResult(response.body().string(), TempKey);
+                        if (liveApiUrl.startsWith("clan")) {
+                            result = clanContentFix(clanToAddress(liveApiUrl), result);
+                        }
+                        return fixContentPath(liveApiUrl, result);
+                    }
+                });
+    }
+
+    private boolean loadCachedLiveConfig(String liveApiUrl, File liveReadableCache) {
+        if (liveReadableCache == null || !liveReadableCache.exists()) {
+            return false;
+        }
+        try {
+            parseLiveJson(liveApiUrl, liveReadableCache);
+            return true;
+        } catch (Throwable th) {
+            th.printStackTrace();
+            return false;
+        }
+    }
+
+    private void loadMainConfig(String apiUrl, boolean useCache, LoadConfigCallback callback) {
         if (apiUrl.isEmpty()) {
             callback.error("-1");
             return;
@@ -568,9 +600,8 @@ public class ApiConfig {
             initLiveSettings();
             if(infoJson.has("lives")){
                 JsonArray lives_groups=infoJson.get("lives").getAsJsonArray();
-                int live_group_index=Hawk.get(HawkConfig.LIVE_GROUP_INDEX,0);
-                if(live_group_index>lives_groups.size()-1)Hawk.put(HawkConfig.LIVE_GROUP_INDEX,0);
                 Hawk.put(HawkConfig.LIVE_GROUP_LIST,lives_groups);
+                int live_group_index=resolveLiveGroupIndex(lives_groups);
                 //加载多源配置
                 try {
                     ArrayList<LiveSettingItem> liveSettingItemList = new ArrayList<>();
@@ -588,8 +619,10 @@ public class ApiConfig {
                     e.printStackTrace();
                 }
 
-                JsonObject livesOBJ = lives_groups.get(live_group_index).getAsJsonObject();
-                loadLiveApi(livesOBJ);
+                if (live_group_index >= 0) {
+                    JsonObject livesOBJ = lives_groups.get(live_group_index).getAsJsonObject();
+                    loadLiveApi(livesOBJ);
+                }
             }
         }
 
@@ -717,16 +750,15 @@ public class ApiConfig {
     private String liveSpider="";
     private void parseLiveJson(String apiUrl, String jsonStr) {
         JsonObject infoJson = gson.fromJson(jsonStr, JsonObject.class);
+        liveChannelGroupList.clear();
         // spider
         liveSpider = DefaultConfig.safeJsonString(infoJson, "spider", "");
         // 直播源
         initLiveSettings();
         if(infoJson.has("lives")){
             JsonArray lives_groups=infoJson.get("lives").getAsJsonArray();
-
-            int live_group_index=Hawk.get(HawkConfig.LIVE_GROUP_INDEX,0);
-            if(live_group_index>lives_groups.size()-1)Hawk.put(HawkConfig.LIVE_GROUP_INDEX,0);
             Hawk.put(HawkConfig.LIVE_GROUP_LIST,lives_groups);
+            int live_group_index=resolveLiveGroupIndex(lives_groups);
             //加载多源配置
             try {
                 ArrayList<LiveSettingItem> liveSettingItemList = new ArrayList<>();
@@ -744,8 +776,12 @@ public class ApiConfig {
                 e.printStackTrace();
             }
 
-            JsonObject livesOBJ = lives_groups.get(live_group_index).getAsJsonObject();
-            loadLiveApi(livesOBJ);
+            if (live_group_index >= 0) {
+                JsonObject livesOBJ = lives_groups.get(live_group_index).getAsJsonObject();
+                loadLiveApi(livesOBJ);
+            } else {
+                LOG.i("echo-api-live-config has no live groups");
+            }
         }
 
         myHosts = new HashMap<>();
@@ -760,6 +796,19 @@ public class ApiConfig {
             }
         }
         LOG.i("echo-api-live-config-----------load");
+    }
+
+    private int resolveLiveGroupIndex(JsonArray livesGroups) {
+        if (livesGroups == null || livesGroups.size() == 0) {
+            Hawk.put(HawkConfig.LIVE_GROUP_INDEX, 0);
+            return -1;
+        }
+        int index = Hawk.get(HawkConfig.LIVE_GROUP_INDEX, 0);
+        if (index < 0 || index >= livesGroups.size()) {
+            index = 0;
+            Hawk.put(HawkConfig.LIVE_GROUP_INDEX, index);
+        }
+        return index;
     }
 
     private final List<LiveSettingGroup> liveSettingGroupList = new ArrayList<>();

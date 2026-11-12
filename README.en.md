@@ -5,13 +5,13 @@
 > A TV-first TVBox branch focused on device hardware decoding, HDR activation, capability-aware Dolby Vision routing, and living-room friendly interaction.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.4"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.9.4-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.4.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.9.4.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.4">Download 0.2.9.4</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.4.1">Download 0.2.9.4.1</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
@@ -25,9 +25,9 @@ This branch is built for real living-room playback: every video uses the current
 
 | File | Target devices | Notes |
 | --- | --- | --- |
-| `TVBox_v0.2.9.4_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.9.3.8 and earlier builds |
-| `TVBox_v0.2.9.4_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.9.3.8 and earlier builds |
-| `TVBox_v0.2.9.4_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.9.3.8 and earlier builds |
+| `TVBox_v0.2.9.4.1_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.9.4 and earlier builds |
+| `TVBox_v0.2.9.4.1_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.9.4 and earlier builds |
+| `TVBox_v0.2.9.4.1_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.9.4 and earlier builds |
 
 ## Preview
 
@@ -57,7 +57,7 @@ The core principle is simple:
 - Keep subtitles, fullscreen controls, and remote focus behavior consistent for TV use.
 - Split the project into clearer deliverables for long-term maintenance.
 
-## 0.2.9.4 Variants
+## 0.2.9.4.1 Variants
 
 | Variant | ABI | Target devices | Notes |
 | --- | --- | --- | --- |
@@ -65,7 +65,15 @@ The core principle is simple:
 | `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Current 64-bit build |
 | `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Current dedicated Hisense build |
 
-## What 0.2.9.4 focused on
+## What 0.2.9.4.1 focused on
+
+- Browse internal and mounted storage with Android's system document picker. Manually selected SRT, ASS/SSA, SCC, STL, TTML, and VTT subtitles no longer need to match the video's filename.
+- Bound sample queues and rolling Range windows to reduce memory pressure for high-bitrate large files on 32-bit, low-heap devices. Video remains Range-streamed and is never allocated according to total file size.
+- Configure WebDAV/AList in Settings and save the server address and credentials. The Home screen's Local entry browses remote folders and plays videos directly; same-name sibling subtitles load automatically, and manual subtitle selection browses the current remote folder.
+- Fixed port 9978 confirmation so subscription URLs reach the correct setting, both address fields refresh, and saved subscription/live sources reload when returning Home.
+- Retain the HDR subtitle, port 9978 management service, and settings-dialog fixes from `0.2.9.4`.
+
+## What 0.2.9.4 changed
 
 - Apply the HDR gray tone only to plain text cues without source styling. Subtitle colors, fonts, size, position, markup and bitmap subtitle pixels remain source-defined.
 - Start the port 9978 management server with the application process and keep it alive across home activity recreation; report port conflicts and try subsequent ports.

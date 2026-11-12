@@ -17,6 +17,12 @@ public class SubtitleHdrStylePolicyTest {
     }
 
     @Test
+    public void emptyAndSimpleSubtitleCuesInitializeAllRules() {
+        assertTrue(SubtitleHdrStylePolicy.shouldApplyHdrStyle(false, ""));
+        assertTrue(SubtitleHdrStylePolicy.shouldApplyHdrStyle(false, "plain"));
+    }
+
+    @Test
     public void knownTrackStyleMetadataPreservesTheSourceStyle() {
         assertFalse(SubtitleHdrStylePolicy.shouldApplyHdrStyle(true, "plain cue text"));
     }

@@ -4,7 +4,7 @@ import java.util.regex.Pattern;
 
 /** Decides whether the application's neutral HDR style may replace subtitle source styling. */
 public final class SubtitleHdrStylePolicy {
-    private static final Pattern ASS_OVERRIDE = Pattern.compile("\\{\\\\[^}]+}");
+    private static final Pattern ASS_OVERRIDE = Pattern.compile("\\{\\\\[^}]+\\}");
     private static final Pattern MARKUP = Pattern.compile(
             "(?is)<\\s*/?\\s*(?:font|span|b|i|u|s|strike|ruby|rt|rp|v|c|lang|br|style|em|strong|small|big|sup|sub)(?:\\s|[./>])");
     private static final Pattern WEBVTT_CUE_CLASS = Pattern.compile("(?is)<c(?:\\.[\\w-]+)+>");

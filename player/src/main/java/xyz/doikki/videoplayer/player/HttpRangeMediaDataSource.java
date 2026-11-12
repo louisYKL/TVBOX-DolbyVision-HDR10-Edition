@@ -142,8 +142,8 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     public static HttpRangeMediaDataSource createForSystemStreamingPlayback(
             String url, Map<String, String> headers, RangeTransferListener transferListener) {
         return new HttpRangeMediaDataSource(url, headers,
-                8L * 1024L * 1024L,
-                16L * 1024L * 1024L,
+                resolveSystemStreamingDefaultWindowSize(),
+                resolveSystemStreamingMaxWindowSize(),
                 false,
                 Boolean.FALSE,
                 true,
@@ -1237,7 +1237,6 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
             try {
                 Request.Builder builder = new Request.Builder()
                         .url(url)
-                        .header("Connection", "close")
                         .header("Accept-Encoding", "identity");
                 // Keep wire coordinates identical to the decoder's logical coordinates. The
                 // 6677 endpoint has a header-only +8/-8 defect; expanding the physical request
@@ -1437,6 +1436,22 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         return 8L * 1024L * 1024L;
     }
 
+    private static long resolveSystemStreamingDefaultWindowSize() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (is32BitProcess() || (maxMemory > 0L && maxMemory <= 512L * 1024L * 1024L)) {
+            return 4L * 1024L * 1024L;
+        }
+        return 8L * 1024L * 1024L;
+    }
+
+    private static long resolveSystemStreamingMaxWindowSize() {
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (is32BitProcess() || (maxMemory > 0L && maxMemory <= 512L * 1024L * 1024L)) {
+            return 8L * 1024L * 1024L;
+        }
+        return 16L * 1024L * 1024L;
+    }
+
     private static long resolveStreamingMaxWindowSize() {
         if (is32BitProcess()) {
             return 4L * 1024L * 1024L;
@@ -1481,11 +1496,11 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
 
     private static long resolveStreamingMaxCacheSize() {
         if (is32BitProcess()) {
-            return 40L * 1024L * 1024L;
+            return 24L * 1024L * 1024L;
         }
         long maxMemory = Runtime.getRuntime().maxMemory();
         if (maxMemory > 0L && maxMemory <= 640L * 1024L * 1024L) {
-            return 32L * 1024L * 1024L;
+            return 24L * 1024L * 1024L;
         }
         return 64L * 1024L * 1024L;
     }

@@ -2,13 +2,21 @@ package com.github.tvbox.osc.ui.fragment;
 
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.InputMethodManager;
+import android.content.Context;
+import android.text.InputType;
+import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.recyclerview.widget.DiffUtil;
 
 import com.github.tvbox.osc.R;
@@ -39,6 +47,7 @@ import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.OkGoHelper;
 import com.github.tvbox.osc.util.PlayerHelper;
 import com.github.tvbox.osc.util.StorageBudgetManager;
+import com.github.tvbox.osc.webdav.WebDavConfig;
 import com.lzy.okgo.OkGo;
 import com.lzy.okgo.callback.FileCallback;
 import com.lzy.okgo.model.Progress;
@@ -46,6 +55,8 @@ import com.lzy.okgo.model.Response;
 import com.orhanobut.hawk.Hawk;
 
 import org.greenrobot.eventbus.EventBus;
+import org.greenrobot.eventbus.Subscribe;
+import org.greenrobot.eventbus.ThreadMode;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.File;
@@ -77,6 +88,7 @@ public class ModelSettingFragment extends BaseLazyFragment {
     private TextView tvAudioPassthrough;
     private TextView tvApiHistorySummary;
     private TextView tvHdrSupport;
+    private TextView tvWebDavSummary;
 
     public static ModelSettingFragment newInstance() {
         return new ModelSettingFragment().setArguments();
@@ -115,6 +127,8 @@ public class ModelSettingFragment extends BaseLazyFragment {
         tvAudioPassthrough = findViewById(R.id.tvAudioPassthrough);
         tvApiHistorySummary = findViewById(R.id.tvMediaCodec1);
         tvHdrSupport = findViewById(R.id.tvHdrSupport);
+        tvWebDavSummary = findViewById(R.id.tvWebDavSummary);
+        updateWebDavSummary();
         tvDebugOpen.setText(Hawk.get(HawkConfig.DEBUG_OPEN, false) ? "已打开" : "已关闭");
         tvParseWebView.setText(Hawk.get(HawkConfig.PARSE_WEBVIEW, true) ? "系统自带" : "XWalkView");
         tvApi.setText(Hawk.get(HawkConfig.API_URL, ""));
@@ -259,6 +273,13 @@ public class ModelSettingFragment extends BaseLazyFragment {
                     }, sites, select);
                     dialog.show();
                 }
+            }
+        });
+        findViewById(R.id.llWebDav).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                FastClickCheckUtil.check(view);
+                showWebDavSettings();
             }
         });
         findViewById(R.id.llDns).setOnClickListener(new View.OnClickListener() {
@@ -696,6 +717,110 @@ public class ModelSettingFragment extends BaseLazyFragment {
 
         findViewById(R.id.llAudioPassthrough).setOnClickListener((view -> onClickAudioPassthrough(view)));
         findViewById(R.id.llClearCache).setOnClickListener((view -> onClickClearCache(view)));
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        if (!EventBus.getDefault().isRegistered(this)) {
+            EventBus.getDefault().register(this);
+        }
+        refreshApiAddress();
+    }
+
+    @Override
+    public void onStop() {
+        if (EventBus.getDefault().isRegistered(this)) {
+            EventBus.getDefault().unregister(this);
+        }
+        super.onStop();
+    }
+
+    @Subscribe(threadMode = ThreadMode.MAIN)
+    public void onRemoteApiAddressChanged(RefreshEvent event) {
+        if (event.type == RefreshEvent.TYPE_API_URL_CHANGE) {
+            refreshApiAddress();
+        }
+    }
+
+    private void refreshApiAddress() {
+        if (tvApi != null) {
+            tvApi.setText(Hawk.get(HawkConfig.API_URL, ""));
+        }
+        if (tvApiHistorySummary != null) {
+            tvApiHistorySummary.setText(getApiHistorySummary());
+        }
+    }
+
+    private void showWebDavSettings() {
+        final WebDavConfig saved = WebDavConfig.load();
+        LinearLayout form = new LinearLayout(mActivity);
+        form.setOrientation(LinearLayout.VERTICAL);
+        int horizontal = getResources().getDimensionPixelSize(R.dimen.vs_24);
+        int vertical = getResources().getDimensionPixelSize(R.dimen.vs_8);
+        form.setPadding(horizontal, vertical, horizontal, vertical);
+
+        final EditText address = new EditText(mActivity);
+        address.setSingleLine(true);
+        address.setHint("192.168.1.10 或完整 WebDAV 地址");
+        address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        address.setText(saved.baseUrl);
+        address.setTextColor(getResources().getColor(R.color.apple_tv_text_primary));
+        address.setHintTextColor(getResources().getColor(R.color.apple_tv_text_muted));
+        form.addView(address, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final EditText username = new EditText(mActivity);
+        username.setSingleLine(true);
+        username.setHint("WebDAV 用户名");
+        username.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
+        username.setText(saved.username);
+        username.setTextColor(getResources().getColor(R.color.apple_tv_text_primary));
+        username.setHintTextColor(getResources().getColor(R.color.apple_tv_text_muted));
+        form.addView(username, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final EditText password = new EditText(mActivity);
+        password.setSingleLine(true);
+        password.setHint("WebDAV 密码");
+        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        password.setText(saved.password);
+        password.setTextColor(getResources().getColor(R.color.apple_tv_text_primary));
+        password.setHintTextColor(getResources().getColor(R.color.apple_tv_text_muted));
+        form.addView(password, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(mActivity)
+                .setTitle("WebDAV 设置")
+                .setMessage("填写 AList 的 WebDAV 地址。只输入 IP 时使用默认端口 5244 和 /dav 路径。")
+                .setView(form)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(button -> {
+                    String value = address.getText().toString().trim();
+                    if (!WebDavConfig.save(value, username.getText().toString(),
+                            password.getText().toString())) {
+                        Toast.makeText(mActivity, "WebDAV 地址无效", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    updateWebDavSummary();
+                    dialog.dismiss();
+                }));
+        dialog.show();
+        address.requestFocus();
+    }
+
+    private void updateWebDavSummary() {
+        WebDavConfig config = WebDavConfig.load();
+        if (config.isConfigured()) {
+            String user = config.username == null || config.username.isEmpty()
+                    ? "匿名" : config.username;
+            tvWebDavSummary.setText(config.baseUrl + "  ·  " + user);
+        } else {
+            tvWebDavSummary.setText("未配置");
+        }
     }
 
     private void restartAppAfterConfigChanged() {

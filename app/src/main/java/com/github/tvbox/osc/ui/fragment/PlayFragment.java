@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -62,6 +63,7 @@ import com.github.tvbox.osc.player.TrackInfo;
 import com.github.tvbox.osc.player.TrackInfoBean;
 import com.github.tvbox.osc.player.controller.VodController;
 import com.github.tvbox.osc.subtitle.widget.BitmapSubtitleRenderer;
+import com.github.tvbox.osc.subtitle.SubtitleFilePicker;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.ui.adapter.SelectDialogAdapter;
 import com.github.tvbox.osc.ui.dialog.SearchSubtitleDialog;
@@ -95,7 +97,6 @@ import com.lzy.okgo.OkGo;
 import com.lzy.okgo.callback.AbsCallback;
 import com.lzy.okgo.model.HttpHeaders;
 import com.lzy.okgo.model.Response;
-import com.obsez.android.lib.filechooser.ChooserDialog;
 import com.orhanobut.hawk.Hawk;
 
 import org.greenrobot.eventbus.EventBus;
@@ -976,6 +977,10 @@ public class PlayFragment extends BaseLazyFragment {
             mController.mSubtitleView.clearSubtitleCache();
             return false;
         }
+        if (subtitlePathCache.startsWith("content://")) {
+            // ACTION_OPEN_DOCUMENT grants access to the selected URI; it is not a filesystem path.
+            return true;
+        }
         if (!subtitlePathCache.startsWith("http://") && !subtitlePathCache.startsWith("https://")) {
             File localSubtitle = new File(subtitlePathCache);
             if (!localSubtitle.exists() || !localSubtitle.isFile()) {
@@ -1230,21 +1235,23 @@ public class PlayFragment extends BaseLazyFragment {
         subtitleDialog.setLocalFileChooserListener(new SubtitleDialog.LocalFileChooserListener() {
             @Override
             public void openLocalFileChooserDialog() {
-                new ChooserDialog(getActivity())
-                        .withFilter(false, false, "srt", "ass", "ssa", "scc", "stl", "ttml", "vtt")
-                        .withStartFile("/storage/emulated/0/Download")
-                        .withChosenListener(new ChooserDialog.Result() {
-                            @Override
-                            public void onChoosePath(String path, File pathFile) {
-                                LOG.i("echo-Local Subtitle Path: " + path);
-                                setSubtitle(path);//设置字幕
-                            }
-                        })
-                        .build()
-                        .show();
+                startActivityForResult(SubtitleFilePicker.createIntent(), SubtitleFilePicker.REQUEST_CODE);
             }
         });
         subtitleDialog.show();
+    }
+
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != SubtitleFilePicker.REQUEST_CODE || resultCode != Activity.RESULT_OK) {
+            return;
+        }
+        String path = SubtitleFilePicker.keepReadAccess(requireContext(), data);
+        if (!TextUtils.isEmpty(path)) {
+            LOG.i("echo-local-subtitle selected uri=" + path);
+            setSubtitle(path);
+        }
     }
 
     @SuppressLint("UseCompatLoadingForColorStateLists")

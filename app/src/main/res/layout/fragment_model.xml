@@ -157,6 +157,48 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/llWebDav"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="@dimen/vs_22"
+                android:background="@drawable/shape_setting_model_focus"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:minHeight="@dimen/vs_96"
+                android:orientation="vertical"
+                android:paddingStart="@dimen/vs_20"
+                android:paddingTop="@dimen/vs_16"
+                android:paddingEnd="@dimen/vs_20"
+                android:paddingBottom="@dimen/vs_16">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="WebDAV"
+                    android:textColor="@color/apple_tv_text_primary"
+                    android:textSize="@dimen/ts_22"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/vs_4"
+                    android:text="配置 AList WebDAV 地址、账号和密码，默认端口 5244。"
+                    android:textColor="@color/apple_tv_text_secondary"
+                    android:textSize="@dimen/ts_16" />
+
+                <TextView
+                    android:id="@+id/tvWebDavSummary"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/vs_8"
+                    android:ellipsize="middle"
+                    android:maxLines="1"
+                    android:textColor="@color/apple_tv_text_primary"
+                    android:textSize="@dimen/ts_18" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="@dimen/vs_22"

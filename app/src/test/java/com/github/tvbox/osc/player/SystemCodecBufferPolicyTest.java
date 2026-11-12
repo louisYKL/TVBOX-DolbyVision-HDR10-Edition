@@ -9,30 +9,30 @@ public class SystemCodecBufferPolicyTest {
     private static final int MB = 1024 * 1024;
 
     @Test
-    public void targetBufferUsesExoPlayersTrackSizedDefault() {
-        assertEquals(com.google.android.exoplayer2.C.LENGTH_UNSET,
-                SystemCodecBufferPolicy.targetBufferBytes(128));
-        assertEquals(com.google.android.exoplayer2.C.LENGTH_UNSET,
-                SystemCodecBufferPolicy.targetBufferBytes(1024));
+    public void targetBufferIsCappedForLowMemoryDevices() {
+        assertEquals(16 * MB, SystemCodecBufferPolicy.targetBufferBytes(128));
+        assertEquals(32 * MB, SystemCodecBufferPolicy.targetBufferBytes(256));
+        assertEquals(32 * MB, SystemCodecBufferPolicy.targetBufferBytes(1024));
     }
 
     @Test
     public void progressByteTargetIsBoundedForTheTvHeap() {
-        assertEquals(21 * MB, SystemCodecBufferPolicy.bufferProgressTargetBytes(64));
-        assertEquals(64 * MB, SystemCodecBufferPolicy.bufferProgressTargetBytes(1024));
+        assertEquals(16 * MB, SystemCodecBufferPolicy.bufferProgressTargetBytes(128));
+        assertEquals(32 * MB, SystemCodecBufferPolicy.bufferProgressTargetBytes(1024));
     }
 
     @Test
     public void playbackThresholdsKeepAValidLargePrebuffer() {
-        assertEquals(20_000, SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS);
-        assertEquals(20_000, SystemCodecBufferPolicy.REBUFFER_MS);
+        assertEquals(4_000, SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS);
+        assertEquals(5_000, SystemCodecBufferPolicy.REBUFFER_MS);
         assertTrue(SystemCodecBufferPolicy.MIN_BUFFER_MS
                 >= SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS);
         assertTrue(SystemCodecBufferPolicy.MIN_BUFFER_MS
                 >= SystemCodecBufferPolicy.REBUFFER_MS);
         assertTrue(SystemCodecBufferPolicy.MAX_BUFFER_MS
                 >= SystemCodecBufferPolicy.MIN_BUFFER_MS);
-        assertTrue(SystemCodecBufferPolicy.PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS);
+        assertEquals(30_000, SystemCodecBufferPolicy.MAX_BUFFER_MS);
+        assertTrue(!SystemCodecBufferPolicy.PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS);
     }
 
     @Test

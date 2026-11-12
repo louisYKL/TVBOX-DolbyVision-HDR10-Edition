@@ -62,6 +62,7 @@ import com.github.tvbox.osc.player.TrackInfo;
 import com.github.tvbox.osc.player.TrackInfoBean;
 import com.github.tvbox.osc.player.controller.VodController;
 import com.github.tvbox.osc.subtitle.widget.BitmapSubtitleRenderer;
+import com.github.tvbox.osc.subtitle.SubtitleFilePicker;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.ui.adapter.SelectDialogAdapter;
 import com.github.tvbox.osc.ui.dialog.SearchSubtitleDialog;
@@ -89,13 +90,13 @@ import com.github.tvbox.osc.util.XWalkUtils;
 import com.github.tvbox.osc.util.parser.SuperParse;
 import com.github.tvbox.osc.util.thunder.Jianpian;
 import com.github.tvbox.osc.util.thunder.Thunder;
+import com.github.tvbox.osc.webdav.WebDavConfig;
 import com.github.tvbox.osc.viewmodel.SourceViewModel;
 import com.google.android.exoplayer2.text.Cue;
 import com.lzy.okgo.OkGo;
 import com.lzy.okgo.callback.AbsCallback;
 import com.lzy.okgo.model.HttpHeaders;
 import com.lzy.okgo.model.Response;
-import com.obsez.android.lib.filechooser.ChooserDialog;
 import com.orhanobut.hawk.Hawk;
 
 import org.greenrobot.eventbus.EventBus;
@@ -112,6 +113,7 @@ import org.xwalk.core.XWalkWebResourceResponse;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -134,6 +136,9 @@ import xyz.doikki.videoplayer.player.ProgressManager;
 import xyz.doikki.videoplayer.player.VideoView;
 
 public class PlayActivity extends BaseActivity {
+    public static final String EXTRA_WEBDAV_URL = "webdav_url";
+    public static final String EXTRA_WEBDAV_TITLE = "webdav_title";
+    public static final String EXTRA_WEBDAV_SUBTITLE = "webdav_subtitle";
     private static final int MSG_PARSE_TIMEOUT = 100;
     private static final int MSG_PLAY_TIMEOUT = 101;
     private static final long PLAY_TIMEOUT_MS = 12 * 1000L;
@@ -317,6 +322,9 @@ public class PlayActivity extends BaseActivity {
     }
 
     private void persistPlaybackHistoryRecord() {
+        if (webDavPlayback) {
+            return;
+        }
         try {
             String resolvedSourceKey = getPlaybackSourceKeyForPersistence();
             String playbackFlag = getPlaybackFlagForPersistence();
@@ -914,6 +922,10 @@ public class PlayActivity extends BaseActivity {
             mController.mSubtitleView.clearSubtitleCache();
             return false;
         }
+        if (subtitlePathCache.startsWith("content://")) {
+            // ACTION_OPEN_DOCUMENT grants access to the selected URI; it is not a filesystem path.
+            return true;
+        }
         if (!subtitlePathCache.startsWith("http://") && !subtitlePathCache.startsWith("https://")) {
             File localSubtitle = new File(subtitlePathCache);
             if (!localSubtitle.exists() || !localSubtitle.isFile()) {
@@ -1165,21 +1177,36 @@ public class PlayActivity extends BaseActivity {
         subtitleDialog.setLocalFileChooserListener(new SubtitleDialog.LocalFileChooserListener() {
             @Override
             public void openLocalFileChooserDialog() {
-                new ChooserDialog(PlayActivity.this)
-                        .withFilter(false, false, "srt", "ass", "ssa", "scc", "stl", "ttml", "vtt")
-                        .withStartFile("/storage/emulated/0/Download")
-                        .withChosenListener(new ChooserDialog.Result() {
-                            @Override
-                            public void onChoosePath(String path, File pathFile) {
-                                LOG.i("echo-Local Subtitle Path: " + path);
-                                setSubtitle(path);//设置字幕
-                            }
-                        })
-                        .build()
-                        .show();
+                if (webDavPlayback && !TextUtils.isEmpty(webDavDirectoryUrl)) {
+                    startActivityForResult(WebDavBrowserActivity.createSubtitlePickerIntent(
+                            PlayActivity.this, webDavDirectoryUrl), WebDavBrowserActivity.SUBTITLE_REQUEST_CODE);
+                } else {
+                    startActivityForResult(SubtitleFilePicker.createIntent(), SubtitleFilePicker.REQUEST_CODE);
+                }
             }
         });
         subtitleDialog.show();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == WebDavBrowserActivity.SUBTITLE_REQUEST_CODE
+                && resultCode == Activity.RESULT_OK && data != null) {
+            String selectedPath = data.getStringExtra(WebDavBrowserActivity.EXTRA_SELECTED_SUBTITLE_PATH);
+            if (!TextUtils.isEmpty(selectedPath)) {
+                setSubtitle(selectedPath);
+            }
+            return;
+        }
+        if (requestCode != SubtitleFilePicker.REQUEST_CODE || resultCode != Activity.RESULT_OK) {
+            return;
+        }
+        String path = SubtitleFilePicker.keepReadAccess(this, data);
+        if (!TextUtils.isEmpty(path)) {
+            LOG.i("echo-local-subtitle selected uri=" + path);
+            setSubtitle(path);
+        }
     }
 
     void setSubtitleViewTextStyle(int style) {
@@ -1779,6 +1806,10 @@ public class PlayActivity extends BaseActivity {
         }
         if (TextUtils.isEmpty(url)) {
             handleMissingPlayableUrl("playUrl-empty-arg", null);
+            return;
+        }
+        if (webDavPlayback) {
+            goPlayUrl(url, headers, generation);
             return;
         }
         if(!url.startsWith("data:application"))EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_REFRESH, url));//更新播放地址
@@ -2891,6 +2922,11 @@ public class PlayActivity extends BaseActivity {
 
     private void initData() {
         Intent intent = getIntent();
+        String webDavUrl = intent == null ? null : intent.getStringExtra(EXTRA_WEBDAV_URL);
+        if (!TextUtils.isEmpty(webDavUrl)) {
+            initWebDavPlayback(intent, webDavUrl);
+            return;
+        }
         if (intent != null && intent.getExtras() != null) {
             Bundle bundle = intent.getExtras();
 //            mVodInfo = (VodInfo) bundle.getSerializable("VodInfo");
@@ -2905,6 +2941,48 @@ public class PlayActivity extends BaseActivity {
             triedLineFlags.clear();
             play(false);
         }
+    }
+
+    private void initWebDavPlayback(Intent intent, String videoUrl) {
+        webDavPlayback = true;
+        webDavDirectoryUrl = WebDavBrowserActivity.parentDirectoryUrl(videoUrl);
+        String title = intent.getStringExtra(EXTRA_WEBDAV_TITLE);
+        if (TextUtils.isEmpty(title)) {
+            title = "WebDAV 视频";
+        }
+        mVodInfo = new VodInfo();
+        mVodInfo.id = MD5.string2MD5(videoUrl);
+        mVodInfo.name = title;
+        mVodInfo.playFlag = "webdav";
+        mVodInfo.playNote = title;
+        mVodInfo.sourceKey = "webdav";
+        mVodInfo.playerCfg = "{}";
+        mVodInfo.seriesFlags = new ArrayList<>();
+        mVodInfo.seriesFlags.add(new VodInfo.VodSeriesFlag("webdav"));
+        mVodInfo.seriesMap = new LinkedHashMap<>();
+        ArrayList<VodInfo.VodSeries> series = new ArrayList<>();
+        series.add(new VodInfo.VodSeries(title, videoUrl));
+        mVodInfo.seriesMap.put("webdav", series);
+        sourceKey = "webdav";
+        sourceBean = null;
+        App.getInstance().setVodInfo(mVodInfo);
+        initPlayerCfg();
+        mController.setTitle(title);
+        sourceSubtitles.clear();
+        playSubtitle = intent.getStringExtra(EXTRA_WEBDAV_SUBTITLE);
+        subtitleCacheKey = "webdav-" + mVodInfo.id + "-subt";
+        progressKey = "webdav|" + mVodInfo.id + "|webdav|0";
+        activePlayRequestKey = "webdav-" + mVodInfo.id;
+        bindPlaybackIdentity(sourceKey, mVodInfo.playFlag, mVodInfo.playIndex);
+        int generation = beginPlayGeneration(progressKey);
+        HashMap<String, String> headers = new HashMap<>();
+        String authorization = WebDavConfig.load().authorizationHeader();
+        if (!TextUtils.isEmpty(authorization)) {
+            headers.put("Authorization", authorization);
+        }
+        mController.showParse(false);
+        setTip("正在连接 WebDAV", true, false);
+        goPlayUrl(videoUrl, headers, generation);
     }
 
     void initPlayerCfg() {
@@ -3190,6 +3268,8 @@ public class PlayActivity extends BaseActivity {
     private JSONObject mVodPlayerCfg;
     private String sourceKey;
     private SourceBean sourceBean;
+    private boolean webDavPlayback;
+    private String webDavDirectoryUrl;
 
     private void playNext(boolean isProgress) {
         triedLineFlags.clear();

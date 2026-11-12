@@ -99,6 +99,25 @@ public class HomeActivity extends BaseActivity {
     private final Handler mHandler = new Handler();
     private long mExitTime = 0;
     private boolean eventBusRegistered = false;
+    private boolean activityResumed = false;
+    private boolean remoteConfigReloadPending = false;
+    private final Runnable remoteConfigReload = new Runnable() {
+        @Override
+        public void run() {
+            if (!remoteConfigReloadPending || !activityResumed || isFinishing()) {
+                return;
+            }
+            if (configLoadInProgress) {
+                mHandler.postDelayed(this, 250);
+                return;
+            }
+            remoteConfigReloadPending = false;
+            if (getIntent() != null) {
+                getIntent().removeExtra("useCache");
+            }
+            recreate();
+        }
+    };
     private final Runnable mRunnable = new Runnable() {
         @SuppressLint({"DefaultLocale", "SetTextI18n"})
         @Override
@@ -574,12 +593,18 @@ public class HomeActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        activityResumed = true;
         mHandler.post(mRunnable);
+        if (remoteConfigReloadPending) {
+            mHandler.removeCallbacks(remoteConfigReload);
+            mHandler.postDelayed(remoteConfigReload, 100);
+        }
     }
 
 
     @Override
     protected void onPause() {
+        activityResumed = false;
         super.onPause();
         mHandler.removeCallbacks(mRunnable);
     }
@@ -597,6 +622,12 @@ public class HomeActivity extends BaseActivity {
         } else if (event.type == RefreshEvent.TYPE_FILTER_CHANGE) {
             if (currentView != null) {
                 showFilterIcon((int) event.obj);
+            }
+        } else if (event.type == RefreshEvent.TYPE_REMOTE_API_CONFIG_APPLY) {
+            remoteConfigReloadPending = true;
+            if (activityResumed) {
+                mHandler.removeCallbacks(remoteConfigReload);
+                mHandler.postDelayed(remoteConfigReload, 100);
             }
         }
     }

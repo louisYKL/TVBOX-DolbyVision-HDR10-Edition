@@ -7,12 +7,12 @@ function api() {
     const liveUrl = $('#diy_live_api_url').val().trim();
     const payload = {};
     if (url.length > 0) {
-        payload.url = url;
+        payload.subscription_url = url;
     }
     if (liveUrl.length > 0) {
         payload.live_url = liveUrl;
     }
-    if (!payload.url && !payload.live_url) {
+    if (!payload.subscription_url && !payload.live_url) {
         warnToast('请至少填写一项地址');
         return false;
     }

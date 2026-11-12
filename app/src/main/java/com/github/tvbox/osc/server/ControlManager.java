@@ -94,6 +94,7 @@ public class ControlManager {
                                 HistoryHelper.setApiHistory(newApi);
                             }
                         }
+                        EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_API_URL_CHANGE, newApi));
                     }
                     if (hasLiveChange) {
                         String newLiveApi = liveUrl == null ? "" : liveUrl.trim();
@@ -104,6 +105,10 @@ public class ControlManager {
                                 HistoryHelper.setLiveApiHistory(newLiveApi);
                             }
                         }
+                        EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_LIVE_API_URL_CHANGE, newLiveApi));
+                    }
+                    if (hasVodChange || hasLiveChange) {
+                        EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_REMOTE_API_CONFIG_APPLY));
                     }
                 }
 

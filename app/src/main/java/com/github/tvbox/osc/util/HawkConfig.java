@@ -54,5 +54,8 @@ public class HawkConfig {
     public static final String PLAYER_AUDIO_PASSTHROUGH = "player_audio_passthrough";
     public static final String PLAYER_ROUTE_MIGRATION_VERSION = "player_route_migration_version";
     public static final String PLAYER_SELECTION_MANUAL = "manual";
+    public static final String WEBDAV_URL = "webdav_url";
+    public static final String WEBDAV_USERNAME = "webdav_username";
+    public static final String WEBDAV_PASSWORD = "webdav_password";
     public static boolean hotVodDelete;
 }

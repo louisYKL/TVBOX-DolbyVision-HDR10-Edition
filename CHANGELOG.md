@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.9.4.1
+
+### 中文
+
+- 播放时可从 Android 系统文件选择器浏览内部存储及已挂载存储，手动选择外挂字幕不再要求与视频同名；支持解析器现有的 SRT、ASS/SSA、SCC、STL、TTML 和 VTT 格式。
+- 持久化所选文档 URI 的读取授权，避免播放初始化把 `content://` 当作普通文件路径清除；本地字幕读取限制为 8 MiB，避免异常大文件占满内存。
+- 对系统播放器设置有界的样本缓冲和 Range 滚动窗口，降低 32 位/低堆设备播放高码率大文件时的内存峰值；移除 Range 请求上的强制关闭连接，允许 HTTP 连接复用。
+- 新增 WebDAV/AList 入口，可在设置中保存服务器地址、账号和密码，从首页浏览目录并直接播放；同目录同名字幕自动加载，手动选择字幕也会列出当前 WebDAV 目录内可识别的字幕文件。
+- 修复 9978 网页提交点播订阅地址时字段映射错误，以及直播/订阅地址虽已保存却未刷新设置显示或仍使用旧配置的问题；提交后更新设置地址并重新加载配置，返回主页时也会应用新值。
+- 三端版本统一为 `0.2.9.4.1`、`versionCode 20941`，沿用 `0.2.9.4` 签名证书，支持覆盖安装。
+
+### English
+
+- Open Android's system document picker to browse internal and mounted storage. Manually selected external subtitles no longer need to share the video's filename; supported formats are SRT, ASS/SSA, SCC, STL, TTML, and VTT.
+- Persist read access to the selected document URI so playback initialization does not mistake `content://` for a filesystem path. Local subtitle reads are capped at 8 MiB.
+- Bound sample buffering and rolling Range windows to reduce memory peaks on 32-bit and low-heap devices playing high-bitrate large files. Range requests can reuse HTTP connections.
+- Added a WebDAV/AList entry with saved server credentials, directory browsing, direct playback, automatic same-name sibling subtitles, and manual subtitle selection from the current remote directory.
+- Fixed port 9978 configuration submission and application: subscription fields are mapped correctly, setting values refresh, and updated subscription/live sources reload before returning to playback.
+- Unified all variants under `0.2.9.4.1` (`versionCode 20941`) with the `0.2.9.4` signing certificate for in-place updates.
+
 ## 0.2.9.4
 
 ### 中文

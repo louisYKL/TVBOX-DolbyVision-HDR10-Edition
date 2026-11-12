@@ -195,11 +195,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                         SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS,
                         SystemCodecBufferPolicy.REBUFFER_MS)
                 .setTargetBufferBytes(targetBufferBytes)
-                // A track-sized byte target (the default is roughly 13 MB) is too small for a
-                // high-bitrate 50+ GB remux. With the byte-priority mode ExoPlayer stops reading
-                // as soon as that target is reached, even when the required 20-second time
-                // runway has not been filled, which causes the recurring "plays, then buffers"
-                // stall. The 50-second MAX_BUFFER_MS remains the hard time/memory bound.
+                // Cap allocator growth on low-memory devices. Large media stays range-streamed;
+                // this bounded sample queue is independent of total file size.
                 .setPrioritizeTimeOverSizeThresholds(
                         SystemCodecBufferPolicy.PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS)
                 .setBackBuffer(SystemCodecBufferPolicy.BACK_BUFFER_MS, true)

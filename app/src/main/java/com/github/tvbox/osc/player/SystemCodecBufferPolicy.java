@@ -1,43 +1,28 @@
 package com.github.tvbox.osc.player;
 
 final class SystemCodecBufferPolicy {
-    // Trust ExoPlayer's proven defaults. On a memory-constrained TV (this device has ~1.5 GB
-    // total) a very high-bitrate REMUX cannot be buffered for a large time window without OOM /
-    // GC stalls, and an oversized forward buffer also competes for bandwidth with the data the
-    // playhead actually needs next — which made playback worse, not smoother. These are the
-    // stock DefaultLoadControl durations.
-    static final int MIN_BUFFER_MS = 50_000;
-    static final int MAX_BUFFER_MS = 50_000;
-    // A high-bitrate network-disk REMUX needs meaningful runway before both startup and resume.
-    // ExoPlayer may still start earlier when its track-sized byte target is full, which protects
-    // the 192 MB app heap from an unbounded time-only allocation.
-    // Do not start or resume a high-bitrate network-disk video until there is at least a
-    // twenty-second runway. A shorter gate is not enough for the sustained throughput dips seen
-    // on 50+ GB files, while MAX_BUFFER_MS still bounds memory and latency.
-    static final int PLAYBACK_BUFFER_MS = 20_000;
-    static final int REBUFFER_MS = 20_000;
+    // Bound sample-queue memory on low-memory TVs. Large media stays range-streamed; its file
+    // size must not turn into an equally large in-memory buffer.
+    static final int MIN_BUFFER_MS = 15_000;
+    static final int MAX_BUFFER_MS = 30_000;
+    static final int PLAYBACK_BUFFER_MS = 4_000;
+    static final int REBUFFER_MS = 5_000;
     static final int BACK_BUFFER_MS = 0;
-    // Keep loading until the time watermarks are satisfied instead of stopping at ExoPlayer's
-    // small track-sized byte target. MAX_BUFFER_MS still bounds the forward runway.
-    static final boolean PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS = true;
+    // A byte ceiling takes precedence over time for high-bitrate files on a 2 GB device.
+    static final boolean PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS = false;
     private static final int MB = 1024 * 1024;
 
     private SystemCodecBufferPolicy() {
     }
 
-    /**
-     * Return {@link com.google.android.exoplayer2.C#LENGTH_UNSET} so DefaultLoadControl sizes the
-     * byte buffer from the selected tracks instead of a fixed, memory-heavy ceiling. Forcing a
-     * large fixed byte target on this device caused GC pressure and starved the playhead.
-     */
     static int targetBufferBytes(int memoryClassMb) {
-        return com.google.android.exoplayer2.C.LENGTH_UNSET;
+        int safeMemoryClassMb = Math.max(96, memoryClassMb);
+        int targetMb = Math.max(16, Math.min(32, safeMemoryClassMb / 8));
+        return targetMb * MB;
     }
 
     static int bufferProgressTargetBytes(int memoryClassMb) {
-        int safeMemoryClassMb = Math.max(64, memoryClassMb);
-        int targetMb = Math.max(16, Math.min(64, safeMemoryClassMb / 3));
-        return targetMb * MB;
+        return targetBufferBytes(memoryClassMb);
     }
 
     static int bufferingProgressPercent(long bufferedDurationMs,
