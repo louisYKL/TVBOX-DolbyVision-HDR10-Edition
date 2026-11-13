@@ -21,6 +21,7 @@ import androidx.annotation.Nullable;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
 import com.github.tvbox.osc.util.SystemDecoderRoutePolicy;
+import com.github.tvbox.osc.util.VideoColorMetadata;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.DefaultLoadControl;
 import com.google.android.exoplayer2.DefaultRenderersFactory;
@@ -30,6 +31,7 @@ import com.google.android.exoplayer2.PlaybackException;
 import com.google.android.exoplayer2.PlaybackParameters;
 import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.Renderer;
+import com.google.android.exoplayer2.RendererCapabilities;
 import com.google.android.exoplayer2.SeekParameters;
 import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.Timeline;
@@ -67,7 +69,6 @@ import com.google.android.exoplayer2.video.MediaCodecVideoRenderer;
 import com.google.android.exoplayer2.video.VideoRendererEventListener;
 
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Collections;
@@ -125,6 +126,9 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private boolean sourceHdr10Hint;
     private boolean sourceHdr10PlusHint;
     private boolean sourceDolbyVisionHint;
+    private volatile VideoColorMetadata sourceColorMetadata = VideoColorMetadata.EMPTY;
+    private boolean nativeDolbyVisionCodecActive;
+    private boolean videoCodecInitialized;
     private boolean prepared;
     // Release can be requested from a Surface callback while ExoPlayer is dispatching a
     // playback callback. Volatile visibility prevents a stale callback from touching a torn
@@ -197,7 +201,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private boolean runtimeVideoModeDispatched;
     private boolean lastDispatchedRuntimeHdr;
     private boolean lastDispatchedRuntimeDolbyVision;
-    private boolean nativeDolbyVisionCapable;
     private String lastRuntimeOutputMode = "sdr";
     private String lastRuntimeReason = "init";
     private String playbackErrorMessage;
@@ -279,14 +282,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 },
                 () -> bufferedToEndSnapshot.get());
 
-        try {
-            nativeDolbyVisionCapable = com.github.tvbox.osc.util.HdrDeviceSupport
-                    .query(appContext).supportsNativeDolbyVision();
-        } catch (Throwable ignored) {
-            nativeDolbyVisionCapable = false;
-        }
         SystemCodecRenderersFactory renderersFactory = new SystemCodecRenderersFactory(
-                appContext, nativeDolbyVisionCapable, this);
+                appContext, this);
         player = new SimpleExoPlayer.Builder(appContext, renderersFactory)
                 .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(mediaSourceFactory)
@@ -538,6 +535,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         sourceHdr10Hint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-Hdr10", "1");
         sourceHdr10PlusHint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-Hdr10Plus", "1");
         sourceDolbyVisionHint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-DolbyVision", "1");
+        sourceColorMetadata = VideoColorMetadata.fromHeaders(parsed.headers);
         requestHeaders = sanitizeRequestHeaders(parsed.headers);
         if (networkSpeedMeter != null) {
             networkSpeedMeter.resetRate();
@@ -1270,6 +1268,9 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         if (format == null) {
             return;
         }
+        format = SystemCodecHdrPolicy.withSourceDolbyVision(
+                SystemCodecHdrPolicy.withSourceColorMetadata(format, sourceColorMetadata),
+                sourceColorMetadata);
         String sampleMimeType = nullToEmpty(format.sampleMimeType).toLowerCase(Locale.US);
         String codecs = nullToEmpty(format.codecs).toLowerCase(Locale.US);
         ColorInfo colorInfo = format.colorInfo;
@@ -1288,6 +1289,16 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         }
         boolean dolbyVision = SystemCodecHdrPolicy.isDolbyVision(
                 sampleMimeType, codecs, metadataText);
+        int baseTransfer = videoCodecInitialized && !nativeDolbyVisionCodecActive && dolbyVision
+                ? SystemCodecHdrPolicy.dolbyVisionBaseTransfer(format, sourceColorMetadata) : -1;
+        if (baseTransfer == C.COLOR_TRANSFER_SDR) {
+            lastRuntimeHdr = false;
+            lastRuntimeDolbyVision = false;
+            lastRuntimeOutputMode = "sdr";
+            runtimeVideoFormatSeen = true;
+            dispatchRuntimeVideoModeIfNeeded(reason);
+            return;
+        }
         boolean hdrCodecMarker = SystemCodecHdrPolicy.hasExplicitHdrMarker(codecs)
                 || SystemCodecHdrPolicy.hasExplicitHdrMarker(metadataText);
         // Use the complete ExoPlayer Format as well as the explicit fields. On
@@ -1332,7 +1343,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         lastRuntimeDolbyVision = dolbyVision;
         lastRuntimeHdr = detectedHdr || dolbyVision;
         lastRuntimeOutputMode = dolbyVision
-                ? (nativeDolbyVisionCapable ? "native-dv" : "dv-base-hdr")
+                ? (nativeDolbyVisionCodecActive ? "native-dv"
+                : videoCodecInitialized ? "dv-base-hdr" : "dv-pending")
                 : (lastRuntimeHdr ? "base-hdr" : "sdr");
         lastRuntimeReason = reason;
         // Diagnostic: what ExoPlayer actually decoded this video track as. For a Dolby Vision /
@@ -1370,7 +1382,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             lastRuntimeDolbyVision = dolbyVision;
             lastRuntimeHdr = true;
             lastRuntimeOutputMode = dolbyVision
-                    ? (nativeDolbyVisionCapable ? "native-dv" : "dv-base-hdr")
+                    ? (nativeDolbyVisionCodecActive ? "native-dv" : "dv-base-hdr")
                     : "base-hdr";
             runtimeVideoFormatSeen = true;
             lastRuntimeReason = "codec-output-format";
@@ -1439,6 +1451,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
 
     private void resetPlaybackFlags() {
         playbackErrorMessage = null;
+        nativeDolbyVisionCodecActive = false;
+        videoCodecInitialized = false;
         subtitleClockPositionMs = 0L;
         subtitleClockDurationMs = 0L;
         prepared = false;
@@ -2064,34 +2078,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         return false;
     }
 
-    /**
-     * Returns true only when the preflight probe positively identified HDR and the codec input
-     * is HEVC but the vendor omitted all HDR color metadata. Explicit codec metadata always wins;
-     * this prevents a stale probe hint from changing an explicitly SDR output format.
-     */
-    private boolean shouldInjectProbedHdrMetadata(@Nullable Format format,
-                                                   @Nullable String codecMimeType,
-                                                   @Nullable MediaFormat mediaFormat) {
-        if (!(sourceHdr10Hint || sourceHdr10PlusHint || sourceDolbyVisionHint)
-                || format == null || mediaFormat == null) {
-            return false;
-        }
-        try {
-            if (mediaFormat.containsKey(MediaFormat.KEY_COLOR_TRANSFER)
-                    || mediaFormat.containsKey(MediaFormat.KEY_HDR_STATIC_INFO)
-                    || mediaFormat.containsKey("hdr10-plus-info")) {
-                return false;
-            }
-        } catch (Throwable ignored) {
-            return false;
-        }
-        String codecMime = codecMimeType == null ? "" : codecMimeType;
-        String inputMime = format.sampleMimeType == null ? "" : format.sampleMimeType;
-        return MimeTypes.VIDEO_H265.equals(codecMime)
-                || MimeTypes.VIDEO_H265.equals(inputMime)
-                || MimeTypes.VIDEO_DOLBY_VISION.equals(inputMime);
-    }
-
     private boolean isNetworkSource(@Nullable String source) {
         if (TextUtils.isEmpty(source)) {
             return false;
@@ -2212,18 +2198,10 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private static final class SystemCodecRenderersFactory extends DefaultRenderersFactory {
         private final Context context;
         private final SystemCodecPlayer owner;
-        // True only when the device can natively decode AND display Dolby Vision end to end. On
-        // such devices we leave DV completely alone (native DV decode). On every other TV/box we
-        // decode the DV HDR10/HLG base layer through the HEVC/AVC decoder and re-inject HDR
-        // metadata + strip DV RPU, which is what makes DV files play on non-DV hardware.
-        private final boolean nativeDvCapable;
-
-        SystemCodecRenderersFactory(Context context, boolean nativeDvCapable,
-                                    SystemCodecPlayer owner) {
+        SystemCodecRenderersFactory(Context context, SystemCodecPlayer owner) {
             super(context);
             this.context = context.getApplicationContext();
             this.owner = owner;
-            this.nativeDvCapable = nativeDvCapable;
             // Let the TV's MediaCodec audio decoder run first. The affected NVT hardware can
             // decode this route without starving the video clock; FFmpeg remains the fallback
             // for formats the platform does not expose. Both paths feed the stereo-PCM sink
@@ -2292,7 +2270,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                     out.set(i, new SafeSurfaceMediaCodecVideoRenderer(context,
                             getCodecAdapterFactory(), mediaCodecSelector,
                             allowedVideoJoiningTimeMs, enableDecoderFallback,
-                            eventHandler, eventListener, !nativeDvCapable, owner));
+                            eventHandler, eventListener, owner));
                     break;
                 }
             }
@@ -2415,12 +2393,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     }
 
     private static final class SafeSurfaceMediaCodecVideoRenderer extends MediaCodecVideoRenderer {
-        // True when the device can NOT natively decode+display Dolby Vision, so every DV profile
-        // must be played through its HDR10/HLG base layer on the HEVC decoder. When the device
-        // has native DV support this stays false and DV streams are handed to the DV decoder
-        // untouched.
-        private final boolean hdr10CompatMode;
         private final SystemCodecPlayer owner;
+        private boolean configuredNativeDolbyVision;
 
         SafeSurfaceMediaCodecVideoRenderer(Context context,
                                            MediaCodecAdapter.Factory codecAdapterFactory,
@@ -2429,12 +2403,106 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                                            boolean enableDecoderFallback,
                                            Handler eventHandler,
                                            VideoRendererEventListener eventListener,
-                                           boolean hdr10CompatMode,
                                            SystemCodecPlayer owner) {
             super(context, codecAdapterFactory, mediaCodecSelector, allowedVideoJoiningTimeMs,
                     enableDecoderFallback, eventHandler, eventListener, 50);
-            this.hdr10CompatMode = hdr10CompatMode;
             this.owner = owner;
+        }
+
+        private VideoColorMetadata sourceMetadata() {
+            return owner == null ? VideoColorMetadata.EMPTY : owner.sourceColorMetadata;
+        }
+
+        private Format sourceFormat(Format format) {
+            return SystemCodecHdrPolicy.withSourceDolbyVision(
+                    SystemCodecHdrPolicy.withSourceColorMetadata(format, sourceMetadata()), sourceMetadata());
+        }
+
+        private boolean isDolbyVision(Format format) {
+            return MimeTypes.VIDEO_DOLBY_VISION.equals(format.sampleMimeType)
+                    || SystemCodecHdrPolicy.isDolbyVision(format.sampleMimeType, format.codecs, null);
+        }
+
+        @Override
+        protected int supportsFormat(MediaCodecSelector selector, Format format)
+                throws MediaCodecUtil.DecoderQueryException {
+            Format restored = sourceFormat(format);
+            if (!isDolbyVision(restored)) return super.supportsFormat(selector, restored);
+            List<MediaCodecInfo> nativeDecoders = supportedNativeDecoders(selector, restored, false);
+            if (!nativeDecoders.isEmpty()) return super.supportsFormat(selector, restored);
+            Format base = SystemCodecHdrPolicy.dolbyVisionBaseLayerFormat(restored, sourceMetadata());
+            return base == null ? RendererCapabilities.create(C.FORMAT_UNSUPPORTED_SUBTYPE)
+                    : super.supportsFormat(selector, base);
+        }
+
+        @Override
+        protected List<MediaCodecInfo> getDecoderInfos(MediaCodecSelector selector, Format format,
+                                                       boolean requiresSecureDecoder)
+                throws MediaCodecUtil.DecoderQueryException {
+            Format restored = sourceFormat(format);
+            if (!isDolbyVision(restored)) {
+                return super.getDecoderInfos(selector, restored, requiresSecureDecoder);
+            }
+            // Prefer decoders which support this stream's actual DV profile/level and size.
+            // A cached display capability or the existence of an unrelated DV decoder is not
+            // evidence that every DV profile should use the same route.
+            ArrayList<MediaCodecInfo> ordered = new ArrayList<>(
+                    supportedNativeDecoders(selector, restored, requiresSecureDecoder));
+            Format base = SystemCodecHdrPolicy.dolbyVisionBaseLayerFormat(restored, sourceMetadata());
+            if (base != null) {
+                for (MediaCodecInfo decoder : selector.getDecoderInfos(base.sampleMimeType,
+                        requiresSecureDecoder, false)) {
+                    if (decoder.isFormatSupported(base)) ordered.add(decoder);
+                }
+            }
+            return ordered;
+        }
+
+        private List<MediaCodecInfo> supportedNativeDecoders(MediaCodecSelector selector,
+                Format format, boolean requiresSecureDecoder)
+                throws MediaCodecUtil.DecoderQueryException {
+            ArrayList<MediaCodecInfo> supported = new ArrayList<>();
+            for (MediaCodecInfo decoder : selector.getDecoderInfos(MimeTypes.VIDEO_DOLBY_VISION,
+                    requiresSecureDecoder, false)) {
+                if (decoder.isFormatSupported(format)) supported.add(decoder);
+            }
+            return supported;
+        }
+
+        @Override
+        protected MediaCodecAdapter.Configuration getMediaCodecConfiguration(MediaCodecInfo codecInfo,
+                Format format, android.media.MediaCrypto crypto, float codecOperatingRate) {
+            Format restored = sourceFormat(format);
+            boolean dolbyVision = isDolbyVision(restored);
+            configuredNativeDolbyVision = dolbyVision
+                    && (MimeTypes.VIDEO_DOLBY_VISION.equals(codecInfo.mimeType)
+                    || MimeTypes.VIDEO_DOLBY_VISION.equals(codecInfo.codecMimeType));
+            Format base = dolbyVision && !configuredNativeDolbyVision
+                    ? SystemCodecHdrPolicy.dolbyVisionBaseLayerFormat(restored, sourceMetadata()) : null;
+            stripDolbyVisionRpu = !configuredNativeDolbyVision
+                    && SystemCodecHdrPolicy.shouldStripDolbyVisionRpu(restored,
+                    codecInfo.mimeType, sourceMetadata());
+            // Only the selected ordinary HEVC codec receives the compatible base format.
+            // The native DV codec receives the original codec string, CSD, RPU and EL data.
+            return super.getMediaCodecConfiguration(codecInfo, base == null ? restored : base,
+                    crypto, codecOperatingRate);
+        }
+
+        @Override
+        protected void onCodecInitialized(String name, MediaCodecAdapter.Configuration configuration,
+                                           long initializedTimestampMs, long initializationDurationMs) {
+            super.onCodecInitialized(name, configuration, initializedTimestampMs, initializationDurationMs);
+            if (owner != null) {
+                final boolean nativeDv = configuredNativeDolbyVision;
+                final Format configuredFormat = configuration.format;
+                owner.runOnMain(() -> {
+                    if (!owner.released) {
+                        owner.nativeDolbyVisionCodecActive = nativeDv;
+                        owner.videoCodecInitialized = true;
+                        owner.updateRuntimeVideoMode(configuredFormat, "codec-initialized");
+                    }
+                });
+            }
         }
 
         @Override
@@ -2450,30 +2518,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         // in HDR10-compat mode. Only then do we scan and strip DV RPU NAL units from the bitstream.
         private boolean stripDolbyVisionRpu;
         private final DolbyVisionRpuStripper rpuStripper = new DolbyVisionRpuStripper();
-
-        @Override
-        protected void onStreamChanged(Format[] formats, long startPositionUs, long offsetUs)
-                throws ExoPlaybackException {
-            super.onStreamChanged(formats, startPositionUs, offsetUs);
-            // Decide once per stream whether to strip DV RPU: only when this device has no native
-            // DV support (hdr10CompatMode) AND the incoming track is Dolby Vision. A device with
-            // native DV support leaves the stream untouched for the DV decoder.
-            boolean anyDolbyVision = false;
-            if (formats != null) {
-                for (Format f : formats) {
-                    if (f != null && MimeTypes.VIDEO_DOLBY_VISION.equals(f.sampleMimeType)) {
-                        anyDolbyVision = true;
-                        break;
-                    }
-                }
-            }
-            // Strip DV RPU only when this device has no native DV support AND the stream is DV.
-            // The 15:16 build with stripping ON produced picture+sound+HDR (just stuttery); with
-            // stripping OFF the picture disappeared, so RPU stripping is REQUIRED here for the
-            // NVT/Novatek HEVC decoder to emit a base-layer picture. Stutter is addressed
-            // separately (zero-alloc single-pass compaction below), not by disabling stripping.
-            stripDolbyVisionRpu = hdr10CompatMode && anyDolbyVision;
-        }
 
         @Override
         protected boolean codecNeedsSetOutputSurfaceWorkaround(String decoderName) {
@@ -2506,97 +2550,14 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                                              float codecOperatingRate,
                                              boolean deviceNeedsNoPostProcessWorkaround,
                                              int tunnelingAudioSessionId) {
-            MediaFormat mediaFormat = super.getMediaFormat(format, codecMimeType, codecMaxValues,
+            // MediaCodec receives the actual source transfer (PQ/HLG), primaries, range and
+            // mastering metadata before configuration. No invented 1000-nit HDR descriptor
+            // and no blanket PQ override are applied to HLG or Dolby Vision Profile 5.
+            // getMediaCodecConfiguration has already selected/restored native DV or its base.
+            // Re-applying source DV MIME here would turn the selected HEVC base back into DV.
+            return super.getMediaFormat(format, codecMimeType, codecMaxValues,
                     codecOperatingRate, deviceNeedsNoPostProcessWorkaround, tunnelingAudioSessionId);
-            // A number of phone/TV extractors expose a valid HDR10/HDR10+ stream in the
-            // preflight probe but omit ColorInfo from ExoPlayer's Format. In that case the
-            // codec receives 10-bit HEVC with an unspecified transfer and the display remains
-            // SDR. The probe flags are internal, source-bound evidence; inject only for HEVC
-            // and only when the codec did not already provide color metadata.
-            if (owner != null && owner.shouldInjectProbedHdrMetadata(format, codecMimeType,
-                    mediaFormat)) {
-                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
-                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_TRANSFER,
-                            MediaFormat.COLOR_TRANSFER_ST2084);
-                }
-                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_STANDARD)) {
-                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_STANDARD,
-                            MediaFormat.COLOR_STANDARD_BT2020);
-                }
-                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_RANGE)) {
-                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_RANGE,
-                            MediaFormat.COLOR_RANGE_LIMITED);
-                }
-                if (!mediaFormat.containsKey(MediaFormat.KEY_HDR_STATIC_INFO)) {
-                    mediaFormat.setByteBuffer(MediaFormat.KEY_HDR_STATIC_INFO,
-                            buildDefaultHdr10StaticInfo());
-                }
-                String hintLog = "echo-system-codec probed-hdr-metadata-injected mime="
-                        + codecMimeType + " hdr10=" + owner.sourceHdr10Hint
-                        + " hdr10Plus=" + owner.sourceHdr10PlusHint
-                        + " dv=" + owner.sourceDolbyVisionHint;
-            }
-            // Dolby Vision Profile 8 (and 8.1) carries an HDR10 / HLG base layer inside an HEVC
-            // stream. On a device with no single-layer DV decoder, ExoPlayer falls back to the
-            // HEVC decoder (video/hevc) to decode that base layer — but the DV track's Format
-            // usually has no ColorInfo, so the MediaFormat handed to the codec omits the HDR
-            // color transfer/standard. The decoder then emits 10-bit samples with an unknown
-            // color config into an HDR display window, which shows as a black picture. Kodi
-            // handles this by playing the HDR10 base layer with the correct color metadata.
-            // Re-inject the standard HDR10 color config so the HEVC decoder outputs a valid
-            // BT.2020 / PQ (ST2084) picture. HLG-based DV keeps its transfer if already present.
-            if (hdr10CompatMode
-                    && MimeTypes.VIDEO_DOLBY_VISION.equals(format.sampleMimeType)
-                    && MimeTypes.VIDEO_H265.equals(codecMimeType)) {
-                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
-                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_TRANSFER,
-                            MediaFormat.COLOR_TRANSFER_ST2084);
-                }
-                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_STANDARD)) {
-                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_STANDARD,
-                            MediaFormat.COLOR_STANDARD_BT2020);
-                }
-                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_RANGE)) {
-                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_RANGE,
-                            MediaFormat.COLOR_RANGE_LIMITED);
-                }
-                // Some SoC decoders (Novatek/NVT, HiSilicon) refuse to output a picture for a
-                // 10-bit HDR stream unless the mastering-display static metadata is present too.
-                // The DV track carries no ColorInfo, so synthesize a standard HDR10 blob
-                // (BT.2020 primaries, D65 white point, 1000-nit peak) — Kodi does the same when
-                // it cannot extract mdcv/clli from the stream.
-                if (!mediaFormat.containsKey(MediaFormat.KEY_HDR_STATIC_INFO)) {
-                    mediaFormat.setByteBuffer(MediaFormat.KEY_HDR_STATIC_INFO,
-                            buildDefaultHdr10StaticInfo());
-                }
-            }
-            return mediaFormat;
         }
-
-        // Builds a 25-byte CTA-861.3 HDR static metadata descriptor for a generic HDR10 master
-        // (BT.2020 primaries, D65 white point, 1000-nit peak, 0.0001-nit floor, 1000 MaxCLL /
-        // 400 MaxFALL). Layout matches Android's MediaFormat.KEY_HDR_STATIC_INFO expectation:
-        // byte[0]=0 type, then little-endian uint16 fields.
-        private static ByteBuffer buildDefaultHdr10StaticInfo() {
-            ByteBuffer buffer = ByteBuffer.allocate(25).order(ByteOrder.LITTLE_ENDIAN);
-            buffer.put((byte) 0); // descriptor id / type
-            // Display primaries, scaled by 50000. Order R, G, B (x,y each).
-            buffer.putShort((short) (0.708f * 50000)); // R x = 35400
-            buffer.putShort((short) (0.292f * 50000)); // R y = 14600
-            buffer.putShort((short) (0.170f * 50000)); // G x = 8500
-            buffer.putShort((short) (0.797f * 50000)); // G y = 39850
-            buffer.putShort((short) (0.131f * 50000)); // B x = 6550
-            buffer.putShort((short) (0.046f * 50000)); // B y = 2300
-            buffer.putShort((short) (0.3127f * 50000)); // White x = 15635
-            buffer.putShort((short) (0.3290f * 50000)); // White y = 16450
-            buffer.putShort((short) 1000);  // max display mastering luminance (nit)
-            buffer.putShort((short) 1);      // min display mastering luminance (x0.0001 nit → 0.0001)
-            buffer.putShort((short) 1000);  // MaxCLL (nit)
-            buffer.putShort((short) 400);   // MaxFALL (nit)
-            buffer.rewind();
-            return buffer;
-        }
-
         // Strips Dolby Vision RPU (NAL unit type 62) and EL (type 63) NAL units from an HEVC
         // Annex-B bitstream. The HDR10/HLG base layer is left untouched, so a decoder that
         // black-screens on seeing DV NAL units gets a clean HDR10 HEVC stream. This is the
@@ -2657,7 +2618,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             ArrayList<MediaCodecInfo> hardware = new ArrayList<>();
             for (MediaCodecInfo decoder : decoders) {
                 if (decoder != null
-                        && SystemDecoderRoutePolicy.isLikelyHardwareCodec(
+                        && SystemDecoderRoutePolicy.isEligibleHdrVideoCodec(
                         Build.VERSION.SDK_INT,
                         decoder.name,
                         decoder.hardwareAccelerated,

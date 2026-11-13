@@ -5,15 +5,15 @@
 > A TVBox branch for Android TV, phones, and tablets, focused on hardware decoding, HDR, subtitles, and bounded streaming caches.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.0"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.0-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.0">Download 0.3.0</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.1">Download 0.3.1</a> ·
   <a href="README.md">简体中文</a> ·
-  <a href="0.3.0/RELEASE_NOTES.md">Release notes</a>
+  <a href="0.3.1/RELEASE_NOTES.md">Release notes</a>
 </p>
 
 </div>
@@ -24,11 +24,11 @@ All three variants share playback code and buffering policy, with separate ABI b
 
 | Package | ABI | Devices |
 | --- | --- | --- |
-| [TVBox_v0.3.0_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
-| [TVBox_v0.3.0_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
-| [TVBox_v0.3.0_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
+| [TVBox_v0.3.1_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
+| [TVBox_v0.3.1_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
+| [TVBox_v0.3.1_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
 
-Version: `0.3.0`; `versionCode`: `30000`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
+Version: `0.3.1`; `versionCode`: `30001`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
 
 ## Preview
 
@@ -37,22 +37,22 @@ Version: `0.3.0`; `versionCode`: `30000`. Checksums accompany the release. Previ
   <img src="2.webp" alt="TVBOX preview 2" width="48%">
 </p>
 
-## Changes in 0.3.0
+## Changes in 0.3.1
 
-- Address Java heap exhaustion confirmed in device logs by budgeting cached data, in-flight downloads, and playback resources together. Source changes and player exit release the old session immediately and prevent stale callbacks from restarting it.
-- VOD uses `24 MiB` Range chunks and caches contiguous data toward the end of the video. Startup targets `96 MiB`; the configured raw-cache ceiling is `192 MiB`, further constrained by process heap headroom. Index probes and reads at unrelated offsets do not count as contiguous data ahead of playback.
-- Startup, resume, seeking, and genuine rebuffering calculate progress from usable data. Valid downloaded data is retained rather than repeatedly changing sources, clearing the cache, or downloading it again while waiting. Live retains a separate streaming-buffer policy.
-- Playback avoids repeated full-page blur captures. Format probing scans bytes directly to reduce large temporary strings and allocations. The in-memory poster cache is bounded to `4–16 MiB` according to the device budget.
-- The port 9978 page has five independent fields: subscription URL, live URL, WebDAV URL, username, and password. Browser confirmation fills the corresponding application input; saving and activation require confirmation inside the app.
-- Browse local or WebDAV directories for external subtitles from the playback screen, including child folders and the parent directory. Manual selection does not require matching filenames. HDR styling applies only to unstyled text; styled text and bitmap subtitles retain their source design.
+- Fix loss of real color parameters between HDR probing and decoder setup. Preserve PQ/HLG transfer, color standard, range, and source-owned static HDR metadata instead of collapsing HLG into PQ or synthesizing a fixed 1000-nit mastering descriptor.
+- Correct Dolby Vision configuration-record and codec-string profile/level parsing, including `dvhe.08.06`. Retain a native candidate when an actual DV decoder exists, then select against the real profile/level capabilities; preserve dynamic RPU data on the native path.
+- Use only real compatible Dolby Vision bases: Profile 7 / 8.1 for HDR10, 8.4 for HLG, and 8.2 / 9 for SDR. Profile 5 is not treated as having an HDR10 base layer.
+- Query the display belonging to the playback window rather than freezing the default display's first result. Reassert HDR requests on window attachment and focus restoration, addressing lost requests on phones while keeping brightness device-controlled.
+- Fix stale live URLs and empty-list startup blocking in the separate live process. Pass the latest saved URL to playback and detect playlist formats from content rather than URL keywords.
+- Retain the release certificate, `24 MiB` Range chunks, `96 MiB` VOD startup target, `192 MiB` raw-cache ceiling, and existing subtitles, port 9978 input, and audio policy.
 
-See the [release notes](0.3.0/RELEASE_NOTES.md) for implementation and verification scope. A cache absorbs temporary network fluctuations; sustained download speeds below the video bitrate can still require waiting for data.
+See the [release notes](0.3.1/RELEASE_NOTES.md) for implementation and verification scope. Format badges and an accepted HDR window request do not measure panel output; software cannot add unsupported hardware formats. A cache absorbs network fluctuations, but sustained throughput below the video bitrate can still require waiting.
 
 ## Playback, HDR, and audio
 
 - Video uses hardware Android `MediaCodec` decoders exposed by the device. An app setting cannot add unsupported decoding capabilities.
 - HDR classification combines video-track information, PQ/HLG, HDR metadata, and Dolby Vision/HDR10+ markers rather than relying on a filename, bit depth, or wide gamut alone. With playback controls visible, the badge shows the identified video resolution and HDR/SDR state.
-- Devices with the necessary decoding and display capabilities retain native Dolby Vision. Other devices use a compatible HDR10/HLG base layer when the source provides one. The app requests the appropriate output mode; actual output also depends on firmware, codec, display, and the format profile.
+- Devices with the necessary decoding and display capabilities retain native Dolby Vision. Other devices use HDR10/HLG/SDR fallback only when the source supplies that compatible base layer. The app requests the appropriate output mode; actual output also depends on firmware, codec, display, and the format profile.
 - HDR display brightness remains device-controlled. Unstyled HDR text uses light-gray glyphs and a black outline; ASS/SSA, styled text, and PGS/VobSub bitmap subtitles retain their source presentation. SDR keeps the original subtitle style.
 - Audio prefers platform decoders with FFmpeg fallback where needed, retaining stereo PCM output and Android audio routing. These memory changes do not lower audio quality to conceal buffering issues.
 - On touch devices, a single tap shows or hides the controls, and a double tap toggles playback. Transport buttons and TV remotes also control playback.

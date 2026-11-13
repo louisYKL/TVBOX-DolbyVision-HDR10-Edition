@@ -9,7 +9,9 @@ import android.os.Looper;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.View;
+import android.view.ViewTreeObserver;
 
+import java.lang.ref.WeakReference;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -23,6 +25,7 @@ import java.util.WeakHashMap;
  */
 public final class HdrOutputManager {
     private static final Map<Activity, Long> REQUEST_GENERATIONS = new WeakHashMap<>();
+    private static final Map<Activity, HdrWindowObserver> WINDOW_OBSERVERS = new WeakHashMap<>();
     private static long nextGeneration;
 
     private HdrOutputManager() {
@@ -74,27 +77,25 @@ public final class HdrOutputManager {
             LOG.i("echo-hdr-window stale-request reason=" + reason);
             return false;
         }
+        if (activity.isFinishing() || activity.isDestroyed()) {
+            return false;
+        }
         Window window = activity.getWindow();
         if (window == null) {
             LOG.i("echo-hdr-window skip no-window reason=" + reason);
             return false;
         }
         boolean applied = applyHdrColorMode(window, activity, reason, ignoredBrightness);
-        // Some Android phone window managers discard a color-mode change made before the
-        // decor view is attached. Re-apply once after attachment; this is idempotent and
-        // avoids waiting until the first decoded frame to enter HDR.
+        // A posted Runnable is not an attachment callback: it can execute while Decor is
+        // detached, and it does not cover later reattachment or a dialog returning focus.
+        // Observe those actual transitions without polling or repeatedly relaying out frames.
         View decor = window.getDecorView();
         if (decor != null) {
-            boolean queued = decor.post(() -> {
-                if (isCurrentRequest(activity, generation)) {
-                    applyHdrColorMode(window, activity, reason + "-attached", ignoredBrightness);
-                } else {
-                    LOG.i("echo-hdr-window stale-attached-request reason=" + reason);
-                }
-            });
-            if (!queued) {
-                LOG.i("echo-hdr-window attached-retry-not-queued reason=" + reason);
-            }
+            clearWindowObserver(activity);
+            HdrWindowObserver observer = new HdrWindowObserver(
+                    activity, decor, generation, reason, ignoredBrightness);
+            WINDOW_OBSERVERS.put(activity, observer);
+            observer.start();
         }
         return applied;
     }
@@ -104,8 +105,7 @@ public final class HdrOutputManager {
         try {
             HdrDeviceSupport.Capabilities capabilities = activity == null
                     ? null : HdrDeviceSupport.query(activity);
-            WindowManager.LayoutParams attrs = window.getAttributes();
-            int previousColorMode = attrs.getColorMode();
+            int previousColorMode = window.getAttributes().getColorMode();
             // Use both APIs. setColorMode is the public API on API 26+ and is honored by
             // vendors that do not apply a mutated LayoutParams instance until a later relayout.
             boolean directApiApplied = false;
@@ -120,8 +120,11 @@ public final class HdrOutputManager {
             }
             boolean layoutParamsApplied = false;
             try {
-                attrs.setColorMode(ActivityInfo.COLOR_MODE_HDR);
-                window.setAttributes(attrs);
+                WindowManager.LayoutParams attrs = window.getAttributes();
+                if (attrs.getColorMode() != ActivityInfo.COLOR_MODE_HDR) {
+                    attrs.setColorMode(ActivityInfo.COLOR_MODE_HDR);
+                    window.setAttributes(attrs);
+                }
                 layoutParamsApplied = true;
             } catch (Throwable attrsFailure) {
                 LOG.i("echo-hdr-window layout-params-failed reason=" + reason
@@ -132,7 +135,8 @@ public final class HdrOutputManager {
             LOG.i("echo-hdr-window requested reason=" + reason
                     + " previousColorMode=" + previousColorMode
                     + " colorMode=" + appliedColorMode
-                    + " confirmed=" + confirmed
+                    + " requestAccepted=" + confirmed
+                    + " actualDisplayOutput=codec-surface-controlled"
                     + " directApi=" + directApiApplied
                     + " layoutParams=" + layoutParamsApplied
                     + " brightness=system-controlled"
@@ -173,6 +177,7 @@ public final class HdrOutputManager {
             LOG.i("echo-hdr-window stale-release reason=" + reason);
             return;
         }
+        clearWindowObserver(activity);
         Window window = activity.getWindow();
         if (window == null) {
             return;
@@ -204,6 +209,91 @@ public final class HdrOutputManager {
     private static synchronized boolean isCurrentRequest(Activity activity, long generation) {
         Long current = REQUEST_GENERATIONS.get(activity);
         return current != null && current == generation;
+    }
+
+    private static void clearWindowObserver(Activity activity) {
+        HdrWindowObserver observer = WINDOW_OBSERVERS.remove(activity);
+        if (observer != null) {
+            observer.stop();
+        }
+    }
+
+    /** Weak references keep a finished Activity from being retained by pending View callbacks. */
+    private static final class HdrWindowObserver implements View.OnAttachStateChangeListener,
+            ViewTreeObserver.OnWindowFocusChangeListener {
+        private final WeakReference<Activity> activity;
+        private final WeakReference<View> decor;
+        private final long generation;
+        private final String reason;
+        private final boolean ignoredBrightness;
+        private WeakReference<ViewTreeObserver> focusObserver;
+
+        HdrWindowObserver(Activity owner, View root, long generation, String reason,
+                          boolean ignoredBrightness) {
+            activity = new WeakReference<>(owner);
+            decor = new WeakReference<>(root);
+            this.generation = generation;
+            this.reason = reason;
+            this.ignoredBrightness = ignoredBrightness;
+        }
+
+        void start() {
+            View root = decor.get();
+            if (root == null) return;
+            root.addOnAttachStateChangeListener(this);
+            if (root.isAttachedToWindow()) {
+                onViewAttachedToWindow(root);
+            }
+        }
+
+        void stop() {
+            View root = decor.get();
+            if (root != null) root.removeOnAttachStateChangeListener(this);
+            removeFocusObserver();
+        }
+
+        private void removeFocusObserver() {
+            ViewTreeObserver observer = focusObserver == null ? null : focusObserver.get();
+            if (observer != null && observer.isAlive()) {
+                observer.removeOnWindowFocusChangeListener(this);
+            }
+            focusObserver = null;
+        }
+
+        private void reapply() {
+            Activity owner = activity.get();
+            View root = decor.get();
+            if (owner == null || root == null || !root.isAttachedToWindow()
+                    || owner.isFinishing() || owner.isDestroyed()
+                    || !isCurrentRequest(owner, generation)) {
+                return;
+            }
+            Window window = owner.getWindow();
+            if (window != null) {
+                applyHdrColorMode(window, owner, reason + "-window-ready", ignoredBrightness);
+            }
+        }
+
+        @Override
+        public void onViewAttachedToWindow(View root) {
+            removeFocusObserver();
+            ViewTreeObserver observer = root.getViewTreeObserver();
+            if (observer.isAlive()) {
+                observer.addOnWindowFocusChangeListener(this);
+                focusObserver = new WeakReference<>(observer);
+            }
+            root.postOnAnimation(this::reapply);
+        }
+
+        @Override
+        public void onViewDetachedFromWindow(View root) {
+            removeFocusObserver();
+        }
+
+        @Override
+        public void onWindowFocusChanged(boolean hasFocus) {
+            if (hasFocus) reapply();
+        }
     }
 
     public static Activity findActivity(Context context) {

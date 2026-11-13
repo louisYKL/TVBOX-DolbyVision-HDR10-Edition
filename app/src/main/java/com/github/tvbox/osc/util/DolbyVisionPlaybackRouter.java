@@ -65,15 +65,34 @@ public final class DolbyVisionPlaybackRouter {
         VideoStreamProbe.Result probe = streamProbe == null
                 ? VideoStreamProbe.Result.unknown("preprobe-null")
                 : streamProbe;
+        VideoColorMetadata metadata = probe.colorMetadata == null
+                ? VideoColorMetadata.EMPTY : probe.colorMetadata;
         boolean dolbyVision = probe.probed && probe.hasDolbyVision;
-        boolean hdr = probe.hasDolbyVision || probe.hasHdr10 || probe.hasHdr10Plus;
+        int profile = metadata.dolbyVisionProfile > 0
+                ? metadata.dolbyVisionProfile : probe.dolbyVisionProfile;
+        int compatibility = metadata.dolbyVisionCompatibilityId;
+        String dvBaseMode = SystemDecoderRoutePolicy.dolbyVisionBaseMode(
+                profile, compatibility, metadata.colorTransfer);
+        boolean dvHdrBase = dolbyVision && ("base-hdr".equals(dvBaseMode)
+                || "base-hlg".equals(dvBaseMode));
+        boolean hdr = metadata.hasHdrTransfer() || metadata.getHdrStaticInfo() != null
+                || probe.hasHdr10Plus || (probe.hasHdr10 && !dolbyVision)
+                || dvHdrBase;
         HdrDeviceSupport.Capabilities capabilities = HdrDeviceSupport.query(context);
-        boolean nativeDolbyVision = SystemDecoderRoutePolicy.shouldUseNativeDolbyVision(
-                dolbyVision,
-                capabilities.codecListDolbyVisionDecoder,
-                capabilities.displayDolbyVision);
-        String outputMode = nativeDolbyVision
-                ? "native-dv" : (hdr ? "base-hdr" : "sdr");
+        // This is a preflight preference, not confirmation of native output. The renderer
+        // checks this stream's profile/level against actual codecs before selecting one.
+        // A missing/stale display flag must not strip DV on a capable decoder.
+        boolean nativeDolbyVision = dolbyVision && capabilities.codecListDolbyVisionDecoder;
+        String outputMode;
+        if (nativeDolbyVision) {
+            outputMode = "dv-pending";
+        } else if (dolbyVision) {
+            outputMode = dvBaseMode;
+        } else {
+            outputMode = hdr ? "base-hdr" : "sdr";
+        }
+        boolean requiresHdrOutput = (nativeDolbyVision || hdr)
+                && !"dv-no-compatible-base".equals(outputMode) && !"base-sdr".equals(outputMode);
         String reason = nativeDolbyVision
                 ? "unified-system-native-dolby-vision"
                 : (dolbyVision ? "unified-system-dolby-vision-base-layer"
@@ -87,7 +106,7 @@ public final class DolbyVisionPlaybackRouter {
                 + " audio=" + probe.primaryAudioMime
                 + " probe=" + probe.summary
                 + " url=" + safeSnippet(url));
-        return new Decision(dolbyVision, outputMode, hdr, nativeDolbyVision, reason);
+        return new Decision(dolbyVision, outputMode, requiresHdrOutput, nativeDolbyVision, reason);
     }
 
     private static String safeSnippet(String value) {

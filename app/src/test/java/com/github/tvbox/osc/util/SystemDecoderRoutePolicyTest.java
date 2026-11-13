@@ -24,19 +24,26 @@ public class SystemDecoderRoutePolicyTest {
     }
 
     @Test
+    public void dolbyVisionBaseLayerClassificationUsesCompatibilityId() {
+        assertTrue(SystemDecoderRoutePolicy.hasHdr10BaseLayer(7, -1));
+        assertTrue(SystemDecoderRoutePolicy.hasHdr10BaseLayer(8, 1));
+        assertTrue(SystemDecoderRoutePolicy.hasHlgBaseLayer(8, 4));
+        assertTrue(SystemDecoderRoutePolicy.hasSdrBaseLayer(8, 2));
+        assertEquals("base-sdr", SystemDecoderRoutePolicy.dolbyVisionBaseMode(9, -1, -1));
+        assertFalse(SystemDecoderRoutePolicy.hasHdr10BaseLayer(5, -1));
+        assertFalse(SystemDecoderRoutePolicy.hasHdr10BaseLayer(8, 4));
+        assertEquals("base-hlg", SystemDecoderRoutePolicy.dolbyVisionBaseMode(8, 4, 6));
+        assertEquals("base-sdr", SystemDecoderRoutePolicy.dolbyVisionBaseMode(8, 2, 6));
+        assertEquals("dv-no-compatible-base", SystemDecoderRoutePolicy.dolbyVisionBaseMode(5, 0, 6));
+        assertEquals("dv-no-compatible-base", SystemDecoderRoutePolicy.dolbyVisionBaseMode(8, -1, -1));
+    }
+
+    @Test
     public void nativeDolbyVisionRequiresHardwareDecodeAndDolbyVisionOutput() {
         assertTrue(SystemDecoderRoutePolicy.shouldUseNativeDolbyVision(true, true, true));
         assertFalse(SystemDecoderRoutePolicy.shouldUseNativeDolbyVision(true, false, true));
         assertFalse(SystemDecoderRoutePolicy.shouldUseNativeDolbyVision(true, true, false));
         assertFalse(SystemDecoderRoutePolicy.shouldUseNativeDolbyVision(false, true, true));
-    }
-
-    @Test
-    public void unsupportedDolbyVisionUsesTheHdr10BaseLayer() {
-        assertFalse(SystemDecoderRoutePolicy.shouldUseHdr10BaseLayer(true, true, true));
-        assertTrue(SystemDecoderRoutePolicy.shouldUseHdr10BaseLayer(true, false, true));
-        assertTrue(SystemDecoderRoutePolicy.shouldUseHdr10BaseLayer(true, true, false));
-        assertFalse(SystemDecoderRoutePolicy.shouldUseHdr10BaseLayer(false, false, false));
     }
 
     @Test
@@ -65,6 +72,18 @@ public class SystemDecoderRoutePolicyTest {
                 29, "c2.vendor.decoder", false, false));
         assertFalse(SystemDecoderRoutePolicy.isLikelyHardwareCodec(
                 29, "c2.vendor.decoder", true, true));
+    }
+
+    @Test
+    public void hdrVendorAliasesWithMissingHardwareFlagRemainEligibleButSoftwareDoesNot() {
+        assertTrue(SystemDecoderRoutePolicy.isEligibleHdrVideoCodec(
+                33, "c2.qti.dv.decoder", false, false));
+        assertTrue(SystemDecoderRoutePolicy.isEligibleHdrVideoCodec(
+                33, "OMX.dolby.vision.decoder", false, false));
+        assertFalse(SystemDecoderRoutePolicy.isEligibleHdrVideoCodec(
+                33, "c2.qti.dv.decoder", false, true));
+        assertFalse(SystemDecoderRoutePolicy.isEligibleHdrVideoCodec(
+                33, "c2.android.hevc.decoder", false, false));
     }
 
     @Test

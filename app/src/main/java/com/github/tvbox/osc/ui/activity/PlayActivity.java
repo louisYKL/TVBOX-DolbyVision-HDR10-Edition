@@ -86,6 +86,7 @@ import com.github.tvbox.osc.util.ScreenUtils;
 import com.github.tvbox.osc.util.SubtitleHelper;
 import com.github.tvbox.osc.util.SystemDecoderRoutePolicy;
 import com.github.tvbox.osc.util.VideoStreamProbe;
+import com.github.tvbox.osc.util.VideoProbeHdrHeaders;
 import com.github.tvbox.osc.util.VideoParseRuler;
 import com.github.tvbox.osc.util.XWalkUtils;
 import com.github.tvbox.osc.util.parser.SuperParse;
@@ -1429,8 +1430,16 @@ public class PlayActivity extends BaseActivity {
             latestBitmapSubtitleCues = cues == null ? Collections.emptyList() : cues;
             renderBitmapSubtitleCues();
         }));
+        final int playbackGeneration = currentPlayGeneration();
         player.setOnRuntimeVideoModeListener((hdr, dolbyVision, outputMode, reason) ->
-                runOnUiThread(() -> promoteRuntimeHdrState(hdr, dolbyVision, outputMode, "activity-" + reason)));
+                runOnUiThread(() -> {
+                    if (playbackTerminated || mVideoView == null
+                            || mVideoView.getMediaPlayer() != player
+                            || !isCurrentPlayGeneration(playbackGeneration)) {
+                        return;
+                    }
+                    promoteRuntimeHdrState(hdr, dolbyVision, outputMode, "activity-" + reason);
+                }));
     }
 
     private void renderBitmapSubtitleCues() {
@@ -2162,6 +2171,7 @@ public class PlayActivity extends BaseActivity {
             HdrOutputManager.releaseHdr(this, reason + "-pre-release");
         }
         if (mVideoView != null) {
+            detachPlayerCallbacks(mVideoView.getMediaPlayer());
             releasedPlayer = mVideoView.getMediaPlayer() != null
                     || mVideoView.isPlaybackActive()
                     || mVideoView.isFullScreen()
@@ -2182,6 +2192,27 @@ public class PlayActivity extends BaseActivity {
         }
         LOG.i("echo-player-force-release " + reason + " released=" + releasedPlayer);
         return releasedPlayer;
+    }
+
+    /** Detach callbacks before releasing a source so late vendor codec events cannot touch a new URL. */
+    private void detachPlayerCallbacks(AbstractPlayer mediaPlayer) {
+        if (mediaPlayer instanceof AndroidMediaPlayer) {
+            try {
+                ((AndroidMediaPlayer) mediaPlayer).setOnTimedTextListener(null);
+            } catch (Throwable error) {
+                LOG.e("echo-player-cleanup detach timed text failed: " + error.getMessage());
+            }
+        }
+        if (mediaPlayer instanceof CompatTrackSelectorPlayer) {
+            CompatTrackSelectorPlayer trackPlayer = (CompatTrackSelectorPlayer) mediaPlayer;
+            try {
+                trackPlayer.setOnSubtitleTextListener(null);
+                trackPlayer.setOnBitmapSubtitleCueListener(null);
+                trackPlayer.setOnRuntimeVideoModeListener(null);
+            } catch (Throwable error) {
+                LOG.e("echo-player-cleanup detach codec callbacks failed: " + error.getMessage());
+            }
+        }
     }
 
     private void syncHdrWindowForCurrentPlayback(String reason) {
@@ -2314,6 +2345,7 @@ public class PlayActivity extends BaseActivity {
         if (isTv32StartupPreflightProbe(probe)) {
             headers.put("X-TVBox-Probe-Tv32StartupDirect", "1");
         }
+        VideoProbeHdrHeaders.apply(headers, probe);
     }
 
     private boolean shouldCreateInternalPlaybackHeaders(String playbackUrl, VideoStreamProbe.Result probe) {
@@ -2321,6 +2353,7 @@ public class PlayActivity extends BaseActivity {
                 || probe.hasDolbyVision
                 || probe.hasHdr10
                 || probe.hasHdr10Plus
+                || probe.colorMetadata.hasHdrTransfer()
                 || shouldForceTv32SystemSafePcm(playbackUrl, probe)
                 // Compressed tracks always need a PCM route decision, regardless of the
                 // passthrough setting. The setting keeps external-route volume behavior only.
@@ -3296,14 +3329,14 @@ public class PlayActivity extends BaseActivity {
         }
         suppressPauseForFullScreenTransition = false;
         if (mVideoView != null && PlayerHelper.isInternalPlayerType(mVodPlayerCfg == null ? -1 : mVodPlayerCfg.optInt("pl", -1))) {
-            mVideoView.resume();
-            syncEmbeddedControllerMode();
             // Android may reset the window color mode while the activity is paused or its
             // decor is reattached. Re-apply HDR before the first resumed frame so HDR10,
             // HDR10+, HLG and Dolby Vision do not briefly (or permanently) fall back to SDR.
             if (currentPlaybackRequiresHdrOutput) {
                 syncHdrWindowForCurrentPlayback("activity-resume");
             }
+            mVideoView.resume();
+            syncEmbeddedControllerMode();
         }
     }
 

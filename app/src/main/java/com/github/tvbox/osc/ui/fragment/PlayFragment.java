@@ -88,6 +88,7 @@ import com.github.tvbox.osc.util.ScreenUtils;
 import com.github.tvbox.osc.util.SubtitleHelper;
 import com.github.tvbox.osc.util.SystemDecoderRoutePolicy;
 import com.github.tvbox.osc.util.VideoStreamProbe;
+import com.github.tvbox.osc.util.VideoProbeHdrHeaders;
 import com.github.tvbox.osc.util.VideoParseRuler;
 import com.github.tvbox.osc.util.XWalkUtils;
 import com.github.tvbox.osc.util.parser.SuperParse;
@@ -2526,6 +2527,7 @@ public class PlayFragment extends BaseLazyFragment {
         if (isTv32StartupPreflightProbe(probe)) {
             headers.put("X-TVBox-Probe-Tv32StartupDirect", "1");
         }
+        VideoProbeHdrHeaders.apply(headers, probe);
     }
 
     private boolean shouldCreateInternalPlaybackHeaders(String playbackUrl, VideoStreamProbe.Result probe) {
@@ -2533,6 +2535,7 @@ public class PlayFragment extends BaseLazyFragment {
                 || probe.hasDolbyVision
                 || probe.hasHdr10
                 || probe.hasHdr10Plus
+                || probe.colorMetadata.hasHdrTransfer()
                 || shouldForceTv32SystemSafePcm(playbackUrl, probe)
                 // Compressed tracks must always carry the capability conclusion: PCM is the
                 // default unless an enabled passthrough route has an explicit codec match.
@@ -3343,12 +3346,12 @@ public class PlayFragment extends BaseLazyFragment {
         suppressPauseForFullScreenTransition = false;
         if (!embeddedPlaybackStopped && !playbackViewDestroyed && mVideoView != null
                 && PlayerHelper.isInternalPlayerType(mVodPlayerCfg == null ? -1 : mVodPlayerCfg.optInt("pl", -1))) {
-            mVideoView.resume();
             // Fragment/view reattachment can clear the platform HDR color mode. Re-request it
             // before resumed rendering so mobile HDR10/HDR10+/HLG/Dolby Vision stays active.
             if (currentPlaybackRequiresHdrOutput) {
                 syncHdrWindowForCurrentPlayback("fragment-resume");
             }
+            mVideoView.resume();
         }
     }
 
@@ -3365,10 +3368,10 @@ public class PlayFragment extends BaseLazyFragment {
             }
         } else {
             if (mVideoView != null) {
-                mVideoView.resume();
                 if (currentPlaybackRequiresHdrOutput) {
                     syncHdrWindowForCurrentPlayback("fragment-unhidden");
                 }
+                mVideoView.resume();
             }
         }
         super.onHiddenChanged(hidden);

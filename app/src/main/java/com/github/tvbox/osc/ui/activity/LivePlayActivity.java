@@ -410,8 +410,8 @@ public class LivePlayActivity extends BaseActivity {
         initLiveChannelView();
         initSettingGroupView();
         initSettingItemView();
-        initLiveChannelList();
         initLiveSettingGroupList();
+        loadSavedLiveConfiguration();
         Hawk.put(HawkConfig.PLAYER_IS_LIVE,true);
     }
     //获取EPG并存储 // 百川epg  DIYP epg   51zmt epg ------- 自建EPG格式输出格式请参考 51zmt
@@ -1211,6 +1211,7 @@ public class LivePlayActivity extends BaseActivity {
 
     @Override
     protected void onDestroy() {
+        OkGo.getInstance().cancelTag(liveConfigRequestTag);
         super.onDestroy();
         hideSwitchChannelSnapshot();
         if (mVideoView != null) {
@@ -1364,8 +1365,17 @@ public class LivePlayActivity extends BaseActivity {
     private Boolean hasCatchup=false;
     private String logoUrl=null;
     private void initLiveObj(){
+        catchup = null;
+        hasCatchup = false;
+        logoUrl = null;
         int position=Hawk.get(HawkConfig.LIVE_GROUP_INDEX, 0);
         JsonArray live_groups=Hawk.get(HawkConfig.LIVE_GROUP_LIST,new JsonArray());
+        if (live_groups.isEmpty()) return;
+        if (position < 0 || position >= live_groups.size()) {
+            position = 0;
+            Hawk.put(HawkConfig.LIVE_GROUP_INDEX, position);
+        }
+        if (!live_groups.get(position).isJsonObject()) return;
         JsonObject livesOBJ = live_groups.get(position).getAsJsonObject();
         String type = livesOBJ.has("type")?livesOBJ.get("type").getAsString():"0";
 
@@ -2457,6 +2467,38 @@ public class LivePlayActivity extends BaseActivity {
         }
     }
 
+    private final Object liveConfigRequestTag = new Object();
+
+    private void loadSavedLiveConfiguration() {
+        showLoading();
+        final String mainUrl = getIntent().hasExtra(
+                com.github.tvbox.osc.util.live.LiveSourcePolicy.EXTRA_MAIN_URL)
+                ? getIntent().getStringExtra(com.github.tvbox.osc.util.live.LiveSourcePolicy.EXTRA_MAIN_URL)
+                : Hawk.get(HawkConfig.API_URL, "");
+        final String liveUrl = getIntent().hasExtra(
+                com.github.tvbox.osc.util.live.LiveSourcePolicy.EXTRA_LIVE_URL)
+                ? getIntent().getStringExtra(com.github.tvbox.osc.util.live.LiveSourcePolicy.EXTRA_LIVE_URL)
+                : Hawk.get(HawkConfig.LIVE_API_URL, "");
+        ApiConfig.get().loadLiveConfig(mainUrl, liveUrl, liveConfigRequestTag, new ApiConfig.LoadConfigCallback() {
+            @Override
+            public void success() {
+                if (isFinishing() || isDestroyed()) return;
+                initLiveSettingGroupList();
+                initLiveChannelList();
+            }
+
+            @Override
+            public void notice(String msg) {
+                // The final callback chooses the loading/error state.
+            }
+
+            @Override
+            public void error(String msg) {
+                if (!isFinishing() && !isDestroyed()) showLiveLoadError(msg);
+            }
+        });
+    }
+
     public void loadProxyLives(String url) {
         try {
             Uri parsedUrl = Uri.parse(url);
@@ -2553,7 +2595,7 @@ public class LivePlayActivity extends BaseActivity {
                     okGoHeaders.put(entry.getKey(), entry.getValue());
                 }
             }
-            OkGo.<String>get(url).headers(okGoHeaders).execute(new AbsCallback<String>() {
+            OkGo.<String>get(url).tag(liveConfigRequestTag).headers(okGoHeaders).execute(new AbsCallback<String>() {
 
                 @Override
                 public String convertResponse(okhttp3.Response response) throws Throwable {
@@ -2563,6 +2605,7 @@ public class LivePlayActivity extends BaseActivity {
 
                 @Override
                 public void onSuccess(Response<String> response) {
+                    if (isFinishing() || isDestroyed()) return;
                     LinkedHashMap<String, LinkedHashMap<String, ArrayList<String>>> linkedHashMap = new LinkedHashMap<>();
                     TxtSubscribe.parse(linkedHashMap, response.body());
                     JsonArray livesArray = TxtSubscribe.live2JsonArray(linkedHashMap);
@@ -2592,6 +2635,7 @@ public class LivePlayActivity extends BaseActivity {
 
                 @Override
                 public void onError(Response<String> response) {
+                    if (isFinishing() || isDestroyed()) return;
                     mHandler.post(new Runnable() {
                         @Override
                         public void run() {

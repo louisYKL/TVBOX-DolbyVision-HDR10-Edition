@@ -393,6 +393,7 @@ public final class VideoStreamProbe {
             boolean sawHdr10Plus = hlsDynamicRange.hdr10Plus;
             boolean hdr10BaseLayerDetected = false;
             int detectedDolbyVisionProfile = -1;
+            VideoColorMetadata videoColorMetadata = VideoColorMetadata.EMPTY;
             String primaryVideoMime = null;
             String primaryAudioMime = null;
             boolean hasAvcVideo = false;
@@ -468,6 +469,7 @@ public final class VideoStreamProbe {
                     primaryVideoMime = normalizedMime;
                 }
                 videoTracks.add(i);
+                videoColorMetadata = videoColorMetadata.mergeMissing(readVideoColorMetadata(format));
                 hasAvcVideo = hasAvcVideo || containsAvcCodecMarker(combined);
                 hasHevcVideo = hasHevcVideo || containsHevcCodecTextMarker(combined);
                 boolean hdr10Plus = containsHdr10PlusTextMarker(combined);
@@ -553,14 +555,16 @@ public final class VideoStreamProbe {
                         hasAc3Audio, hasEac3Audio, hasDtsAudio, hasTrueHdAudio,
                         hasAtmosLikeAudio, audioTrackCount,
                         mergedSubtitleTracks,
-                        summary);
+                        summary).withColorMetadata(videoColorMetadata.mergeMissing(
+                                byteResult == null ? null : byteResult.colorMetadata)
+                                .mergeMissing(hlsDynamicRange.metadata));
             }
             if (hlsDynamicRange.hasEvidence()) {
                 return new Result(true, false, hlsDynamicRange.hdr10,
                         hlsDynamicRange.hdr10Plus, false, -1, false,
                         "video/unknown", null, false, false,
                         false, false, false, false, false, 0, null,
-                        hlsDynamicRange.summary);
+                        hlsDynamicRange.summary).withColorMetadata(hlsDynamicRange.metadata);
             }
             return Result.unknown("no-video-track");
         } catch (Throwable th) {
@@ -571,7 +575,8 @@ public final class VideoStreamProbe {
                             hlsDynamicRange.hdr10Plus, false, -1, false,
                             "video/unknown", null, false, false,
                             false, false, false, false, false, 0, null,
-                            hlsDynamicRange.summary + " + extractor-NetworkOnMainThread");
+                            hlsDynamicRange.summary + " + extractor-NetworkOnMainThread")
+                            .withColorMetadata(hlsDynamicRange.metadata);
                 }
                 return Result.unknown("extractor-NetworkOnMainThread");
             }
@@ -584,7 +589,8 @@ public final class VideoStreamProbe {
                         hlsDynamicRange.hdr10Plus, false, -1, false,
                         "video/unknown", null, false, false,
                         false, false, false, false, false, 0, null,
-                        hlsDynamicRange.summary + " + extractor-" + th.getClass().getSimpleName());
+                        hlsDynamicRange.summary + " + extractor-" + th.getClass().getSimpleName())
+                        .withColorMetadata(hlsDynamicRange.metadata);
             }
             return Result.unknown("extractor-" + th.getClass().getSimpleName());
         } finally {
@@ -704,7 +710,8 @@ public final class VideoStreamProbe {
                     extractorResult.hasAtmosLikeAudio,
                     extractorResult.audioTrackCount,
                     mergeSubtitleTracks(extractorResult.subtitleTracks, byteResult == null ? null : byteResult.subtitleTracks),
-                    summary);
+                    summary).withColorMetadata(extractorResult.colorMetadata.mergeMissing(
+                            byteResult == null ? null : byteResult.colorMetadata));
         }
 
         if (byteResult != null && byteResult.probed) {
@@ -808,6 +815,8 @@ public final class VideoStreamProbe {
                         + " prefix=" + prefix);
             }
             byte[] markerData = first.data;
+            VideoColorMetadata containerColor = firstTrackSummary.colorMetadata.mergeMissing(
+                    readMp4ColorMetadata(markerData));
             // Scan once without converting megabytes of binary data into UTF-16 strings.
             VideoStreamByteMarkers.Scan firstMarkers = VideoStreamByteMarkers.scan(markerData, markerData.length);
             if (!allowTargetedMatroskaTracks) {
@@ -818,7 +827,7 @@ public final class VideoStreamProbe {
             boolean firstHasDvRpu = containsHevcRpuNal(markerData, markerData.length);
             boolean firstHasHevcContext = firstMarkers.has(VideoStreamByteMarkers.HEVC);
             boolean firstHdrColor = firstMarkers.has(VideoStreamByteMarkers.HDR10)
-                    || containsMatroskaHdrColorMarker(markerData);
+                    || containsMatroskaHdrColorMarker(markerData) || containerColor.hasHdrTransfer();
             if (firstHasDvText || firstHasDvRpu) {
                 int dvProfile = extractDolbyVisionProfile(markerData, firstMarkers);
                 boolean dvConfirmed = isConfirmedDolbyVisionByteProbe(firstHasDvText, firstHasDvRpu,
@@ -835,7 +844,9 @@ public final class VideoStreamProbe {
                         firstTrackSummary.hasDtsAudio, firstTrackSummary.hasTrueHdAudio,
                         firstTrackSummary.hasAtmosLikeAudio, firstTrackSummary.audioTrackCount,
                         firstSubtitleTracks,
-                        prefix + ":header-dovi" + profileSuffix(dvProfile, hdr10BaseLayer));
+                        prefix + ":header-dovi" + profileSuffix(dvProfile, hdr10BaseLayer))
+                            .withColorMetadata(containerColor.mergeMissing(
+                                    readDolbyVisionConfigRecord(markerData, markerData.length)));
                 }
             }
             boolean firstHdr10Plus = firstMarkers.has(VideoStreamByteMarkers.HDR10_PLUS)
@@ -856,7 +867,7 @@ public final class VideoStreamProbe {
                         firstTrackSummary.hasDtsAudio, firstTrackSummary.hasTrueHdAudio,
                         firstTrackSummary.hasAtmosLikeAudio, firstTrackSummary.audioTrackCount,
                         firstSubtitleTracks,
-                        prefix + ":header-hdr");
+                        prefix + ":header-hdr").withColorMetadata(containerColor);
             }
             boolean firstLooksMatroska = firstMarkers.has(VideoStreamByteMarkers.MATROSKA);
             if (readTail && total > safeProbeBytes && !localProxyUrl) {
@@ -886,7 +897,9 @@ public final class VideoStreamProbe {
                                 mergedTrackSummary.hasDtsAudio, mergedTrackSummary.hasTrueHdAudio,
                                 mergedTrackSummary.hasAtmosLikeAudio, mergedTrackSummary.audioTrackCount,
                                 mergedSubtitleTracks,
-                                prefix + ":tail-dovi" + profileSuffix(dvProfile, hdr10BaseLayer));
+                                prefix + ":tail-dovi" + profileSuffix(dvProfile, hdr10BaseLayer))
+                                .withColorMetadata(containerColor.mergeMissing(mergedTrackSummary.colorMetadata)
+                                        .mergeMissing(readDolbyVisionConfigRecord(tail.data, tail.data.length)));
                     }
                 }
                 boolean tailHdr10Plus = tailMarkers.has(VideoStreamByteMarkers.HDR10_PLUS) || mergedTrackSummary.hasHdr10Plus;
@@ -900,7 +913,8 @@ public final class VideoStreamProbe {
                             mergedTrackSummary.hasDtsAudio, mergedTrackSummary.hasTrueHdAudio,
                             mergedTrackSummary.hasAtmosLikeAudio, mergedTrackSummary.audioTrackCount,
                             mergedSubtitleTracks,
-                            prefix + ":tail-hdr");
+                            prefix + ":tail-hdr").withColorMetadata(containerColor
+                                    .mergeMissing(mergedTrackSummary.colorMetadata));
                 }
                 firstSubtitleTracks = mergedSubtitleTracks;
                 firstTrackSummary = mergedTrackSummary;
@@ -916,7 +930,7 @@ public final class VideoStreamProbe {
                     firstTrackSummary.hasDtsAudio, firstTrackSummary.hasTrueHdAudio,
                     firstTrackSummary.hasAtmosLikeAudio, firstTrackSummary.audioTrackCount,
                     firstSubtitleTracks,
-                    prefix + ":byte-probe-no-hdr");
+                    prefix + ":byte-probe-no-hdr").withColorMetadata(containerColor);
         } catch (Throwable th) {
             VideoStreamByteMarkers.throwIfCancelled();
             return Result.unknown(prefix + ":byte-probe-" + th.getClass().getSimpleName());
@@ -1327,6 +1341,11 @@ public final class VideoStreamProbe {
             String lower = playlist.toLowerCase(Locale.US);
             boolean hdr10 = containsHlsDynamicRangeMarker(lower);
             boolean hdr10Plus = containsHdr10PlusTextMarker(lower);
+            VideoColorMetadata metadata = new VideoColorMetadata(
+                    lower.contains("video-range=hlg") || lower.contains("transfer=hlg") ? 7
+                            : lower.contains("video-range=pq") || lower.contains("transfer=pq")
+                            || lower.contains("smpte-st-2084") ? 6 : -1,
+                    -1, -1, null, -1, -1);
             HlsDynamicRange nested = HlsDynamicRange.EMPTY;
             String variantUrl = findFirstHlsVariantUrl(url, playlist);
             if (!TextUtils.isEmpty(variantUrl) && depth < 1) {
@@ -1340,7 +1359,8 @@ public final class VideoStreamProbe {
             String summary = "hls-playlist-hdr"
                     + (hdr10Plus ? "10+" : "10")
                     + (nested.hasEvidence() ? "+variant" : "");
-            return new HlsDynamicRange(hdr10, hdr10Plus, summary);
+            return new HlsDynamicRange(hdr10, hdr10Plus, summary,
+                    nested.metadata.mergeMissing(metadata));
         } catch (Throwable ignored) {
             return HlsDynamicRange.EMPTY;
         }
@@ -1746,8 +1766,8 @@ public final class VideoStreamProbe {
         return fromConfig > 0 ? fromConfig : -1;
     }
 
-    private static int extractDolbyVisionProfile(String text) {
-        if (TextUtils.isEmpty(text)) {
+    static int extractDolbyVisionProfile(String text) {
+        if (text == null || text.isEmpty()) {
             return -1;
         }
         String lower = text.toLowerCase(Locale.US);
@@ -1760,9 +1780,9 @@ public final class VideoStreamProbe {
         value = firstIntAfter(lower, "profile=");
         if (value > 0 && lower.contains("dovi")) return value;
         value = firstIntAfter(lower, "dvhe.");
-        if (value > 0) return value / 10;
+        if (value > 0) return value;
         value = firstIntAfter(lower, "dvh1.");
-        if (value > 0) return value / 10;
+        if (value > 0) return value;
         if (lower.contains("profile 5") || lower.contains("profile: 5")) return 5;
         if (lower.contains("profile 7") || lower.contains("profile: 7")) return 7;
         if (lower.contains("profile 8") || lower.contains("profile: 8")) return 8;
@@ -1770,27 +1790,41 @@ public final class VideoStreamProbe {
     }
 
     private static int extractDolbyVisionProfileFromConfigRecord(byte[] data, int length) {
+        return readDolbyVisionConfigRecord(data, length).dolbyVisionProfile;
+    }
+
+    static VideoColorMetadata readDolbyVisionConfigRecord(byte[] data, int length) {
+        if (data == null) return VideoColorMetadata.EMPTY;
         int safeLength = Math.min(length, data.length);
-        for (int i = 0; i + 4 < safeLength; i++) {
+        for (int i = 0; i + 9 <= safeLength; i++) {
             if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
             if (data[i] == 'd'
                     && (data[i + 1] == 'v' || data[i + 1] == 'V')
                     && (data[i + 2] == 'c' || data[i + 2] == 'C' || data[i + 2] == 'v' || data[i + 2] == 'V')
-                    && (data[i + 3] == 'C' || data[i + 3] == 'c' || data[i + 3] == '1')) {
+                    && (data[i + 3] == 'C' || data[i + 3] == 'c')) {
                 int payload = i + 4;
-                if (payload + 1 < safeLength) {
-                    int profile = (data[payload + 1] & 0x7f) >> 1;
+                // dvcC/dvvC begin with major/minor version bytes, then 7 profile bits.
+                // Reading the minor version as profile loses profiles 5/7/8 entirely.
+                if ((data[payload] & 255) <= 1 && payload + 4 < safeLength) {
+                    int profile = (data[payload + 2] & 0xfe) >> 1;
                     if (profile > 0 && profile <= 12) {
-                        return profile;
+                        int compatibilityId = (data[payload + 4] & 0xf0) >> 4;
+                        int level = ((data[payload + 2] & 1) << 5)
+                                | ((data[payload + 3] & 0xf8) >> 3);
+                        int transfer = profile == 8 && compatibilityId == 4 ? 7
+                                : profile == 8 && compatibilityId == 2 ? 3
+                                : profile == 7 || (profile == 8 && compatibilityId == 1) ? 6 : -1;
+                        return new VideoColorMetadata(transfer, -1, -1, null,
+                                profile, level, compatibilityId);
                     }
                 }
             }
         }
-        return -1;
+        return VideoColorMetadata.EMPTY;
     }
 
     private static int firstIntAfter(String lower, String marker) {
-        if (TextUtils.isEmpty(lower) || TextUtils.isEmpty(marker)) {
+        if (lower == null || lower.isEmpty() || marker == null || marker.isEmpty()) {
             return -1;
         }
         int index = lower.indexOf(marker);
@@ -1824,7 +1858,9 @@ public final class VideoStreamProbe {
     }
 
     private static boolean isDolbyVisionProfileWithHdr10BaseLayer(int dvProfile) {
-        return dvProfile == 7 || dvProfile == 8;
+        // Profile 8 can carry HDR10 (8.1), SDR (8.2), or HLG (8.4). Profile alone
+        // cannot establish an HDR10-compatible layer.
+        return dvProfile == 7;
     }
 
     private static String profileSuffix(int dvProfile, boolean hdr10BaseLayer) {
@@ -1895,6 +1931,125 @@ public final class VideoStreamProbe {
         }
         int transfer = safeGetInteger(format, "color-transfer", -1);
         return transfer == 6 || transfer == 7;
+    }
+
+    private static VideoColorMetadata readVideoColorMetadata(MediaFormat format) {
+        byte[] hdrStatic = null;
+        try {
+            ByteBuffer value = format.getByteBuffer("hdr-static-info");
+            if (value != null && value.remaining() == 25) {
+                hdrStatic = new byte[25];
+                value.duplicate().get(hdrStatic);
+            }
+        } catch (RuntimeException ignored) { }
+        int standard = safeGetInteger(format, "color-standard", -1);
+        String codecs = safeGetString(format, "codecs-string");
+        VideoColorMetadata fields = new VideoColorMetadata(
+                extractorColorTransfer(safeGetInteger(format, "color-transfer", -1), standard,
+                        safeGetString(format, "mime"), codecs,
+                        safeGetInteger(format, "profile", -1)), standard,
+                safeGetInteger(format, "color-range", -1), hdrStatic, -1, -1);
+        fields = fields.mergeMissing(readDolbyVisionCodecMetadata(codecs));
+        for (String key : new String[]{"csd-0", "csd-1", "csd-2"}) {
+            try {
+                ByteBuffer csd = format.getByteBuffer(key);
+                if (csd != null && csd.remaining() <= SAMPLE_PROBE_BYTES) {
+                    byte[] data = new byte[csd.remaining()];
+                    csd.duplicate().get(data);
+                    fields = fields.mergeMissing(readDolbyVisionConfigRecord(data, data.length));
+                }
+            } catch (RuntimeException ignored) { }
+        }
+        return fields;
+    }
+
+    /** Leave a vendor's ambiguous default SDR field open to real container PQ/HLG evidence. */
+    static int extractorColorTransfer(int transfer, int standard, String mime, String codecs,
+                                      int profile) {
+        if (transfer != 3 || standard != 6 || mime == null) return transfer;
+        String normalizedMime = mime.toLowerCase(Locale.US);
+        if (!"video/hevc".equals(normalizedMime)
+                && !"video/dolby-vision".equals(normalizedMime)) return transfer;
+        String codec = codecs == null ? "" : codecs.toLowerCase(Locale.US);
+        boolean main10Codec = codec.startsWith("hvc1.2.") || codec.startsWith("hev1.2.");
+        // These are HEVC profile values, not a DV profile with a coinciding integer.
+        boolean main10Profile = "video/hevc".equals(normalizedMime)
+                && (profile == 2 || profile == 0x1000 || profile == 0x2000);
+        boolean missingProfile = "video/hevc".equals(normalizedMime)
+                && profile < 0 && codec.isEmpty();
+        // Unknown is not HDR. Without additional PQ/HLG metadata playback keeps its
+        // extractor-provided SDR format, and Main10/BT.2020 alone never activates HDR.
+        return main10Codec || main10Profile || missingProfile ? -1 : transfer;
+    }
+
+    static VideoColorMetadata readDolbyVisionCodecMetadata(String codecs) {
+        if (codecs == null) return VideoColorMetadata.EMPTY;
+        String value = codecs.toLowerCase(Locale.US);
+        int marker = value.indexOf("dvhe.");
+        if (marker < 0) marker = value.indexOf("dvh1.");
+        if (marker < 0) marker = value.indexOf("dva1.");
+        if (marker < 0) marker = value.indexOf("dvav.");
+        if (marker < 0) return VideoColorMetadata.EMPTY;
+        int separator = value.indexOf('.', marker + 5);
+        if (separator < 0) return VideoColorMetadata.EMPTY;
+        int end = separator + 1;
+        while (end < value.length() && Character.isDigit(value.charAt(end))) end++;
+        try {
+            int profile = Integer.parseInt(value.substring(marker + 5, separator));
+            int level = Integer.parseInt(value.substring(separator + 1, end));
+            if (profile <= 0 || profile > 12 || level <= 0 || level > 63) return VideoColorMetadata.EMPTY;
+            return new VideoColorMetadata(-1, -1, -1, null, profile, level, -1);
+        } catch (RuntimeException ignored) {
+            return VideoColorMetadata.EMPTY;
+        }
+    }
+
+    /** ISO colr/nclx values, bounded to a complete declared color atom. */
+    static VideoColorMetadata readMp4ColorMetadata(byte[] data) {
+        if (data == null) return VideoColorMetadata.EMPTY;
+        for (int i = 4; i + 15 <= data.length; i++) {
+            if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
+            if (data[i] != 'c' || data[i + 1] != 'o' || data[i + 2] != 'l' || data[i + 3] != 'r'
+                    || data[i + 4] != 'n' || data[i + 5] != 'c'
+                    || data[i + 6] != 'l' || data[i + 7] != 'x') continue;
+            long atomSize = ((data[i - 4] & 255L) << 24) | ((data[i - 3] & 255L) << 16)
+                    | ((data[i - 2] & 255L) << 8) | (data[i - 1] & 255L);
+            if (atomSize < 19L || atomSize > data.length - i + 4L) continue;
+            int primaries = ((data[i + 8] & 255) << 8) | (data[i + 9] & 255);
+            int transfer = ((data[i + 10] & 255) << 8) | (data[i + 11] & 255);
+            int matrix = ((data[i + 12] & 255) << 8) | (data[i + 13] & 255);
+            return new VideoColorMetadata(transfer == 16 ? 6 : transfer == 18 ? 7
+                    : transfer == 1 || transfer == 6 || transfer == 13 ? 3 : -1,
+                    primaries == 9 || matrix == 9 || matrix == 10 ? 6
+                            : primaries == 1 || matrix == 1 ? 1 : -1,
+                    (data[i + 14] & 0x80) != 0 ? 1 : 2, null, -1, -1);
+        }
+        return VideoColorMetadata.EMPTY;
+    }
+
+    static VideoColorMetadata readMatroskaColorMetadata(byte[] data) {
+        // Keep color parsing independent of Android track-name/subtitle helpers.
+        // Only bounded children of an actual Tracks element may supply color metadata.
+        if (!looksLikeMatroskaTracksChunk(data)) return VideoColorMetadata.EMPTY;
+        EbmlElement tracks = readEbmlElementHeader(data, 0, data.length);
+        if (tracks == null || tracks.id != 0x1654AE6BL) return VideoColorMetadata.EMPTY;
+        for (int offset = tracks.dataStart; offset < tracks.dataEnd; ) {
+            EbmlElement entry = readEbmlElementHeader(data, offset, tracks.dataEnd);
+            if (entry == null || entry.totalEnd <= offset) break;
+            if (entry.id == 0xAE) {
+                for (int childOffset = entry.dataStart; childOffset < entry.dataEnd; ) {
+                    EbmlElement child = readEbmlElementHeader(data, childOffset, entry.dataEnd);
+                    if (child == null || child.totalEnd <= childOffset) break;
+                    if (child.id == 0x83
+                            && readEbmlUnsignedValue(data, child.dataStart, child.dataEnd) == 0x01L) {
+                        return readMatroskaVideoColorInfo(data, entry.dataStart, entry.dataEnd).metadata;
+                    }
+                    childOffset = child.totalEnd;
+                }
+            }
+            offset = entry.totalEnd;
+        }
+        return VideoColorMetadata.EMPTY;
     }
 
     private static int safeGetInteger(MediaFormat format, String key, int fallback) {
@@ -2593,6 +2748,7 @@ public final class VideoStreamProbe {
             MatroskaVideoColorInfo colorInfo = readMatroskaVideoColorInfo(data, start, end);
             summary.hasHdr10 = summary.hasHdr10 || colorInfo.isHdr;
             summary.hasHdr10Plus = summary.hasHdr10Plus || colorInfo.isHdr10Plus;
+            summary.colorMetadata = summary.colorMetadata.mergeMissing(colorInfo.metadata);
             return;
         }
         if (trackType == 0x11L) { // subtitle
@@ -2697,6 +2853,7 @@ public final class VideoStreamProbe {
         merged.hasAtmosLikeAudio = primary.hasAtmosLikeAudio || secondary.hasAtmosLikeAudio;
         merged.hasHdr10 = primary.hasHdr10 || secondary.hasHdr10;
         merged.hasHdr10Plus = primary.hasHdr10Plus || secondary.hasHdr10Plus;
+        merged.colorMetadata = primary.colorMetadata.mergeMissing(secondary.colorMetadata);
         merged.audioTrackCount = Math.max(primary.audioTrackCount, secondary.audioTrackCount);
         return merged.freeze();
     }
@@ -2762,6 +2919,7 @@ public final class VideoStreamProbe {
         long primaries = -1L;
         long matrix = -1L;
         long bitsPerChannel = -1L;
+        long range = -1L;
         boolean mastering = false;
         boolean contentLightLevel = false;
         boolean hdr10Plus = false;
@@ -2793,6 +2951,9 @@ public final class VideoStreamProbe {
                                 case 0x55BA: // TransferCharacteristics
                                     transfer = readEbmlUnsignedValue(data, colorElement.dataStart, colorElement.dataEnd);
                                     break;
+                                case 0x55B9: // Range (1 limited, 2 full)
+                                    range = readEbmlUnsignedValue(data, colorElement.dataStart, colorElement.dataEnd);
+                                    break;
                                 case 0x55BB: // Primaries
                                     primaries = readEbmlUnsignedValue(data, colorElement.dataStart, colorElement.dataEnd);
                                     break;
@@ -2819,10 +2980,16 @@ public final class VideoStreamProbe {
             offset = element.totalEnd;
         }
         boolean pqOrHlg = transfer == 16L || transfer == 18L;
-        boolean wideGamutMastered = (primaries == 9L || matrix == 9L)
+        boolean wideGamutMastered = transfer < 0L && (primaries == 9L || matrix == 9L)
                 && (mastering || contentLightLevel)
                 && (bitsPerChannel < 0L || bitsPerChannel >= 10L);
-        return new MatroskaVideoColorInfo(sawColour && (pqOrHlg || wideGamutMastered), hdr10Plus);
+        VideoColorMetadata metadata = new VideoColorMetadata(transfer == 16 ? 6
+                : transfer == 18 ? 7 : transfer == 1 || transfer == 6 || transfer == 13 ? 3 : -1,
+                primaries == 9 || matrix == 9 || matrix == 10 ? 6
+                        : primaries == 1 || matrix == 1 ? 1 : -1,
+                range == 1 ? 2 : range == 2 ? 1 : -1, null, -1, -1);
+        return new MatroskaVideoColorInfo(sawColour && (pqOrHlg || wideGamutMastered), hdr10Plus,
+                metadata);
     }
 
     private static boolean looksLikeMatroskaTracksChunk(byte[] data) {
@@ -3873,7 +4040,7 @@ public final class VideoStreamProbe {
                 base.hasAtmosLikeAudio,
                 base.audioTrackCount,
                 base.subtitleTracks,
-                summary);
+                summary).withColorMetadata(base.colorMetadata);
     }
 
     private static String normalizeMime(String mime) {
@@ -3984,11 +4151,18 @@ public final class VideoStreamProbe {
         private final boolean hdr10;
         private final boolean hdr10Plus;
         private final String summary;
+        private final VideoColorMetadata metadata;
 
         private HlsDynamicRange(boolean hdr10, boolean hdr10Plus, String summary) {
+            this(hdr10, hdr10Plus, summary, VideoColorMetadata.EMPTY);
+        }
+
+        private HlsDynamicRange(boolean hdr10, boolean hdr10Plus, String summary,
+                                VideoColorMetadata metadata) {
             this.hdr10 = hdr10;
             this.hdr10Plus = hdr10Plus;
             this.summary = summary == null ? "" : summary;
+            this.metadata = metadata;
         }
 
         private boolean hasEvidence() {
@@ -4016,6 +4190,7 @@ public final class VideoStreamProbe {
         public final int audioTrackCount;
         public final List<SubtitleTrackMetadata> subtitleTracks;
         public final String summary;
+        public final VideoColorMetadata colorMetadata;
 
         private Result(boolean probed, boolean hasDolbyVision, boolean hasHdr10, boolean hasHdr10Plus, boolean isMatroska, String summary) {
             this(probed, hasDolbyVision, hasHdr10, hasHdr10Plus, isMatroska, -1,
@@ -4058,13 +4233,37 @@ public final class VideoStreamProbe {
                        int audioTrackCount,
                        List<SubtitleTrackMetadata> subtitleTracks,
                        String summary) {
+            this(probed, hasDolbyVision, hasHdr10, hasHdr10Plus, isMatroska,
+                    dolbyVisionProfile, hasHdr10BaseLayer, primaryVideoMime, primaryAudioMime,
+                    hasAvcVideo, hasHevcVideo, hasAc3Audio, hasEac3Audio, hasDtsAudio,
+                    hasTrueHdAudio, hasAtmosLikeAudio, audioTrackCount, subtitleTracks, summary,
+                    VideoColorMetadata.EMPTY);
+        }
+
+        private Result(boolean probed, boolean hasDolbyVision, boolean hasHdr10,
+                       boolean hasHdr10Plus, boolean isMatroska, int dolbyVisionProfile,
+                       boolean hasHdr10BaseLayer, String primaryVideoMime, String primaryAudioMime,
+                       boolean hasAvcVideo, boolean hasHevcVideo, boolean hasAc3Audio,
+                       boolean hasEac3Audio, boolean hasDtsAudio, boolean hasTrueHdAudio,
+                       boolean hasAtmosLikeAudio, int audioTrackCount,
+                       List<SubtitleTrackMetadata> subtitleTracks, String summary,
+                       VideoColorMetadata colorMetadata) {
             this.probed = probed;
             this.hasDolbyVision = hasDolbyVision;
             this.hasHdr10 = hasHdr10;
             this.hasHdr10Plus = hasHdr10Plus;
             this.isMatroska = isMatroska;
-            this.dolbyVisionProfile = dolbyVisionProfile;
-            this.hasHdr10BaseLayer = hasHdr10BaseLayer || (hasDolbyVision && hasHdr10);
+            this.colorMetadata = (colorMetadata == null ? VideoColorMetadata.EMPTY : colorMetadata)
+                    .mergeMissing(new VideoColorMetadata(-1, -1, -1, null, dolbyVisionProfile, -1));
+            this.dolbyVisionProfile = this.colorMetadata.dolbyVisionProfile > 0
+                    ? this.colorMetadata.dolbyVisionProfile : dolbyVisionProfile;
+            boolean explicitNonPqBase = !this.colorMetadata.hasHdr10BaseLayer()
+                    && (this.colorMetadata.colorTransfer == 7
+                    || this.colorMetadata.colorTransfer == 3
+                    || (this.dolbyVisionProfile > 0 && (this.dolbyVisionProfile != 8
+                    || this.colorMetadata.dolbyVisionCompatibilityId > 0)));
+            this.hasHdr10BaseLayer = !explicitNonPqBase && (this.colorMetadata.hasHdr10BaseLayer()
+                    || hasHdr10BaseLayer || (hasDolbyVision && hasHdr10));
             this.primaryVideoMime = normalizeMime(primaryVideoMime);
             this.primaryAudioMime = normalizeMime(primaryAudioMime);
             this.hasAvcVideo = hasAvcVideo;
@@ -4081,6 +4280,14 @@ public final class VideoStreamProbe {
                 this.subtitleTracks = Collections.unmodifiableList(new ArrayList<>(subtitleTracks));
             }
             this.summary = summary == null ? "" : summary;
+        }
+
+        private Result withColorMetadata(VideoColorMetadata metadata) {
+            return new Result(probed, hasDolbyVision, hasHdr10, hasHdr10Plus, isMatroska,
+                    dolbyVisionProfile, hasHdr10BaseLayer, primaryVideoMime, primaryAudioMime,
+                    hasAvcVideo, hasHevcVideo, hasAc3Audio, hasEac3Audio, hasDtsAudio,
+                    hasTrueHdAudio, hasAtmosLikeAudio, audioTrackCount, subtitleTracks, summary,
+                    metadata);
         }
 
         public static Result unknown(String summary) {
@@ -4117,6 +4324,7 @@ public final class VideoStreamProbe {
         private boolean hasAtmosLikeAudio;
         private boolean hasHdr10;
         private boolean hasHdr10Plus;
+        private VideoColorMetadata colorMetadata = VideoColorMetadata.EMPTY;
         private int audioTrackCount;
 
         private boolean hasImmersiveOrCompressedAudio() {
@@ -4137,10 +4345,12 @@ public final class VideoStreamProbe {
     private static final class MatroskaVideoColorInfo {
         private final boolean isHdr;
         private final boolean isHdr10Plus;
+        private final VideoColorMetadata metadata;
 
-        private MatroskaVideoColorInfo(boolean isHdr, boolean isHdr10Plus) {
+        private MatroskaVideoColorInfo(boolean isHdr, boolean isHdr10Plus, VideoColorMetadata metadata) {
             this.isHdr = isHdr;
             this.isHdr10Plus = isHdr10Plus;
+            this.metadata = metadata;
         }
     }
 

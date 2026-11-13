@@ -5,15 +5,15 @@
 > 面向 Android TV、手机和平板的 TVBox 分支，重点维护设备硬解、HDR、字幕和有界流式缓存。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.0"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.0-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.0">下载 0.3.0</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.1">下载 0.3.1</a> ·
   <a href="README.en.md">English</a> ·
-  <a href="0.3.0/RELEASE_NOTES.md">本次更新说明</a>
+  <a href="0.3.1/RELEASE_NOTES.md">本次更新说明</a>
 </p>
 
 </div>
@@ -24,11 +24,11 @@
 
 | 安装包 | ABI | 适用设备 |
 | --- | --- | --- |
-| [TVBox_v0.3.0_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_java32.apk) | `armeabi-v7a` | 32 位 Android TV、智慧屏与盒子 |
-| [TVBox_v0.3.0_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_java64.apk) | `arm64-v8a` | 64 位手机、平板与盒子 |
-| [TVBox_v0.3.0_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_hisense32.apk) | `armeabi-v7a` | 海信 32 位电视 |
+| [TVBox_v0.3.1_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_java32.apk) | `armeabi-v7a` | 32 位 Android TV、智慧屏与盒子 |
+| [TVBox_v0.3.1_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_java64.apk) | `arm64-v8a` | 64 位手机、平板与盒子 |
+| [TVBox_v0.3.1_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_hisense32.apk) | `armeabi-v7a` | 海信 32 位电视 |
 
-版本号为 `0.3.0`，`versionCode` 为 `30000`。发布目录同时提供校验文件；历史更新保留在 [CHANGELOG](CHANGELOG.md)。
+版本号为 `0.3.1`，`versionCode` 为 `30001`。发布目录同时提供校验文件；历史更新保留在 [CHANGELOG](CHANGELOG.md)。
 
 ## 界面预览
 
@@ -37,22 +37,22 @@
   <img src="2.webp" alt="TVBOX preview 2" width="48%">
 </p>
 
-## 0.3.0 更新重点
+## 0.3.1 更新重点
 
-- 针对设备日志中确认的 Java 堆内存耗尽，统一管理缓存、在途下载和播放资源的预算；切源、退出播放时立即释放旧会话，并阻止过期回调重新启动播放。
-- 点播使用 `24 MiB` Range 块，连续向视频结束方向缓存；启播目标为 `96 MiB`，原始缓存的配置上限为 `192 MiB`，实际预算还受进程堆空间约束。索引探测和其他位置的读取不计作当前播放位置之后的连续缓存。
-- 首播、恢复、拖动和真实重新缓冲使用实际可用数据计算进度；保留已下载的有效数据，避免为了等待缓冲而重复切源、清空缓存或重新下载。直播保持单独的流式缓冲策略。
-- 播放期间不反复抓取整页背景做模糊；视频格式探测直接扫描字节，减少大字符串与临时对象分配。海报内存缓存按设备预算限制在 `4–16 MiB`。
-- 9978 网页分为订阅、直播、WebDAV 地址、账号和密码五个独立输入项；网页确认仅填入相应输入框，保存和启用由用户在软件内确认。
-- 外挂字幕在播放页内浏览本地或 WebDAV 目录，支持进入文件夹和返回上级；手动选择不要求同名。HDR 仅调整无源样式的纯文字字幕，保留样式字幕和位图字幕的原设计。
+- 修复识别出 HDR 后解码链路丢失真实色彩参数的问题。从探测到解码保留 PQ/HLG、色域、范围和源文件的静态 HDR 元数据，不再把 HLG 统一写成 PQ 或伪造固定 1000 nit 母版信息。
+- 修复 Dolby Vision 配置记录与 `dvhe.08.06` 等 codec 字符串中的 profile/level 解析。设备暴露实际 DV 解码器时优先尝试原生候选，再按实际 profile/level 与解码能力选择；保留原生路径的动态 RPU 数据。
+- 按实际兼容基础层处理 Dolby Vision 后备：Profile 7 / 8.1 使用 HDR10，8.4 使用 HLG，8.2 / 9 保持 SDR；Profile 5 不会被误当成具有 HDR10 基础层的视频。
+- HDR 能力从播放窗口所属的当前显示器读取，显示切换后重新评估；在窗口附着或重新获得焦点时重申 HDR 请求，避免手机窗口生命周期导致请求丢失。亮度继续由设备控制。
+- 修复独立直播进程复用旧直播地址、空列表阻断加载的问题；播放页使用最新已保存地址，列表格式按内容识别，不再依赖 URL 关键词。
+- 保持正式签名、`24 MiB` Range 块、`96 MiB` 点播启播目标与 `192 MiB` 原始缓存上限，以及既有字幕、9978 输入和音频策略。
 
-实现细节与验证范围见 [0.3.0 更新说明](0.3.0/RELEASE_NOTES.md)。缓存能够吸收网络波动；持续下载速度低于视频码率时，仍可能需要等待数据。
+实现细节与验证范围见 [0.3.1 更新说明](0.3.1/RELEASE_NOTES.md)。视频格式标识与系统 HDR 请求不能代替实测面板输出；不支持相应格式的硬件无法由软件补齐。缓存可吸收网络波动，持续下载速度低于视频码率时仍可能需要等待数据。
 
 ## 播放、HDR 与音频
 
 - 视频使用设备暴露的 Android `MediaCodec` 硬件解码器；不能由软件设置补齐设备不支持的解码能力。
 - HDR 判断结合视频轨道、PQ/HLG、HDR 元数据和 Dolby Vision/HDR10+ 标记，避免仅凭标题、位深或广色域猜测。播放控制栏显示时，角标显示当前已识别的视频分辨率与 HDR/SDR 状态。
-- 具备相应解码与显示能力的设备保留原生 Dolby Vision；其他设备在源视频具备可用基础层时使用 HDR10/HLG 兼容路径。应用请求相应输出模式，是否实际输出仍受系统、解码器、显示设备和格式配置限制。
+- 具备相应解码与显示能力的设备保留原生 Dolby Vision；其他设备仅在源视频具备实际兼容基础层时使用 HDR10/HLG/SDR 路径。应用请求相应输出模式，是否实际输出仍受系统、解码器、显示设备和格式配置限制。
 - HDR 播放亮度由设备控制。无自定义样式的 HDR 文本字幕使用浅灰字与黑色描边；ASS/SSA、带样式的文本和 PGS/VobSub 位图保留源设计，SDR 保留原字幕样式。
 - 音频优先使用系统解码器，必要时使用 FFmpeg 后备，保持现有双声道 PCM 输出和 Android 音频路由；本次内存优化不降低音频质量来掩盖缓冲问题。
 - 触屏单击显示或隐藏播放栏，双击切换播放/暂停；播放栏按钮和电视遥控器也可操作播放。

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.1
+
+### 中文
+
+- 修复 HDR 已识别但色彩信号在探测到解码之间丢失的问题，保留源 PQ/HLG、色域、范围和真实静态元数据；不再将 HLG 强制写成 PQ，也不伪造固定 1000 nit 母版数据。
+- 修复 Dolby Vision 配置记录和 codec 字符串中的 profile/level 解析；存在真实 DV 硬解码器时保留原生候选，再按实际 profile/level 决定；原生路径保留 RPU 动态数据。
+- Dolby Vision 后备仅使用实际兼容基础层：Profile 7 / 8.1 为 HDR10，8.4 为 HLG，8.2 为 SDR；Profile 5 不再被误当成普通 HDR10 基础层。
+- 显示能力跟随播放窗口所属显示器更新；窗口附着及焦点恢复时重申 HDR 请求，避免手机窗口生命周期使请求丢失。亮度继续由设备控制，不将格式识别或窗口接受状态误报为实测面板输出。
+- 修复独立直播进程使用旧直播地址及空列表阻断加载的问题，使用最新已保存地址并按实际内容识别列表类型。
+- 三端统一为 `0.3.1` / `versionCode 30001`，保留既有签名、24 MiB Range 块、96 MiB 点播启播目标、192 MiB 原始缓存上限和既有音频策略。实机覆盖与验证边界见 [发布说明](0.3.1/RELEASE_NOTES.md)。
+
+### English
+
+- Fix loss of HDR color signaling between probing and decoder setup. Preserve source PQ/HLG, color standard, range, and actual static metadata instead of forcing HLG to PQ or synthesizing a fixed 1000-nit mastering descriptor.
+- Correct Dolby Vision configuration-record and codec-string profile/level parsing. Retain a native candidate when an actual DV hardware decoder exists, then select against the actual profile/level capabilities; native paths preserve dynamic RPU data.
+- Use only real compatible Dolby Vision bases: Profile 7 / 8.1 for HDR10, 8.4 for HLG, and 8.2 for SDR. Profile 5 is not treated as an ordinary HDR10 base layer.
+- Follow the playback window's current display and reassert HDR requests on attachment and focus restoration, addressing lost requests on phones. Brightness stays device-controlled; format detection or window acceptance is not reported as measured panel output.
+- Fix stale live URLs and empty-list startup blocking in the standalone live process. Use the latest saved URL and detect playlist type from content.
+- Unify all variants under `0.3.1` / `versionCode 30001`, retaining the existing certificate, 24 MiB Range chunks, 96 MiB VOD startup target, 192 MiB raw-cache ceiling, and existing audio policy. See the [release notes](0.3.1/RELEASE_NOTES.md) for verification scope.
+
 ## 0.3.0
 
 ### 中文

@@ -352,11 +352,14 @@ public class UserFragment extends BaseLazyFragment implements View.OnClickListen
     
         FastClickCheckUtil.check(v);
         if (v.getId() == R.id.tvLive) {
-            if(Hawk.get(HawkConfig.LIVE_GROUP_LIST,new JsonArray()).isEmpty()){
-                Toast.makeText(mContext, "直播源为空", Toast.LENGTH_SHORT).show();
-            }else {
-                jumpActivity(LivePlayActivity.class);
-            }
+            // The live Activity has a separate ApiConfig singleton in :player.
+            // Pass current saved addresses, not the main process's stale/empty parsed list.
+            android.content.Intent live = new android.content.Intent(mContext, LivePlayActivity.class);
+            live.putExtra(com.github.tvbox.osc.util.live.LiveSourcePolicy.EXTRA_MAIN_URL,
+                    Hawk.get(HawkConfig.API_URL, ""));
+            live.putExtra(com.github.tvbox.osc.util.live.LiveSourcePolicy.EXTRA_LIVE_URL,
+                    Hawk.get(HawkConfig.LIVE_API_URL, ""));
+            startActivity(live);
         } else if (v.getId() == R.id.tvSearch) {
             jumpActivity(SearchActivity.class);
         } else if (v.getId() == R.id.tvSetting) {

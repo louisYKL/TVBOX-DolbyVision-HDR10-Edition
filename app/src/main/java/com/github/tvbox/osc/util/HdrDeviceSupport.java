@@ -1,12 +1,15 @@
 package com.github.tvbox.osc.util;
 
 import android.content.Context;
+import android.content.ContextWrapper;
+import android.app.Activity;
 import android.hardware.display.DisplayManager;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
 import android.os.Build;
 import android.view.Display;
+import android.view.WindowManager;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -21,7 +24,7 @@ import java.util.Locale;
  *  - 显示/HDMI 输出端能力：Display.getHdrCapabilities() —— 电视能“显示”哪些 HDR（含 DV passthrough）。
  *  - 解码端能力：MediaCodecList —— 盒子的解码器能“解”哪些（是否有 video/dolby-vision 解码器、HEVC Main10 等）。
  * “设备是否支持杜比视界 = 既能解码 DV，又能显示 DV”。仅显示端支持(passthrough)但无 DV 解码器时，
- * 必须把 DV 映射成 HDR10/HDR10+ 再激发 HDR。
+ * 只有视频具有真实兼容基础层时才可回退；Profile 5 等不能强制当作 HDR10。
  */
 public final class HdrDeviceSupport {
     private static final String[] CODEC_XML_DIRS = new String[]{
@@ -113,7 +116,7 @@ public final class HdrDeviceSupport {
             return displayHdr10 || displayHdr10Plus || displayHlg || displayDolbyVision;
         }
 
-        /** 能显示 HDR 但不能端到端原生 DV —— 需要把 DV 映射成 HDR10/HDR10+。 */
+        /** 仅描述设备能力差异，不代表当前 DV 视频存在可用兼容层。 */
         public boolean supportsHdrButNotDolbyVision() {
             return displaySupportsHdr() && !dolbyVision;
         }
@@ -124,7 +127,7 @@ public final class HdrDeviceSupport {
                     codecListDolbyVisionDecoder, displayDolbyVision);
         }
 
-        /** 和播放路由保持一致：所有端都必须同时具备真实硬解码器和 DV 输出能力。 */
+        /** 端到端输出能力；具体轨道的解码器选择还必须检查其真实 Profile/Level。 */
         public boolean supportsNativeDolbyVisionRoute(boolean java64TouchPhone) {
             return supportsNativeDolbyVision();
         }
@@ -161,13 +164,37 @@ public final class HdrDeviceSupport {
         return value;
     }
 
-    private static volatile Capabilities sCached;
+    // Codec enumeration/XML reads are process-stable and expensive. Display capabilities are
+    // not: HDMI hotplug, a foldable/external display or a display-mode change may replace them.
+    // Never freeze a first application's DEFAULT_DISPLAY result for the lifetime of playback.
+    private static volatile DecoderCapabilities sDecoderCapabilities;
+
+    private static final class DecoderCapabilities {
+        final boolean codecListDolbyVision = hasDecoderForType("video/dolby-vision");
+        final boolean xmlDolbyVision = codecListDolbyVision
+                || hasDeclaredCodecMarker(DOLBY_VISION_CODEC_MARKERS);
+        final boolean propertyDolbyVision = xmlDolbyVision
+                || hasTruthySystemProperty(DOLBY_VISION_DECODER_PROPS);
+        final boolean codecListHevcMain10 = hasHevcMain10Decoder();
+        final boolean xmlHevcMain10 = codecListHevcMain10
+                || hasDeclaredCodecMarker(HEVC_MAIN10_CODEC_MARKERS);
+        final boolean avcHigh10 = hasAvcHigh10Decoder();
+    }
+
+    private static DecoderCapabilities decoders() {
+        DecoderCapabilities cached = sDecoderCapabilities;
+        if (cached == null) {
+            synchronized (HdrDeviceSupport.class) {
+                cached = sDecoderCapabilities;
+                if (cached == null) {
+                    sDecoderCapabilities = cached = new DecoderCapabilities();
+                }
+            }
+        }
+        return cached;
+    }
 
     public static Capabilities query(Context context) {
-        Capabilities cached = sCached;
-        if (cached != null) {
-            return cached;
-        }
         boolean displayHdr10 = false;
         boolean displayHdr10Plus = false;
         boolean displayHlg = false;
@@ -177,8 +204,7 @@ public final class HdrDeviceSupport {
         float desiredMinLuminance = -1f;
         if (context != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             try {
-                DisplayManager displayManager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
-                Display display = displayManager == null ? null : displayManager.getDisplay(Display.DEFAULT_DISPLAY);
+                Display display = findPlaybackDisplay(context);
                 Display.HdrCapabilities caps = display == null ? null : display.getHdrCapabilities();
                 if (caps != null) {
                     desiredMaxLuminance = caps.getDesiredMaxLuminance();
@@ -200,15 +226,16 @@ public final class HdrDeviceSupport {
             }
         }
 
-        boolean codecListDolbyVisionDecoder = hasDecoderForType("video/dolby-vision");
-        boolean xmlDolbyVisionDecoder = codecListDolbyVisionDecoder || hasDeclaredCodecMarker(DOLBY_VISION_CODEC_MARKERS);
-        boolean propertyDolbyVisionDecoder = codecListDolbyVisionDecoder || xmlDolbyVisionDecoder || hasTruthySystemProperty(DOLBY_VISION_DECODER_PROPS);
+        DecoderCapabilities decoder = decoders();
+        boolean codecListDolbyVisionDecoder = decoder.codecListDolbyVision;
+        boolean xmlDolbyVisionDecoder = decoder.xmlDolbyVision;
+        boolean propertyDolbyVisionDecoder = decoder.propertyDolbyVision;
         boolean dolbyVisionDecoder = codecListDolbyVisionDecoder || xmlDolbyVisionDecoder || propertyDolbyVisionDecoder;
 
-        boolean codecListHevcMain10Decoder = hasHevcMain10Decoder();
-        boolean xmlHevcMain10Decoder = codecListHevcMain10Decoder || hasDeclaredCodecMarker(HEVC_MAIN10_CODEC_MARKERS);
+        boolean codecListHevcMain10Decoder = decoder.codecListHevcMain10;
+        boolean xmlHevcMain10Decoder = decoder.xmlHevcMain10;
         boolean hevcMain10Decoder = codecListHevcMain10Decoder || xmlHevcMain10Decoder;
-        boolean codecListAvcHigh10Decoder = hasAvcHigh10Decoder();
+        boolean codecListAvcHigh10Decoder = decoder.avcHigh10;
 
         Capabilities result = new Capabilities(displayHdr10, displayHdr10Plus, displayHlg,
                 displayDolbyVision, desiredMaxLuminance, desiredMaxAverageLuminance,
@@ -220,8 +247,49 @@ public final class HdrDeviceSupport {
                         dolbyVisionDecoder, hevcMain10Decoder, codecListAvcHigh10Decoder,
                         codecListDolbyVisionDecoder, xmlDolbyVisionDecoder, propertyDolbyVisionDecoder,
                         codecListHevcMain10Decoder, xmlHevcMain10Decoder));
-        sCached = result;
         return result;
+    }
+
+    private static Display findPlaybackDisplay(Context context) {
+        Context current = context;
+        while (current instanceof ContextWrapper) {
+            if (current instanceof Activity) {
+                // getDefaultDisplay here belongs to the Activity's WindowManager, including
+                // an Activity moved to another display. It is not the global display id 0.
+                try {
+                    WindowManager windows = ((Activity) current).getWindowManager();
+                    Display display = windows == null ? null : windows.getDefaultDisplay();
+                    if (display != null && display.isValid()) {
+                        return display;
+                    }
+                } catch (RuntimeException ignored) {
+                    // A window in the middle of migration may temporarily have no display.
+                }
+                break;
+            }
+            Context base = ((ContextWrapper) current).getBaseContext();
+            if (base == current) {
+                break;
+            }
+            current = base;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                Display display = context.getDisplay();
+                if (display != null && display.isValid()) {
+                    return display;
+                }
+            } catch (RuntimeException ignored) {
+                // An application Context has no associated display on recent Android.
+            }
+        }
+        WindowManager windows = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        Display display = windows == null ? null : windows.getDefaultDisplay();
+        if (display != null && display.isValid()) {
+            return display;
+        }
+        DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        return displays == null ? null : displays.getDisplay(Display.DEFAULT_DISPLAY);
     }
 
     private static boolean isHdr10PlusType(int type) {
@@ -240,14 +308,14 @@ public final class HdrDeviceSupport {
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                return SystemDecoderRoutePolicy.isLikelyHardwareCodec(
+                return SystemDecoderRoutePolicy.isEligibleHdrVideoCodec(
                         Build.VERSION.SDK_INT, info.getName(),
                         info.isHardwareAccelerated(), info.isSoftwareOnly());
             } catch (Throwable ignored) {
                 // Fall through to the codec-name classification used on older Android.
             }
         }
-        return SystemDecoderRoutePolicy.isLikelyHardwareCodec(
+        return SystemDecoderRoutePolicy.isEligibleHdrVideoCodec(
                 Build.VERSION_CODES.P, info.getName(), false, false);
     }
 
