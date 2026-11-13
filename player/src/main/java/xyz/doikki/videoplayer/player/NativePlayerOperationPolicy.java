@@ -37,4 +37,24 @@ final class NativePlayerOperationPolicy {
         // the actual native state, otherwise the UI remains stuck at buffering forever.
         return !nativePlayerIsPlaying;
     }
+
+    /**
+     * A logical STARTED state is not proof that the vendor player is still running. A
+     * rebuffer callback may leave the native player paused while the wrapper state remains
+     * STARTED; calling start() again is safe and restores the output intent.
+     */
+    static boolean shouldRearmStartedPlayer(boolean logicallyStarted,
+                                             boolean playbackHasStarted,
+                                             boolean nativePlayerIsPlaying) {
+        return !(logicallyStarted && playbackHasStarted && nativePlayerIsPlaying);
+    }
+
+    /** Prepared/Preparing are intent-only states; MediaPlayer.pause() is not legal there. */
+    static boolean shouldInvokeNativePause(boolean preparing, boolean prepared,
+                                            boolean playbackHasStarted) {
+        // Repeated pause requests may already have changed the wrapper to PAUSED while
+        // the underlying player is still Preparing/Prepared. It cannot be paused until
+        // at least one native start has succeeded, regardless of that wrapper state.
+        return playbackHasStarted && !preparing && !prepared;
+    }
 }

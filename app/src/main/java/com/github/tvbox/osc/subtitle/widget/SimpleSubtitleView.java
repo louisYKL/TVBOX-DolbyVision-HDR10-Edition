@@ -52,6 +52,7 @@ import com.github.tvbox.osc.subtitle.SubtitleEngine;
 import com.github.tvbox.osc.subtitle.SubtitleHdrStylePolicy;
 import com.github.tvbox.osc.subtitle.model.Style;
 import com.github.tvbox.osc.subtitle.model.Subtitle;
+import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
 
 import java.util.List;
@@ -98,6 +99,8 @@ public class SimpleSubtitleView extends TextView
     private Typeface baseTypeface;
     private int basePaintFlags;
     private boolean applyingSourceStyle;
+    private boolean externalCueLogged;
+    private boolean externalRenderLogged;
 
     public SimpleSubtitleView(final Context context) {
         super(context);
@@ -133,7 +136,28 @@ public class SimpleSubtitleView extends TextView
 
     @Override
     public void onSubtitlePrepared(@Nullable final List<Subtitle> subtitles) {
-        start();
+        if (subtitles == null || subtitles.isEmpty()) {
+            Log.w(TAG, "Selected external subtitle contains no readable cues");
+            LOG.i("echo-subtitle view-prepared-empty external=" + !isInternal);
+            setText(EMPTY_TEXT);
+            return;
+        }
+        LOG.i("echo-subtitle view-prepared cues=" + subtitles.size()
+                + " external=" + !isInternal + " visibility=" + getVisibility()
+                + " shown=" + isShown() + " width=" + getWidth() + " height=" + getHeight());
+        // SubtitleLoader completes on the app executor. Always marshal view operations through
+        // the TextView so a vendor player callback can never mutate this view off the UI thread.
+        post(new Runnable() {
+            @Override
+            public void run() {
+                if (subtitles.isEmpty()) {
+                    return;
+                }
+                setVisibility(VISIBLE);
+                bringToFront();
+                start();
+            }
+        });
     }
 
     @Override
@@ -148,12 +172,37 @@ public class SimpleSubtitleView extends TextView
             return;
         }
         String text = subtitle.content == null ? EMPTY_TEXT : subtitle.content;
+        if (!isInternal) {
+            // A delayed internal-track discovery callback can hide the overlay after the
+            // external file has parsed. Reassert the overlay at the point of actual cue
+            // delivery, so a successfully selected subtitle cannot remain invisible.
+            if (getVisibility() != VISIBLE) {
+                int previousVisibility = getVisibility();
+                setVisibility(VISIBLE);
+                LOG.i("echo-subtitle external-render-reveal previousVisibility="
+                        + previousVisibility);
+            }
+            bringToFront();
+        }
+        boolean firstExternalCue = !isInternal && !externalCueLogged && !TextUtils.isEmpty(text);
         text = text.replaceAll("^.*?,.*?,.*?,.*?,.*?,.*?,.*?,.*?,.*?,", "");
         lastRawSubtitleText = text;
         lastSubtitleHasDefinedStyle = hasSourceStyle(subtitle.style) || subtitle.hasSourceStyle;
         lastSubtitleStyledContent = subtitle.styledContent;
         lastSubtitleSourceStyle = subtitle.style;
         renderSubtitleTextSafely(text, subtitle.styledContent, subtitle.style);
+        if (firstExternalCue) {
+            externalCueLogged = true;
+            externalRenderLogged = true;
+            LOG.i("echo-subtitle external-first-cue-rendered startMs=" + subtitle.start.mseconds
+                    + " endMs=" + subtitle.end.mseconds + " textLength=" + text.length()
+                    + " visibility=" + getVisibility() + " shown=" + isShown()
+                    + " width=" + getWidth() + " height=" + getHeight()
+                    + " parent=" + (getParent() == null ? "null" : getParent().getClass().getSimpleName()));
+        } else if (!isInternal && externalRenderLogged && getVisibility() != VISIBLE) {
+            LOG.i("echo-subtitle external-render-hidden visibility=" + getVisibility()
+                    + " shown=" + isShown());
+        }
     }
 
     private CharSequence buildStyledSubtitleText(String rawText, boolean preserveSourceStyle) {
@@ -242,6 +291,8 @@ public class SimpleSubtitleView extends TextView
     @Override
     public void setSubtitlePath(final String path) {
         isInternal = false;
+        externalCueLogged = false;
+        externalRenderLogged = false;
         mSubtitleEngine.setSubtitlePath(path);
     }
 
@@ -579,12 +630,9 @@ public class SimpleSubtitleView extends TextView
             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
             return;
         }
-        String tt = backGroundText.getText() == null ? "" : backGroundText.getText().toString();
-        String current = getText() == null ? "" : getText().toString();
         //两个TextView上的文字必须一致
-        if (TextUtils.isEmpty(tt) || !tt.equals(current)) {
-            backGroundText.setText(current);
-            this.postInvalidate();
+        if (!TextUtils.equals(backGroundText.getText(), getText())) {
+            backGroundText.setText(getText() == null ? EMPTY_TEXT : getText().toString());
         }
         backGroundText.measure(widthMeasureSpec, heightMeasureSpec);
         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
@@ -652,8 +700,12 @@ public class SimpleSubtitleView extends TextView
         // The duplicate layer is an outline only. Keep it black in both SDR and
         // HDR; applying the HDR fill tone here turns the outline into a bright
         // second subtitle and makes the caption appear white.
-        backGroundText.setTextColor(Color.BLACK);
+        if (backGroundText.getCurrentTextColor() != Color.BLACK) {
+            backGroundText.setTextColor(Color.BLACK);
+        }
         //将背景的文字对齐方式做同步
-        backGroundText.setGravity(getGravity());
+        if (backGroundText.getGravity() != getGravity()) {
+            backGroundText.setGravity(getGravity());
+        }
     }
 }

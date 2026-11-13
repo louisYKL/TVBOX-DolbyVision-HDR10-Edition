@@ -8,6 +8,8 @@ import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.upstream.BaseDataSource;
 import com.google.android.exoplayer2.upstream.DataSource;
 import com.google.android.exoplayer2.upstream.DataSpec;
+import com.google.android.exoplayer2.extractor.SeekMap;
+import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
 
 import java.io.IOException;
 import java.net.URI;
@@ -40,25 +42,23 @@ final class LoopbackRangeDataSource extends BaseDataSource {
         private final String userAgent;
         private final int connectTimeoutMs;
         private final int readTimeoutMs;
-        // A progressive extractor can create more than one DataSource while it inspects a
-        // container, restores saved progress, or seeks. Keep only lengths learned during this
-        // player's current lifetime so a subsequent non-zero open is not forced back to an
-        // unknown-length 416/EOF path.
         private final ConcurrentHashMap<String, Long> verifiedContentLengths = new ConcurrentHashMap<>();
-        // ExoPlayer can create more than one DataSource while it probes metadata or restores a
-        // saved position. HttpRangeMediaDataSource owns mutable cursor/window state, therefore
-        // every DataSource must keep its own instance. Serialize only the network read lane so
-        // the 6677 proxy never sees overlapping requests for one file.
-        private final java.util.concurrent.locks.ReentrantLock rangeReadLock =
-                new java.util.concurrent.locks.ReentrantLock(true);
-        private final java.util.concurrent.CopyOnWriteArrayList<LoopbackRangeDataSource>
-                rangeDataSources = new java.util.concurrent.CopyOnWriteArrayList<>();
+        // Container header/index/sample opens are leases on the same bounded cache. Closing an
+        // Exo DataSource must not discard the runway that the next open is about to consume.
+        private final xyz.doikki.videoplayer.player.HttpRangePlaybackSession playbackSession =
+                new xyz.doikki.videoplayer.player.HttpRangePlaybackSession();
         private volatile Map<String, String> defaultRequestHeaders = Collections.emptyMap();
+        private volatile boolean playbackSeekPending;
+        // A resumed progressive item first opens its container at byte zero. That header
+        // probe is not the requested playback position and must not fill/release a VOD gate.
+        private volatile boolean waitingForInitialResumeAnchor;
+        private volatile boolean containerMetadataPending = true;
+        private volatile SeekMap playbackSeekMap;
+        private volatile long requestedPositionMs;
+        private volatile long resolvedSeekByte = -1L;
 
-        Factory(DataSource.Factory fallbackFactory,
-                String userAgent,
-                int connectTimeoutMs,
-                int readTimeoutMs) {
+        Factory(DataSource.Factory fallbackFactory, String userAgent,
+                int connectTimeoutMs, int readTimeoutMs) {
             this.fallbackFactory = fallbackFactory;
             this.userAgent = userAgent;
             this.connectTimeoutMs = connectTimeoutMs;
@@ -66,61 +66,270 @@ final class LoopbackRangeDataSource extends BaseDataSource {
         }
 
         void setDefaultRequestHeaders(Map<String, String> headers) {
-            if (headers == null || headers.isEmpty()) {
-                defaultRequestHeaders = Collections.emptyMap();
-                return;
-            }
-            defaultRequestHeaders = Collections.unmodifiableMap(new HashMap<>(headers));
+            defaultRequestHeaders = headers == null || headers.isEmpty()
+                    ? Collections.emptyMap()
+                    : Collections.unmodifiableMap(new HashMap<>(headers));
+        }
+
+        void resetPlaybackBufferSnapshot() {
+            playbackSeekPending = false;
+            waitingForInitialResumeAnchor = false;
+            containerMetadataPending = true;
+            playbackSeekMap = null;
+            requestedPositionMs = 0L;
+            resolvedSeekByte = -1L;
+            playbackSession.reset();
+        }
+
+        void setInitialResumePosition(long positionMs) {
+            requestedPositionMs = Math.max(0L, positionMs);
+            containerMetadataPending = true;
+            waitingForInitialResumeAnchor = positionMs > 0L;
+            playbackSeekPending = true;
+        }
+
+        void release() {
+            playbackSession.close();
+            verifiedContentLengths.clear();
+        }
+
+        boolean isPlaybackSeekPending() {
+            return playbackSeekPending;
         }
 
         @Override
         public DataSource createDataSource() {
-            LoopbackRangeDataSource source = new LoopbackRangeDataSource(
-                    this,
-                    fallbackFactory.createDataSource(),
-                    userAgent,
-                    connectTimeoutMs,
-                    readTimeoutMs,
-                    defaultRequestHeaders,
-                    verifiedContentLengths);
-            rangeDataSources.add(source);
+            return new LoopbackRangeDataSource(this, fallbackFactory.createDataSource(),
+                    userAgent, connectTimeoutMs, readTimeoutMs,
+                    defaultRequestHeaders, verifiedContentLengths);
+        }
+
+        private HttpRangeMediaDataSource openRange(String url, Map<String, String> headers,
+                long initialPosition, HttpRangeMediaDataSource.RangeTransferListener listener)
+                throws IOException {
+            HttpRangeMediaDataSource previous = playbackSession.getSource();
+            HttpRangeMediaDataSource source = playbackSession.acquire(
+                    url, headers, initialPosition, listener);
+            if (containerMetadataPending) {
+                source.setPlaybackFillAheadEnabled(false);
+                source.setContainerMetadataMode(true);
+            } else if (previous != source && resolvedSeekByte >= 0L) {
+                source.onExtractorSeekStarted(resolvedSeekByte);
+                playbackSeekPending = false;
+            }
+            // A reused source already received this seek notification. Resetting it at every
+            // metadata reopen would replace the requested seek with the container's index read.
+            if (previous != source && playbackSeekPending && resolvedSeekByte < 0L) {
+                source.onPlaybackSeekStarted();
+            }
             return source;
         }
 
-        private int readRange(HttpRangeMediaDataSource source,
-                              long position,
-                              byte[] buffer,
-                              int offset,
-                              int length) throws IOException {
-            boolean locked = false;
-            try {
-                rangeReadLock.lockInterruptibly();
-                locked = true;
-                return source.readAt(position, buffer, offset, length);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Range read interrupted before network read", interrupted);
-            } finally {
-                if (locked) {
-                    rangeReadLock.unlock();
+        private int readRange(HttpRangeMediaDataSource source, long position,
+                              byte[] buffer, int offset, int length) throws IOException {
+            // Only the HTTP request lane is serialized inside the source. Cache hits never wait
+            // for a background network window, and misses can cancel prefetch before waiting.
+            int read = source.readAt(position, buffer, offset, length);
+            if (read > 0 && !containerMetadataPending && !waitingForInitialResumeAnchor
+                    && source.getPlaybackAnchorPositionSnapshot() >= 0L
+                    && !source.isPlaybackSeekAnchorPending()) {
+                if (source.isPlaybackSeekInProgress()) {
+                    source.onPlaybackSeekFinished();
                 }
+                playbackSeekPending = false;
             }
+            return read;
         }
 
-        /** Returns the largest committed forward window among active DataSources. */
         long getBufferedAheadBytes() {
-            long largest = 0L;
-            for (LoopbackRangeDataSource source : rangeDataSources) {
-                largest = Math.max(largest, source.getBufferedAheadBytesInternal());
-            }
-            return largest;
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            return source == null ? 0L : source.getBufferedAheadBytes();
         }
 
-        private void onDataSourceClosed(LoopbackRangeDataSource source) {
-            rangeDataSources.remove(source);
+        long getBufferedAheadBytesForProgress() {
+            if (containerMetadataPending || waitingForInitialResumeAnchor || playbackSeekPending) {
+                return 0L;
+            }
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            return source == null ? 0L : source.getBufferedAheadBytesForProgress();
+        }
+
+        long getPlaybackStartBufferTargetBytes() {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            return source == null ? 0L : source.getPlaybackStartBufferTargetBytes();
+        }
+
+        IOException getPlaybackCacheError() {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            return source == null ? null : source.getPlaybackCacheError();
+        }
+
+        boolean hasRequiredBuffer(int requestedBytes) {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            if (source == null || containerMetadataPending || waitingForInitialResumeAnchor
+                    || playbackSeekPending || source.isPlaybackSeekAnchorPending()) {
+                return false;
+            }
+            // The source latches a verified runway for this startup/seek episode. It is reset
+            // only on a real seek, not on container reopens or as the extractor consumes bytes.
+            if (source.isStartupBufferGateSatisfied()) {
+                return true;
+            }
+            return shouldReleaseFromUnanchoredStartup(false, source.getBufferedAheadBytes(),
+                    source.getPlaybackStartBufferTargetBytes(), requestedBytes);
+        }
+
+        static boolean shouldUseUnanchoredStartup(boolean seekPending,
+                long playbackAnchorPosition, boolean playbackSourceOpen,
+                long playbackSourceInitialPosition) {
+            return !seekPending && (!playbackSourceOpen || (playbackAnchorPosition >= 0L
+                    ? playbackAnchorPosition == 0L : playbackSourceInitialPosition == 0L));
+        }
+
+        static boolean shouldReleaseFromRetainedSnapshot(boolean seekPending,
+                long retainedBytes, long requiredBytes) {
+            return false;
+        }
+
+        static boolean shouldReleaseFromUnanchoredStartup(boolean seekPending,
+                long bufferedAheadBytes, long sourceTargetBytes, long requiredBytes) {
+            long required = Math.min(Math.max(0L, sourceTargetBytes), Math.max(0L, requiredBytes));
+            return !seekPending && required > 0L && Math.max(0L, bufferedAheadBytes) >= required;
+        }
+
+        void onPlaybackSeekStarted() {
+            playbackSeekPending = true;
+            resolvedSeekByte = -1L;
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            if (source != null) {
+                source.onPlaybackSeekStarted();
+            }
+        }
+
+        void onPlaybackSeekStarted(long positionMs) {
+            requestedPositionMs = Math.max(0L, positionMs);
+            onPlaybackSeekStarted();
+            SeekMap seekMap = playbackSeekMap;
+            if (seekMap != null) {
+                // Exo may satisfy the seek from sample queues without calling Extractor.seek
+                // or opening another DataSource. The retained seek map still gives the exact
+                // preceding sync-point byte, so every direction starts a fresh 96 MiB runway.
+                resolveSeekMapAnchor(seekMap);
+            }
+        }
+
+        void onExtractorSeekStarted(long position, long timeUs) {
+            // The initial seek(0, 0) precedes all container parsing. It is a header probe,
+            // never evidence that the saved sample position has been resolved.
+            if (containerMetadataPending) {
+                return;
+            }
+            if (!isPlaybackAnchorResolved(waitingForInitialResumeAnchor, position, timeUs)) {
+                return;
+            }
+            if (!playbackSeekPending && resolvedSeekByte == Math.max(0L, position)) {
+                return;
+            }
+            waitingForInitialResumeAnchor = false;
+            resolvedSeekByte = Math.max(0L, position);
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            if (source != null) {
+                source.setContainerMetadataMode(false);
+                source.onExtractorSeekStarted(position);
+                source.setPlaybackFillAheadEnabled(true);
+                playbackSeekPending = false;
+            }
+        }
+
+        static boolean isPlaybackAnchorResolved(boolean waitingForResume,
+                                                 long position, long timeUs) {
+            return !waitingForResume || position > 0L || timeUs > 0L;
+        }
+
+        void onSeekMapResolved(SeekMap seekMap) {
+            if (seekMap == null) {
+                return;
+            }
+            playbackSeekMap = seekMap;
+            if (containerMetadataPending || playbackSeekPending) {
+                resolveSeekMapAnchor(seekMap);
+            }
+        }
+
+        private void resolveSeekMapAnchor(SeekMap seekMap) {
+            long timeUs = requestedPositionMs > Long.MAX_VALUE / 1000L
+                    ? Long.MAX_VALUE : requestedPositionMs * 1000L;
+            long bytePosition = seekMap.getSeekPoints(timeUs).first.position;
+            containerMetadataPending = false;
+            waitingForInitialResumeAnchor = false;
+            onExtractorSeekStarted(bytePosition, timeUs);
+        }
+
+        void onMp3OnlySourceResolved() {
+            // Mp3Extractor must remain unwrapped for Exo's stream handling and therefore
+            // cannot report its byte seek here. Audio-only MP3 uses the time policy instead.
+            waitingForInitialResumeAnchor = false;
+            containerMetadataPending = false;
+            playbackSeekPending = false;
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            if (source != null) {
+                source.setContainerMetadataMode(false);
+                source.setPlaybackFillAheadEnabled(true);
+            }
+        }
+
+        void onPlaybackRebufferStarted() {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            if (source != null && !waitingForInitialResumeAnchor && !playbackSeekPending) {
+                source.beginPlaybackRebuffer();
+            }
+        }
+
+        /** Called only after actual playback output, never for a READY notification alone. */
+        void onPlaybackOutputResumed() {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            if (source != null && !containerMetadataPending
+                    && !waitingForInitialResumeAnchor && !playbackSeekPending) {
+                source.finishPlaybackRebuffer();
+            }
+        }
+
+        boolean hasPlaybackRangeSource() {
+            return playbackSession.getSource() != null;
+        }
+
+        long getKnownTotalSize() {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            return source == null ? C.LENGTH_UNSET : source.getKnownTotalSizeSnapshot();
+        }
+
+        String getBufferDiagnostics() {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            if (source == null) {
+                return "rangeSource=none seekPending=" + playbackSeekPending;
+            }
+            return "rangeSource=" + System.identityHashCode(source)
+                    + " anchor=" + source.getPlaybackAnchorPositionSnapshot()
+                    + " cachedBytes=" + source.getCachedBytesSnapshot()
+                    + " arrivingAheadBytes=" + source.getBufferedAheadBytesForProgress()
+                    + " totalBytes=" + source.getKnownTotalSizeSnapshot()
+                    + " startupReady=" + source.isStartupBufferGateSatisfied()
+                    + " seekPending=" + playbackSeekPending
+                    + " resumeAnchorPending=" + waitingForInitialResumeAnchor
+                    + " metadataPending=" + containerMetadataPending
+                    + " anchorPending=" + source.isPlaybackSeekAnchorPending()
+                    + " " + source.getCacheDiagnosticsSnapshot();
+        }
+
+        boolean hasWholeFileBuffered() {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            return source != null && !waitingForInitialResumeAnchor
+                    && !containerMetadataPending
+                    && !playbackSeekPending && !source.isPlaybackSeekAnchorPending()
+                    && isWholeFileBuffered(source.getKnownTotalSizeSnapshot(),
+                    source.getPlaybackAnchorPositionSnapshot(), source.getBufferedAheadBytes());
         }
     }
-
     private final Factory factory;
     private final DataSource fallback;
     // Kept in the factory for API compatibility and to make the direct-source policy explicit.
@@ -133,16 +342,16 @@ final class LoopbackRangeDataSource extends BaseDataSource {
     private final int readTimeoutMs;
     private final Map<String, String> defaultRequestHeaders;
     private final ConcurrentHashMap<String, Long> verifiedContentLengths;
-
     private HttpRangeMediaDataSource rangeSource;
     private DataSpec dataSpec;
     private Uri openedUri;
     private boolean usingFallback;
     private boolean specialOpen;
-    private boolean prebufferRequested;
     private long nextPosition;
     private long bytesRemaining;
     private long knownTotalLength = C.LENGTH_UNSET;
+    private final RangeReadBuffer readBuffer = new RangeReadBuffer();
+    private final RangeReadBuffer.Reader rangeReader = this::readUnbufferedRange;
     private String lengthCacheKey;
     private Map<String, List<String>> responseHeaders = Collections.emptyMap();
 
@@ -167,12 +376,14 @@ final class LoopbackRangeDataSource extends BaseDataSource {
 
     @Override
     public long open(DataSpec dataSpec) throws IOException {
+        readBuffer.reset();
         closeRangeSourceQuietly();
         if (specialOpen) {
             specialOpen = false;
             transferEnded();
         }
         this.dataSpec = dataSpec;
+        nextPosition = Math.max(0L, dataSpec.position);
         if (!shouldHandle(dataSpec)) {
             usingFallback = true;
             return fallback.open(dataSpec);
@@ -185,14 +396,17 @@ final class LoopbackRangeDataSource extends BaseDataSource {
         knownTotalLength = C.LENGTH_UNSET;
         lengthCacheKey = dataSpec.uri.toString();
         responseHeaders = Collections.emptyMap();
-        prebufferRequested = false;
         transferInitializing(dataSpec);
         Map<String, String> headers = new HashMap<>(defaultRequestHeaders);
         if (dataSpec.httpRequestHeaders != null) {
             headers.putAll(dataSpec.httpRequestHeaders);
         }
-        rangeSource = HttpRangeMediaDataSource.createForSystemStreamingPlayback(
-                dataSpec.uri.toString(), headers, this::onRangeBytesTransferred);
+        // Metadata and tail probes do not claim the fill lane. After the first real decoder read,
+        // the factory promotes this source and starts one serialized forward-fill lane. That lane
+        // is required because ExoPlayer may stop requesting samples while the 96 MiB byte gate is
+        // holding playback at READY; without it the first 24 MiB Range can deadlock startup.
+        rangeSource = factory.openRange(dataSpec.uri.toString(), headers,
+                dataSpec.position, this::onRangeBytesTransferred);
         Long cachedTotalLength = verifiedContentLengths.get(lengthCacheKey);
         if (cachedTotalLength != null && cachedTotalLength > 0L) {
             rangeSource.primeKnownTotalSize(cachedTotalLength);
@@ -227,21 +441,18 @@ final class LoopbackRangeDataSource extends BaseDataSource {
         if (requested <= 0) {
             return C.RESULT_END_OF_INPUT;
         }
-        HttpRangeMediaDataSource source = rangeSource;
-        if (source == null) {
+        if (rangeSource == null) {
             throw new IOException("Direct loopback range source is closed");
         }
-        int count = factory.readRange(source, nextPosition, buffer, offset, requested);
-        long discoveredTotalLength = source.getKnownTotalSize();
-        if (discoveredTotalLength >= 0L) {
-            knownTotalLength = discoveredTotalLength;
-            if (lengthCacheKey != null && discoveredTotalLength > 0L) {
-                verifiedContentLengths.put(lengthCacheKey, discoveredTotalLength);
-            }
-            if (bytesRemaining == C.LENGTH_UNSET) {
-                bytesRemaining = Math.max(0L, discoveredTotalLength - nextPosition);
-            }
+        long remaining = bytesRemaining;
+        if (knownTotalLength >= 0L) {
+            long entityRemaining = Math.max(0L, knownTotalLength - nextPosition);
+            remaining = remaining < 0L ? entityRemaining : Math.min(remaining, entityRemaining);
         }
+        // DefaultExtractorInput forwards EBML varints as one-byte DataSource reads. Routing
+        // every byte through the Range locks and cursor accounting made a cached Cue index
+        // take minutes on A55 TVs. Coalesce only these tiny reads in a bounded 16 KiB buffer.
+        int count = readBuffer.read(rangeReader, nextPosition, buffer, offset, requested, remaining);
         if (count <= 0) {
             if (knownTotalLength >= 0L && nextPosition >= knownTotalLength) {
                 return C.RESULT_END_OF_INPUT;
@@ -255,6 +466,30 @@ final class LoopbackRangeDataSource extends BaseDataSource {
         // Network bytes were reported while HttpRangeMediaDataSource read the HTTP body.
         // Reporting them again when this in-memory window is consumed would turn a steady
         // transfer into an artificial bursty/duplicated speed reading.
+        return count;
+    }
+
+    private int readUnbufferedRange(long position, byte[] buffer, int offset, int length)
+            throws IOException {
+        HttpRangeMediaDataSource source = rangeSource;
+        if (source == null) {
+            throw new IOException("Direct loopback range source is closed");
+        }
+        int count = factory.readRange(source, position, buffer, offset, length);
+        // Consult the shared source only on a buffer refill. A cached EBML byte must not
+        // acquire another source lock or box an 88 GiB Long into a ConcurrentHashMap.
+        long discoveredTotalLength = source.getKnownTotalSize();
+        if (discoveredTotalLength >= 0L) {
+            if (knownTotalLength != discoveredTotalLength) {
+                knownTotalLength = discoveredTotalLength;
+                if (lengthCacheKey != null && discoveredTotalLength > 0L) {
+                    verifiedContentLengths.put(lengthCacheKey, discoveredTotalLength);
+                }
+            }
+            if (bytesRemaining == C.LENGTH_UNSET) {
+                bytesRemaining = Math.max(0L, discoveredTotalLength - nextPosition);
+            }
+        }
         return count;
     }
 
@@ -276,6 +511,7 @@ final class LoopbackRangeDataSource extends BaseDataSource {
 
     @Override
     public void close() throws IOException {
+        readBuffer.reset();
         IOException closeFailure = null;
         if (usingFallback) {
             try {
@@ -298,33 +534,56 @@ final class LoopbackRangeDataSource extends BaseDataSource {
         bytesRemaining = 0L;
         knownTotalLength = C.LENGTH_UNSET;
         lengthCacheKey = null;
-        prebufferRequested = false;
         if (closeFailure != null) {
             throw closeFailure;
         }
     }
 
     private void closeRangeSourceQuietly() {
-        HttpRangeMediaDataSource source = rangeSource;
+        // End this adapter lease. The factory owns the cache until the media session ends.
         rangeSource = null;
-        if (source != null) {
-            try {
-                source.close();
-            } catch (Throwable ignored) {
-            }
-        }
-        factory.onDataSourceClosed(this);
     }
 
-    private long getBufferedAheadBytesInternal() {
-        HttpRangeMediaDataSource source = rangeSource;
-        return source == null ? 0L : source.getBufferedAheadBytes();
+    static boolean isWholeFileBuffered(long totalSize, long anchor, long bufferedAheadBytes) {
+        if (totalSize <= 0L || anchor < 0L || anchor >= totalSize) {
+            return false;
+        }
+        // bufferedAheadBytes is measured from the active playback anchor, not from byte zero.
+        // Comparing it with the complete file length makes a resume that is already near EOF
+        // wait forever (for example, 854 KiB remaining in an 88 GiB file).
+        return Math.max(0L, bufferedAheadBytes) >= totalSize - anchor;
     }
 
     static boolean shouldHandle(DataSpec dataSpec) {
         return dataSpec != null
                 && dataSpec.httpMethod == DataSpec.HTTP_METHOD_GET
-                && isLoopbackProxyPlayUrl(dataSpec.uri == null ? null : dataSpec.uri.toString());
+                && shouldHandleVodUrl(dataSpec.uri == null ? null : dataSpec.uri.toString());
+    }
+
+    static boolean shouldHandleVodUrl(String value) {
+        if (isLoopbackProxyPlayUrl(value)) {
+            return true;
+        }
+        if (value == null || value.trim().isEmpty() || PlaybackUrlNormalizer.isHlsLike(value)) {
+            return false;
+        }
+        try {
+            URI uri = new URI(value.trim());
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            String path = uri.getPath();
+            if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                    || host == null
+                    || "localhost".equalsIgnoreCase(host)
+                    || "127.0.0.1".equals(host)
+                    || "::1".equals(host)
+                    || (path != null && path.toLowerCase(java.util.Locale.US).endsWith(".mpd"))) {
+                return false;
+            }
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     static boolean isLoopbackProxyPlayUrl(String value) {

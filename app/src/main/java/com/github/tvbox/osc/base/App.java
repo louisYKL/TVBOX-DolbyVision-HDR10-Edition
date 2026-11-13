@@ -1,6 +1,11 @@
 package com.github.tvbox.osc.base;
 
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.Application;
+import android.os.Build;
+import android.os.Process;
+import android.text.TextUtils;
 import androidx.multidex.MultiDexApplication;
 
 import com.github.tvbox.osc.BuildConfig;
@@ -24,6 +29,7 @@ import com.p2p.P2PClass;
 import com.whl.quickjs.android.QuickJSLoader;
 import com.github.catvod.crawler.JsLoader;
 
+import me.jessyan.autosize.AutoSize;
 import me.jessyan.autosize.AutoSizeConfig;
 import me.jessyan.autosize.unit.Subunits;
 
@@ -43,10 +49,21 @@ public class App extends MultiDexApplication {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        // Activities in :player run in a fresh process and need AutoSize initialized before
+        // BaseActivity.getResources() is first called during Window creation.
+        AutoSize.checkAndInit(this);
         initParams();
-        // Start the management server as soon as app-level configuration is ready.
+        boolean playerProcess = isPlayerProcess();
+        // The playback activities run in :player so their codec, Range cache and UI have a
+        // separate heap. Keep the 9978 management server in the main process only; starting a
+        // second NanoHTTPD instance from :player races for the same port and can make the API
+        // disappear or move to 9999 after a playback launch.
+        // Both processes need the manager context because playback builds local proxy/DASH
+        // URLs through ControlManager. Only the main process owns the NanoHTTPD listener.
         ControlManager.init(this);
-        ControlManager.get().startServer();
+        if (!playerProcess) {
+            ControlManager.get().startServer();
+        }
         // OKGo
         OkGoHelper.init(); //台标获取
         EpgUtil.init();
@@ -62,8 +79,37 @@ public class App extends MultiDexApplication {
                 .setSupportSubunits(Subunits.MM);
         PlayerHelper.init();
         QuickJSLoader.init();
-        FileUtils.cleanPlayerCache();
-        StorageBudgetManager.enforceAllBudgets();
+        // Cache cleanup is a filesystem-wide operation. Run it from the main process only so
+        // the player process cannot delete a file while the UI process or a subtitle loader is
+        // reading it. The in-memory Range cache is bounded independently by the player policy.
+        if (!playerProcess) {
+            FileUtils.cleanPlayerCache();
+            StorageBudgetManager.enforceAllBudgets();
+        }
+    }
+
+    private boolean isPlayerProcess() {
+        String processName = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                processName = Application.getProcessName();
+            } catch (Throwable ignored) {
+            }
+        }
+        if (TextUtils.isEmpty(processName)) {
+            ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (manager != null) {
+                int pid = Process.myPid();
+                for (ActivityManager.RunningAppProcessInfo process : manager.getRunningAppProcesses()) {
+                    if (process != null && process.pid == pid) {
+                        processName = process.processName;
+                        break;
+                    }
+                }
+            }
+        }
+        return !TextUtils.isEmpty(processName)
+                && processName.endsWith(":player");
     }
 
     private void initParams() {
@@ -113,6 +159,21 @@ public class App extends MultiDexApplication {
 
     public static App getInstance() {
         return instance;
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level == TRIM_MEMORY_RUNNING_MODERATE || level == TRIM_MEMORY_RUNNING_LOW
+                || level == TRIM_MEMORY_RUNNING_CRITICAL || level >= TRIM_MEMORY_BACKGROUND) {
+            OkGoHelper.trimImageMemory();
+        }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        OkGoHelper.trimImageMemory();
     }
 
     @Override

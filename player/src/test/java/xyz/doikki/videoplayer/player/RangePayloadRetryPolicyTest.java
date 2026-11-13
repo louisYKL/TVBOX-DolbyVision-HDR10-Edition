@@ -8,18 +8,18 @@ import static org.junit.Assert.assertTrue;
 
 public class RangePayloadRetryPolicyTest {
     @Test
-    public void foregroundTransientEmptyPayloadGetsMultipleRecoveryAttempts() {
+    public void foregroundShortPayloadRecoveryHasNoTimeOrAttemptLimit() {
         assertTrue(RangePayloadRetryPolicy.shouldRetry(1, 100L, false));
         assertTrue(RangePayloadRetryPolicy.shouldRetry(7, 5_000L, false));
-        assertFalse(RangePayloadRetryPolicy.shouldRetry(8, 5_000L, false));
-        assertFalse(RangePayloadRetryPolicy.shouldRetry(2, 20_000L, false));
+        assertTrue(RangePayloadRetryPolicy.shouldRetry(8, 20_000L, false));
+        assertTrue(RangePayloadRetryPolicy.shouldRetry(1_000_000, Long.MAX_VALUE, false));
     }
 
     @Test
-    public void prefetchRecoveryIsBoundedAndDoesNotOccupyAWorkerForever() {
+    public void prefetchShortPayloadRecoveryAlsoWaitsUntilCancelled() {
         assertTrue(RangePayloadRetryPolicy.shouldRetry(5, 2_000L, true));
-        assertFalse(RangePayloadRetryPolicy.shouldRetry(6, 2_000L, true));
-        assertFalse(RangePayloadRetryPolicy.shouldRetry(2, 8_000L, true));
+        assertTrue(RangePayloadRetryPolicy.shouldRetry(6, 2_000L, true));
+        assertTrue(RangePayloadRetryPolicy.shouldRetry(2, 8_000L, true));
     }
 
     @Test

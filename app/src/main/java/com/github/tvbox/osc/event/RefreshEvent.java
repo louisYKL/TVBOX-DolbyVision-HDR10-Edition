@@ -22,6 +22,7 @@ public class RefreshEvent {
     public static final int TYPE_FILTER_CHANGE = 13;
     public static final int TYPE_LIVE_API_URL_CHANGE = 14;
     public static final int TYPE_REMOTE_API_CONFIG_APPLY = 15;
+    public static final int TYPE_REMOTE_INPUT_FIELD = 16;
     public int type;
     public Object obj;
 

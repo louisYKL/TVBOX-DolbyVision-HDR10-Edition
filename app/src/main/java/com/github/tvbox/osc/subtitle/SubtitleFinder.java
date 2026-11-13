@@ -45,24 +45,30 @@ public class SubtitleFinder {
         if (subtitles == null || subtitles.isEmpty()) {
             return null;
         }
-        int start = 0;
-        int end = subtitles.size() - 1;
-        while (start <= end) {
-            int middle = (start + end) / 2;
-            Subtitle middleSubtitle = subtitles.get(middle);
-            if (position < middleSubtitle.start.mseconds) {
-                if (position > middleSubtitle.end.mseconds) {
-                    return middleSubtitle;
-                }
-                end = middle - 1;
-            } else if (position > middleSubtitle.end.mseconds) {
-                if (position < middleSubtitle.start.mseconds) {
-                    return middleSubtitle;
-                }
-                start = middle + 1;
-            } else if (position >= middleSubtitle.start.mseconds
-                    && position <= middleSubtitle.end.mseconds) {
-                return middleSubtitle;
+        // Find the last cue whose start is at or before the playback clock. A plain interval
+        // binary search can skip a valid cue when ASS contains overlapping dialogue events.
+        int low = 0;
+        int high = subtitles.size() - 1;
+        int candidate = -1;
+        while (low <= high) {
+            int middle = (low + high) >>> 1;
+            Subtitle cue = subtitles.get(middle);
+            if (cue == null || cue.start == null || cue.start.mseconds > position) {
+                high = middle - 1;
+            } else {
+                candidate = middle;
+                low = middle + 1;
+            }
+        }
+        // Walk backwards through overlapping cues so the renderer never loses a valid event
+        // merely because a later-starting line was stored in the middle of the search range.
+        for (int index = candidate; index >= 0; index--) {
+            Subtitle cue = subtitles.get(index);
+            if (cue == null || cue.start == null || cue.end == null) {
+                continue;
+            }
+            if (cue.start.mseconds <= position && position <= cue.end.mseconds) {
+                return cue;
             }
         }
         return null;

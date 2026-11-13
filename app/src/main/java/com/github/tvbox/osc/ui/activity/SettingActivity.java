@@ -193,7 +193,10 @@ public class SettingActivity extends BaseActivity {
                 jumpActivity(HomeActivity.class);
             }
             else if ((homeSourceKey != null && !homeSourceKey.equals(Hawk.get(HawkConfig.HOME_API, "")))  || homeRec != Hawk.get(HawkConfig.HOME_REC, 0)) {
-                jumpActivity(HomeActivity.class, createBundle());
+                android.content.Intent home = new android.content.Intent(this, HomeActivity.class);
+                home.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                home.putExtras(createBundle());
+                startActivity(home);
             }else if(!currentLiveApi.equals(Hawk.get(HawkConfig.LIVE_API_URL, ""))){
                 AppManager.getInstance().finishAllActivity();
                 jumpActivity(HomeActivity.class);

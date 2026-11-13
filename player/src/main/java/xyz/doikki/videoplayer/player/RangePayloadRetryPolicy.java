@@ -1,10 +1,6 @@
 package xyz.doikki.videoplayer.player;
 
 final class RangePayloadRetryPolicy {
-    private static final int FOREGROUND_MAX_ATTEMPTS = 8;
-    private static final int PREFETCH_MAX_ATTEMPTS = 6;
-    private static final long FOREGROUND_MAX_ELAPSED_MS = 20_000L;
-    private static final long PREFETCH_MAX_ELAPSED_MS = 8_000L;
     private static final long BASE_DELAY_MS = 250L;
     private static final long MAX_DELAY_MS = 1_000L;
 
@@ -12,9 +8,9 @@ final class RangePayloadRetryPolicy {
     }
 
     static boolean shouldRetry(int completedAttempts, long elapsedMs, boolean prefetch) {
-        int maxAttempts = prefetch ? PREFETCH_MAX_ATTEMPTS : FOREGROUND_MAX_ATTEMPTS;
-        long maxElapsedMs = prefetch ? PREFETCH_MAX_ELAPSED_MS : FOREGROUND_MAX_ELAPSED_MS;
-        return completedAttempts < maxAttempts && Math.max(0L, elapsedMs) < maxElapsedMs;
+        // A short Range body is not EOF when the source advertised more bytes. Keep reopening
+        // that exact range until it completes or the owning read is cancelled.
+        return completedAttempts > 0;
     }
 
     static long retryDelayMs(int completedAttempts) {

@@ -40,6 +40,25 @@ public class RealtimeNetworkSpeedMeterTest {
     }
 
     @Test
+    public void keepsRateAcrossAdjacentRangeTransfers() {
+        FakeClock clock = new FakeClock();
+        RealtimeNetworkSpeedMeter meter = new RealtimeNetworkSpeedMeter(null, clock);
+
+        meter.onTransferStart(null, null, true);
+        meter.onBytesTransferred(null, null, true, 512 * 1024);
+        clock.advance(500L);
+        meter.onTransferEnd(null, null, true);
+        assertEquals(1024L * 1024L, meter.getBytesPerSecond());
+
+        meter.onTransferStart(null, null, true);
+        meter.onBytesTransferred(null, null, true, 512 * 1024);
+        assertEquals(1024L * 1024L, meter.getBytesPerSecond());
+        clock.advance(250L);
+
+        assertEquals(2L * 1024L * 1024L, meter.getBytesPerSecond());
+    }
+
+    @Test
     public void ignoresNonNetworkTransfers() {
         FakeClock clock = new FakeClock();
         RealtimeNetworkSpeedMeter meter = new RealtimeNetworkSpeedMeter(null, clock);

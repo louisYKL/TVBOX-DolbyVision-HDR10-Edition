@@ -36,6 +36,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.OkHttpClient;
@@ -139,6 +140,9 @@ public final class VideoStreamProbe {
             return result;
         } catch (Throwable th) {
             future.cancel(true);
+            if (wasProbeInterrupted(th)) {
+                return Result.unknown("probe-cancelled");
+            }
             Result fallback = isLocalProxyVideoUrl(probeUrl)
                     ? probeTimeoutFallbackOffMain(probeUrl, headers,
                     "timeout-fallback-local-proxy-byte", JAVA64_LOCAL_PROXY_FAST_PROBE_BYTES, false)
@@ -172,6 +176,21 @@ public final class VideoStreamProbe {
             if (fastPreflight == null) {
                 fastPreflight = Result.unknownContainer("tv32-startup-direct:null", true);
             }
+            if (!hasHdrEvidence(fastPreflight)) {
+                // The bounded prefix probe is fast but may see audio/codec metadata before a
+                // Matroska Tracks block or MP4 moov atom that carries the dynamic range. Confirm
+                // an apparent SDR result through the extractor before the activity requests SDR.
+                Result confirmed = probeExtractorOnWorker(context, url, headers,
+                        "tv32-preflight-confirm");
+                if (confirmed != null && confirmed.probed) {
+                    Result merged = mergeLocalProxyProbeResult(url, fastPreflight, confirmed);
+                    if (hasHdrEvidence(merged) || !hasReliableTv32StartupAudioMetadata(fastPreflight)) {
+                        fastPreflight = copyResult(merged, true,
+                                merged.isMatroska || containsMatroskaMarkerInUrl(url),
+                                "tv32-preflight-confirmed:" + merged.summary);
+                    }
+                }
+            }
             if (fastPreflight.probed) {
                 cacheProbeResult(context, url, cacheKey, fastPreflight);
             }
@@ -197,6 +216,7 @@ public final class VideoStreamProbe {
             CACHE.put(cacheKey, result);
             return result;
         } catch (Throwable th) {
+            VideoStreamByteMarkers.throwIfCancelled();
             Result result = Result.unknown("hls-avc-profile-error:" + th.getClass().getSimpleName());
             CACHE.put(cacheKey, result);
             return result;
@@ -212,6 +232,9 @@ public final class VideoStreamProbe {
             return future.get(Math.max(500L, timeoutMs), TimeUnit.MILLISECONDS);
         } catch (Throwable th) {
             future.cancel(true);
+            if (wasProbeInterrupted(th)) {
+                return Result.unknown("hls-avc-profile-cancelled");
+            }
             return Result.unknown("hls-avc-profile-timeout-" + th.getClass().getSimpleName());
         }
     }
@@ -253,7 +276,9 @@ public final class VideoStreamProbe {
                 true,
                 byteResult.isMatroska || containsMatroskaMarkerInUrl(url),
                 "tv32-preflight:" + byteResult.summary);
-        if (hasReliableTv32StartupAudioMetadata(preflight)) {
+        if (hasReliableTv32StartupAudioMetadata(preflight)
+                && (!preflight.isMatroska || preflight.hasHdr10 || preflight.hasHdr10Plus
+                || preflight.hasDolbyVision)) {
             return preflight;
         }
 
@@ -287,6 +312,11 @@ public final class VideoStreamProbe {
                 result.hasImmersiveOrCompressedAudio());
     }
 
+    private static boolean hasHdrEvidence(@Nullable Result result) {
+        return result != null
+                && (result.hasDolbyVision || result.hasHdr10 || result.hasHdr10Plus);
+    }
+
     @Nullable
     private static Result tryTv32LocalProxyMatroskaFastProbe(Context context,
                                                              String url,
@@ -318,6 +348,7 @@ public final class VideoStreamProbe {
     }
 
     private static Result doProbeOffMain(Context context, String url, Map<String, String> headers) {
+        VideoStreamByteMarkers.throwIfCancelled();
         if (shouldUseTv32LocalProxyMatroskaFastProbe(context, url)) {
             Result safeResult = probeTv32LocalProxyMatroskaSafe(context, url, headers);
             if (safeResult != null) {
@@ -331,6 +362,7 @@ public final class VideoStreamProbe {
                         byteResult.isMatroska || containsMatroskaMarkerInUrl(url),
                         "local-proxy-byte-fast:" + byteResult.summary);
             }
+            VideoStreamByteMarkers.throwIfCancelled();
             Result extractorResult = probeExtractorResult(context, url, headers);
             return mergeLocalProxyProbeResult(url, byteResult, extractorResult);
         }
@@ -338,6 +370,7 @@ public final class VideoStreamProbe {
     }
 
     private static Result probeExtractorResult(Context context, String url, Map<String, String> headers) {
+        VideoStreamByteMarkers.throwIfCancelled();
         HttpRangeMediaDataSource rangeDataSource = null;
         MediaExtractor extractor = new MediaExtractor();
         HlsDynamicRange hlsDynamicRange = HlsDynamicRange.EMPTY;
@@ -375,6 +408,7 @@ public final class VideoStreamProbe {
             List<Integer> videoTracks = new ArrayList<>();
             List<SubtitleTrackMetadata> extractorSubtitleTracks = new ArrayList<>();
             for (int i = 0; i < trackCount; i++) {
+                VideoStreamByteMarkers.throwIfCancelled();
                 MediaFormat format = extractor.getTrackFormat(i);
                 if (format == null) {
                     continue;
@@ -437,9 +471,7 @@ public final class VideoStreamProbe {
                 hasAvcVideo = hasAvcVideo || containsAvcCodecMarker(combined);
                 hasHevcVideo = hasHevcVideo || containsHevcCodecTextMarker(combined);
                 boolean hdr10Plus = containsHdr10PlusTextMarker(combined);
-                boolean hdr10 = containsHdr10TextMarker(combined)
-                        || hasHdrColorFormat(format)
-                        || hasMain10Bt2020WithoutTransfer(format, normalizedMime, codecString);
+                boolean hdr10 = containsHdr10TextMarker(combined) || hasHdrColorFormat(format);
                 int dvProfile = extractDolbyVisionProfile(combined);
                 if (dvProfile > 0) {
                     detectedDolbyVisionProfile = dvProfile;
@@ -469,17 +501,23 @@ public final class VideoStreamProbe {
                 }
             }
             if (sawVideo) {
-                if (!sawDolbyVision) {
-                    for (Integer track : videoTracks) {
-                        if (track != null && !isLocalProxyVideoUrl(url) && containsDolbyVisionSampleMarker(extractor, track)) {
-                            sawDolbyVision = true;
-                            hdr10BaseLayerDetected = hdr10BaseLayerDetected
-                                    || sawHdr10
-                                    || isDolbyVisionProfileWithHdr10BaseLayer(detectedDolbyVisionProfile);
-                            if (TextUtils.isEmpty(dvSummary)) {
-                                dvSummary = "track=" + track + " hevc-rpu-sample";
-                            }
-                            break;
+                if ((!sawDolbyVision || !sawHdr10 || !sawHdr10Plus) && !videoTracks.isEmpty()) {
+                    VideoSampleDynamicRange sampleRange = probeVideoSampleDynamicRange(extractor, videoTracks);
+                    if (sampleRange.hasDolbyVision) {
+                        sawDolbyVision = true;
+                        hdr10BaseLayerDetected = hdr10BaseLayerDetected
+                                || sawHdr10
+                                || isDolbyVisionProfileWithHdr10BaseLayer(detectedDolbyVisionProfile);
+                        if (TextUtils.isEmpty(dvSummary)) {
+                            dvSummary = "video-sample-sei";
+                        }
+                    }
+                    if (sampleRange.hasHdr10 || sampleRange.hasHdr10Plus) {
+                        sawHdr10 = true;
+                        sawHdr10Plus = sawHdr10Plus || sampleRange.hasHdr10Plus;
+                        if (TextUtils.isEmpty(hdrSummary)) {
+                            hdrSummary = sampleRange.hasHdr10Plus
+                                    ? "video-sample-hdr10plus-sei" : "video-sample-hdr-sei";
                         }
                     }
                 }
@@ -526,6 +564,7 @@ public final class VideoStreamProbe {
             }
             return Result.unknown("no-video-track");
         } catch (Throwable th) {
+            VideoStreamByteMarkers.throwIfCancelled();
             if (th instanceof android.os.NetworkOnMainThreadException) {
                 if (hlsDynamicRange.hasEvidence()) {
                     return new Result(true, false, hlsDynamicRange.hdr10,
@@ -570,6 +609,7 @@ public final class VideoStreamProbe {
         if (byteResult == null) {
             return null;
         }
+        VideoStreamByteMarkers.throwIfCancelled();
         Result extractorResult = probeExtractorResult(context, url, headers);
         Result merged = mergeLocalProxyProbeResult(url, byteResult, extractorResult);
         if (shouldEscalateTv32LocalProxySubtitleProbe(merged, extractorResult)) {
@@ -696,6 +736,9 @@ public final class VideoStreamProbe {
             return copyResult(result, result.probed, result.isMatroska, prefix + ":" + result.summary);
         } catch (Throwable th) {
             future.cancel(true);
+            if (wasProbeInterrupted(th)) {
+                return Result.unknown(prefix + ":probe-cancelled");
+            }
             Result fallback = probeTimeoutFallbackOffMain(url, headers,
                     prefix + ":timeout-byte",
                     isLocalProxyVideoUrl(url) ? LOCAL_PROXY_PROBE_BYTES : PROBE_BYTES,
@@ -730,6 +773,7 @@ public final class VideoStreamProbe {
             return Result.unknown(prefix + ":skip-main-thread");
         }
         try {
+            VideoStreamByteMarkers.throwIfCancelled();
             int safeProbeBytes = Math.max(32 * 1024, Math.min(MAX_CONTAINER_PROBE_BYTES, probeBytes));
             if (!allowTargetedMatroskaTracks) {
                 Log.i("TVBox-runtime", "echo-probe-startup begin prefix=" + prefix
@@ -764,23 +808,27 @@ public final class VideoStreamProbe {
                         + " prefix=" + prefix);
             }
             byte[] markerData = first.data;
+            // Scan once without converting megabytes of binary data into UTF-16 strings.
+            VideoStreamByteMarkers.Scan firstMarkers = VideoStreamByteMarkers.scan(markerData, markerData.length);
             if (!allowTargetedMatroskaTracks) {
                 Log.i("TVBox-runtime", "echo-probe-startup marker-scan prefix=" + prefix
                         + " bytes=" + markerData.length);
             }
-            boolean firstHasDvText = containsDolbyVisionMarker(markerData);
+            boolean firstHasDvText = firstMarkers.has(VideoStreamByteMarkers.DOLBY_VISION);
             boolean firstHasDvRpu = containsHevcRpuNal(markerData, markerData.length);
-            boolean firstHasHevcContext = containsHevcCodecMarker(markerData);
+            boolean firstHasHevcContext = firstMarkers.has(VideoStreamByteMarkers.HEVC);
+            boolean firstHdrColor = firstMarkers.has(VideoStreamByteMarkers.HDR10)
+                    || containsMatroskaHdrColorMarker(markerData);
             if (firstHasDvText || firstHasDvRpu) {
-                int dvProfile = extractDolbyVisionProfile(markerData);
+                int dvProfile = extractDolbyVisionProfile(markerData, firstMarkers);
                 boolean dvConfirmed = isConfirmedDolbyVisionByteProbe(firstHasDvText, firstHasDvRpu,
                         firstHasHevcContext, dvProfile, localProxyUrl);
-                boolean hdr10BaseLayer = containsHdr10Marker(markerData) || isDolbyVisionProfileWithHdr10BaseLayer(dvProfile);
+                boolean hdr10BaseLayer = firstHdrColor || isDolbyVisionProfileWithHdr10BaseLayer(dvProfile);
                 if (dvConfirmed) {
                     Log.i("TVBox-runtime", "echo-probe-startup complete prefix=" + prefix
                             + " result=header-dovi subtitles=" + firstSubtitleTracks.size());
-                    return new Result(true, true, hdr10BaseLayer, containsHdr10PlusMarker(markerData),
-                        containsMatroskaMarker(first.data), dvProfile, hdr10BaseLayer,
+                    return new Result(true, true, hdr10BaseLayer, firstMarkers.has(VideoStreamByteMarkers.HDR10_PLUS),
+                        firstMarkers.has(VideoStreamByteMarkers.MATROSKA), dvProfile, hdr10BaseLayer,
                         firstTrackSummary.primaryVideoMime, firstTrackSummary.primaryAudioMime,
                         firstTrackSummary.hasAvcVideo, firstTrackSummary.hasHevcVideo,
                         firstTrackSummary.hasAc3Audio, firstTrackSummary.hasEac3Audio,
@@ -790,10 +838,17 @@ public final class VideoStreamProbe {
                         prefix + ":header-dovi" + profileSuffix(dvProfile, hdr10BaseLayer));
                 }
             }
-            if (containsHdr10PlusMarker(markerData) || containsHdr10Marker(markerData)) {
+            boolean firstHdr10Plus = firstMarkers.has(VideoStreamByteMarkers.HDR10_PLUS)
+                    || firstTrackSummary.hasHdr10Plus;
+            boolean firstHdr10 = firstHdrColor
+                    || firstTrackSummary.hasHdr10;
+            if (firstHdr10Plus || firstHdr10) {
                 Log.i("TVBox-runtime", "echo-probe-startup complete prefix=" + prefix
-                        + " result=header-hdr subtitles=" + firstSubtitleTracks.size());
-                return new Result(true, false, true, containsHdr10PlusMarker(markerData), containsMatroskaMarker(first.data),
+                        + " result=" + (firstHdr10Plus ? "hdr10-plus" : "hdr")
+                        + " source=" + (firstTrackSummary.hasHdr10 || firstTrackSummary.hasHdr10Plus
+                        ? "matroska-tracks" : "bytes")
+                        + " subtitles=" + firstSubtitleTracks.size());
+                return new Result(true, false, true, firstHdr10Plus, firstMarkers.has(VideoStreamByteMarkers.MATROSKA),
                         -1, false,
                         firstTrackSummary.primaryVideoMime, firstTrackSummary.primaryAudioMime,
                         firstTrackSummary.hasAvcVideo, firstTrackSummary.hasHevcVideo,
@@ -803,24 +858,27 @@ public final class VideoStreamProbe {
                         firstSubtitleTracks,
                         prefix + ":header-hdr");
             }
-            boolean firstLooksMatroska = containsMatroskaMarker(first.data);
+            boolean firstLooksMatroska = firstMarkers.has(VideoStreamByteMarkers.MATROSKA);
             if (readTail && total > safeProbeBytes && !localProxyUrl) {
                 long start = Math.max(0L, total - safeProbeBytes);
                 ProbeChunk tail = readRange(url, headers, start, total - 1L, safeProbeBytes);
                 List<SubtitleTrackMetadata> mergedSubtitleTracks = mergeSubtitleTracks(firstSubtitleTracks, parseMatroskaSubtitleTracks(tail.data));
                 MatroskaTrackSummary mergedTrackSummary = mergeMatroskaTrackSummary(firstTrackSummary, parseMatroskaTrackSummary(tail.data));
-                boolean tailLooksMatroska = containsMatroskaMarker(tail.data);
-                boolean tailHasDvText = containsDolbyVisionMarker(tail.data);
+                VideoStreamByteMarkers.Scan tailMarkers = VideoStreamByteMarkers.scan(tail.data, tail.data.length);
+                boolean tailLooksMatroska = tailMarkers.has(VideoStreamByteMarkers.MATROSKA);
+                boolean tailHasDvText = tailMarkers.has(VideoStreamByteMarkers.DOLBY_VISION);
                 boolean tailHasDvRpu = containsHevcRpuNal(tail.data, tail.data.length);
-                boolean tailHasHevcContext = containsHevcCodecMarker(tail.data);
+                boolean tailHasHevcContext = tailMarkers.has(VideoStreamByteMarkers.HEVC);
+                boolean tailHdrColor = tailMarkers.has(VideoStreamByteMarkers.HDR10)
+                        || containsMatroskaHdrColorMarker(tail.data);
                 if (tailHasDvText || tailHasDvRpu) {
-                    int dvProfile = extractDolbyVisionProfile(tail.data);
-                    boolean hdr10BaseLayer = containsHdr10Marker(tail.data) || containsHdr10Marker(first.data)
+                    int dvProfile = extractDolbyVisionProfile(tail.data, tailMarkers);
+                    boolean hdr10BaseLayer = tailHdrColor || firstHdrColor
                             || isDolbyVisionProfileWithHdr10BaseLayer(dvProfile);
                     boolean dvConfirmed = isConfirmedDolbyVisionByteProbe(tailHasDvText, tailHasDvRpu,
                             tailHasHevcContext, dvProfile, false);
                     if (dvConfirmed) {
-                        return new Result(true, true, hdr10BaseLayer, containsHdr10PlusMarker(tail.data),
+                        return new Result(true, true, hdr10BaseLayer, tailMarkers.has(VideoStreamByteMarkers.HDR10_PLUS),
                                 firstLooksMatroska || tailLooksMatroska, dvProfile, hdr10BaseLayer,
                                 mergedTrackSummary.primaryVideoMime, mergedTrackSummary.primaryAudioMime,
                                 mergedTrackSummary.hasAvcVideo, mergedTrackSummary.hasHevcVideo,
@@ -831,8 +889,10 @@ public final class VideoStreamProbe {
                                 prefix + ":tail-dovi" + profileSuffix(dvProfile, hdr10BaseLayer));
                     }
                 }
-                if (containsHdr10PlusMarker(tail.data) || containsHdr10Marker(tail.data)) {
-                    return new Result(true, false, true, containsHdr10PlusMarker(tail.data),
+                boolean tailHdr10Plus = tailMarkers.has(VideoStreamByteMarkers.HDR10_PLUS) || mergedTrackSummary.hasHdr10Plus;
+                boolean tailHdr10 = tailHdrColor || mergedTrackSummary.hasHdr10;
+                if (tailHdr10Plus || tailHdr10) {
+                    return new Result(true, false, true, tailHdr10Plus,
                             firstLooksMatroska || tailLooksMatroska, -1, false,
                             mergedTrackSummary.primaryVideoMime, mergedTrackSummary.primaryAudioMime,
                             mergedTrackSummary.hasAvcVideo, mergedTrackSummary.hasHevcVideo,
@@ -858,6 +918,7 @@ public final class VideoStreamProbe {
                     firstSubtitleTracks,
                     prefix + ":byte-probe-no-hdr");
         } catch (Throwable th) {
+            VideoStreamByteMarkers.throwIfCancelled();
             return Result.unknown(prefix + ":byte-probe-" + th.getClass().getSimpleName());
         }
     }
@@ -873,6 +934,9 @@ public final class VideoStreamProbe {
             return future.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (Throwable th) {
             future.cancel(true);
+            if (wasProbeInterrupted(th)) {
+                return null;
+            }
             Log.i("TVBox-runtime", "echo-probe-fallback-timeout prefix=" + prefix
                     + " timeoutMs=" + timeoutMs
                     + " err=" + th.getClass().getSimpleName()
@@ -1303,6 +1367,7 @@ public final class VideoStreamProbe {
     }
 
     private static byte[] readUrlLimited(String url, Map<String, String> headers, int maxBytes) throws Exception {
+        VideoStreamByteMarkers.throwIfCancelled();
         Request.Builder builder = new Request.Builder()
                 .url(url)
                 .header("Accept-Encoding", "identity")
@@ -1511,6 +1576,7 @@ public final class VideoStreamProbe {
     }
 
     private static ProbeChunk readRange(String url, Map<String, String> headers, long start, long end, int maxBytes) throws Exception {
+        VideoStreamByteMarkers.throwIfCancelled();
         url = unwrapAppStreamProxy(url);
         boolean localProxy = isLocalProxyVideoUrl(url);
         Request.Builder builder = new Request.Builder()
@@ -1575,6 +1641,7 @@ public final class VideoStreamProbe {
         byte[] buffer = new byte[16 * 1024];
         int remaining = limit;
         while (remaining > 0) {
+            VideoStreamByteMarkers.throwIfCancelled();
             int read = stream.read(buffer, 0, Math.min(buffer.length, remaining));
             if (read < 0) {
                 break;
@@ -1582,7 +1649,15 @@ public final class VideoStreamProbe {
             output.write(buffer, 0, read);
             remaining -= read;
         }
+        VideoStreamByteMarkers.throwIfCancelled();
         return output.toByteArray();
+    }
+
+    private static boolean wasProbeInterrupted(Throwable error) {
+        if (error instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
+        }
+        return error instanceof CancellationException || Thread.currentThread().isInterrupted();
     }
 
     private static long parseTotalFromContentRange(String value) {
@@ -1605,41 +1680,13 @@ public final class VideoStreamProbe {
     }
 
     private static boolean containsDolbyVisionMarker(byte[] data) {
-        if (data == null || data.length == 0) {
-            return false;
-        }
-        String text = new String(data, StandardCharsets.ISO_8859_1).toLowerCase(Locale.US);
-        return containsDolbyVisionTextMarker(text)
-                || text.contains("dvc1")
-                || text.contains("dvh1")
-                || text.contains("dvhe")
-                || text.contains("dvcc")
-                || text.contains("dvvc")
-                || text.contains("dvv1")
-                || text.contains("dovi configuration")
-                || text.contains("dolby vision")
-                || text.contains("杜比视界")
-                || text.contains("杜比世界")
-                || text.contains("dolby_vision")
-                || text.contains("dolby-vision")
-                || text.contains("dv profile")
-                || text.contains("dv_profile")
-                || text.contains("dolbyvision");
+        return VideoStreamByteMarkers.contains(data, data == null ? 0 : data.length,
+                VideoStreamByteMarkers.DOLBY_VISION);
     }
 
     private static boolean containsMatroskaMarker(byte[] data) {
-        if (data == null || data.length == 0) {
-            return false;
-        }
-        if (data.length >= 4
-                && (data[0] & 0xff) == 0x1a
-                && (data[1] & 0xff) == 0x45
-                && (data[2] & 0xff) == 0xdf
-                && (data[3] & 0xff) == 0xa3) {
-            return true;
-        }
-        String text = new String(data, StandardCharsets.ISO_8859_1).toLowerCase(Locale.US);
-        return containsMatroskaMarker(text);
+        return VideoStreamByteMarkers.contains(data, data == null ? 0 : data.length,
+                VideoStreamByteMarkers.MATROSKA);
     }
 
     private static boolean containsMatroskaMarker(String text) {
@@ -1687,12 +1734,11 @@ public final class VideoStreamProbe {
                 || lower.contains("dvh1");
     }
 
-    private static int extractDolbyVisionProfile(byte[] data) {
+    private static int extractDolbyVisionProfile(byte[] data, VideoStreamByteMarkers.Scan markers) {
         if (data == null || data.length == 0) {
             return -1;
         }
-        String text = new String(data, StandardCharsets.ISO_8859_1).toLowerCase(Locale.US);
-        int fromText = extractDolbyVisionProfile(text);
+        int fromText = markers.dolbyVisionProfile;
         if (fromText > 0) {
             return fromText;
         }
@@ -1726,6 +1772,7 @@ public final class VideoStreamProbe {
     private static int extractDolbyVisionProfileFromConfigRecord(byte[] data, int length) {
         int safeLength = Math.min(length, data.length);
         for (int i = 0; i + 4 < safeLength; i++) {
+            if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
             if (data[i] == 'd'
                     && (data[i + 1] == 'v' || data[i + 1] == 'V')
                     && (data[i + 2] == 'c' || data[i + 2] == 'C' || data[i + 2] == 'v' || data[i + 2] == 'V')
@@ -1819,7 +1866,11 @@ public final class VideoStreamProbe {
                 || lower.contains("video range=pq")
                 || lower.contains("video range=hlg")
                 || lower.contains("smpte-st-2084")
-                || lower.contains("hdr-static-info");
+                || lower.contains("hdr-static-info")
+                || lower.contains("hdr vivid")
+                || lower.contains("hdr-vivid")
+                || lower.contains("hdrvivid")
+                || lower.contains("cuva");
     }
 
     static boolean containsHdr10PlusTextMarker(String text) {
@@ -1844,27 +1895,6 @@ public final class VideoStreamProbe {
         }
         int transfer = safeGetInteger(format, "color-transfer", -1);
         return transfer == 6 || transfer == 7;
-    }
-
-    /**
-     * A few Android extractors expose a 10-bit BT.2020 video track but leave
-     * color-transfer unspecified. Keep explicit SDR transfer on the SDR path,
-     * while treating this otherwise-unclassified HDR10 shape as HDR.
-     */
-    private static boolean hasMain10Bt2020WithoutTransfer(MediaFormat format,
-                                                            String normalizedMime,
-                                                            String codecString) {
-        if (format == null || !"video/hevc".equals(normalizedMime)) {
-            return false;
-        }
-        int transfer = safeGetInteger(format, MediaFormat.KEY_COLOR_TRANSFER, -1);
-        int standard = safeGetInteger(format, MediaFormat.KEY_COLOR_STANDARD, -1);
-        if (transfer != -1 || standard != MediaFormat.COLOR_STANDARD_BT2020) {
-            return false;
-        }
-        int profile = safeGetInteger(format, MediaFormat.KEY_PROFILE, -1);
-        String lowerCodec = codecString == null ? "" : codecString.toLowerCase(Locale.US);
-        return profile == 2 || lowerCodec.startsWith("hvc1.2.") || lowerCodec.startsWith("hev1.2.");
     }
 
     private static int safeGetInteger(MediaFormat format, String key, int fallback) {
@@ -1901,58 +1931,225 @@ public final class VideoStreamProbe {
         }
     }
 
-    private static boolean containsDolbyVisionSampleMarker(MediaExtractor extractor, int videoTrack) {
-        try {
-            extractor.selectTrack(videoTrack);
-        } catch (Throwable ignored) {
-            return false;
-        }
-        try {
-            ByteBuffer buffer = ByteBuffer.allocate(SAMPLE_PROBE_BYTES);
-            byte[] sample = new byte[SAMPLE_PROBE_BYTES];
-            int samples = 0;
-            while (samples < MAX_VIDEO_SAMPLE_PROBE_COUNT) {
-                buffer.clear();
-                int size = extractor.readSampleData(buffer, 0);
-                if (size <= 0) {
-                    break;
-                }
-                int copy = Math.min(size, SAMPLE_PROBE_BYTES);
-                buffer.position(0);
-                buffer.get(sample, 0, copy);
-                if (containsHevcRpuNal(sample, copy) || containsDolbyVisionMarker(sample, copy)) {
-                    return true;
-                }
-                samples++;
-                if (!extractor.advance()) {
-                    break;
-                }
+    private static VideoSampleDynamicRange probeVideoSampleDynamicRange(MediaExtractor extractor,
+                                                                         List<Integer> videoTracks) {
+        VideoSampleDynamicRange result = new VideoSampleDynamicRange();
+        int samplesRead = 0;
+        for (Integer videoTrack : videoTracks) {
+            VideoStreamByteMarkers.throwIfCancelled();
+            if (videoTrack == null || samplesRead >= MAX_VIDEO_SAMPLE_PROBE_COUNT
+                    || (result.hasDolbyVision && result.hasHdr10 && result.hasHdr10Plus)) {
+                break;
             }
-        } catch (Throwable ignored) {
-            return false;
-        } finally {
+            boolean selected = false;
             try {
-                extractor.unselectTrack(videoTrack);
+                extractor.seekTo(0L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
+                extractor.selectTrack(videoTrack);
+                selected = true;
+                ByteBuffer buffer = ByteBuffer.allocate(SAMPLE_PROBE_BYTES);
+                byte[] sample = new byte[SAMPLE_PROBE_BYTES];
+                for (int i = 0; i < MAX_VIDEO_SAMPLE_PROBE_COUNT - samplesRead; i++) {
+                    VideoStreamByteMarkers.throwIfCancelled();
+                    buffer.clear();
+                    int size = extractor.readSampleData(buffer, 0);
+                    if (size <= 0) {
+                        break;
+                    }
+                    int copy = Math.min(size, SAMPLE_PROBE_BYTES);
+                    buffer.position(0);
+                    buffer.get(sample, 0, copy);
+                    VideoSampleDynamicRange markers = inspectVideoSampleDynamicRange(sample, copy);
+                    result.hasDolbyVision |= containsHevcRpuNal(sample, copy)
+                            || containsDolbyVisionMarker(sample, copy);
+                    result.hasHdr10 |= markers.hasHdr10;
+                    result.hasHdr10Plus |= markers.hasHdr10Plus;
+                    samplesRead++;
+                    if ((result.hasDolbyVision && result.hasHdr10 && result.hasHdr10Plus)
+                            || !extractor.advance()) {
+                        break;
+                    }
+                }
             } catch (Throwable ignored) {
+                VideoStreamByteMarkers.throwIfCancelled();
+                // Preflight is best-effort; the active player remains the source of truth
+                // when a vendor extractor cannot seek or expose compressed samples.
+            } finally {
+                if (selected) {
+                    try {
+                        extractor.unselectTrack(videoTrack);
+                    } catch (Throwable ignored) {
+                    }
+                }
             }
         }
-        return false;
+        return result;
+    }
+
+    static boolean containsHdr10SeiMarker(byte[] sample, int length) {
+        return inspectVideoSampleDynamicRange(sample, length).hasHdr10;
+    }
+
+    static boolean containsHdr10PlusSeiMarker(byte[] sample, int length) {
+        return inspectVideoSampleDynamicRange(sample, length).hasHdr10Plus;
+    }
+
+    private static VideoSampleDynamicRange inspectVideoSampleDynamicRange(byte[] sample, int length) {
+        VideoSampleDynamicRange result = new VideoSampleDynamicRange();
+        if (sample == null || length < 3) {
+            return result;
+        }
+        int end = Math.min(sample.length, length);
+        int startCode = findNalStartCode(sample, 0, end);
+        if (startCode >= 0) {
+            int cursor = startCode;
+            while (cursor >= 0 && cursor < end) {
+                int prefixLength = sample[cursor + 2] == 1 ? 3 : 4;
+                int nalStart = cursor + prefixLength;
+                int nextStartCode = findNalStartCode(sample, nalStart, end);
+                int nalEnd = nextStartCode < 0 ? end : nextStartCode;
+                inspectSeiNal(sample, nalStart, nalEnd, result);
+                cursor = nextStartCode;
+            }
+            return result;
+        }
+        for (int lengthBytes : new int[]{4, 2, 1}) {
+            int parsed = inspectLengthPrefixedNals(sample, end, lengthBytes, result);
+            if (parsed > 0) {
+                return result;
+            }
+            result.clear();
+        }
+        inspectSeiNal(sample, 0, end, result);
+        return result;
+    }
+
+    private static int inspectLengthPrefixedNals(byte[] sample,
+                                                  int end,
+                                                  int lengthBytes,
+                                                  VideoSampleDynamicRange result) {
+        int offset = 0;
+        int nalCount = 0;
+        while (offset + lengthBytes + 2 <= end) {
+            long nalLength = 0L;
+            for (int i = 0; i < lengthBytes; i++) {
+                nalLength = (nalLength << 8) | (sample[offset + i] & 0xffL);
+            }
+            int nalStart = offset + lengthBytes;
+            if (nalLength < 2L || nalLength > end - nalStart) {
+                return 0;
+            }
+            inspectSeiNal(sample, nalStart, nalStart + (int) nalLength, result);
+            nalCount++;
+            offset = nalStart + (int) nalLength;
+        }
+        return offset == end ? nalCount : 0;
+    }
+
+    private static int findNalStartCode(byte[] data, int start, int end) {
+        for (int i = Math.max(0, start); i + 3 <= end; i++) {
+            if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
+            if (data[i] == 0 && data[i + 1] == 0) {
+                if (data[i + 2] == 1) {
+                    return i;
+                }
+                if (i + 4 <= end && data[i + 2] == 0 && data[i + 3] == 1) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static void inspectSeiNal(byte[] sample,
+                                      int nalStart,
+                                      int nalEnd,
+                                      VideoSampleDynamicRange result) {
+        if (nalStart < 0 || nalEnd <= nalStart || nalEnd > sample.length) {
+            return;
+        }
+        int first = sample[nalStart] & 0xff;
+        int hevcType = (first & 0x7e) >> 1;
+        int payloadStart;
+        boolean sei;
+        if (nalEnd - nalStart >= 3 && hevcType >= 39 && hevcType <= 40
+                && (sample[nalStart + 1] & 0x07) != 0) {
+            payloadStart = nalStart + 2;
+            sei = true;
+        } else if ((first & 0x1f) == 6) { // AVC SEI
+            payloadStart = nalStart + 1;
+            sei = true;
+        } else {
+            return;
+        }
+        byte[] rbsp = removeEmulationPreventionBytes(sample, payloadStart, nalEnd);
+        int offset = 0;
+        while (offset < rbsp.length) {
+            if ((rbsp[offset] & 0xff) == 0x80) {
+                break;
+            }
+            int payloadType = 0;
+            while (offset < rbsp.length && (rbsp[offset] & 0xff) == 0xff) {
+                payloadType += 255;
+                offset++;
+            }
+            if (offset >= rbsp.length) {
+                break;
+            }
+            payloadType += rbsp[offset++] & 0xff;
+            int payloadSize = 0;
+            while (offset < rbsp.length && (rbsp[offset] & 0xff) == 0xff) {
+                payloadSize += 255;
+                offset++;
+            }
+            if (offset >= rbsp.length) {
+                break;
+            }
+            payloadSize += rbsp[offset++] & 0xff;
+            if (payloadSize < 0 || payloadSize > rbsp.length - offset) {
+                break;
+            }
+            if (payloadType == 137 || payloadType == 144) {
+                result.hasHdr10 = true;
+            } else if (sei && payloadType == 4
+                    && isHdr10PlusRegisteredUserData(rbsp, offset, payloadSize)) {
+                result.hasHdr10 = true;
+                result.hasHdr10Plus = true;
+            }
+            offset += payloadSize;
+        }
+    }
+
+    private static boolean isHdr10PlusRegisteredUserData(byte[] data, int offset, int size) {
+        if (size < 6 || offset < 0 || offset + size > data.length
+                || (data[offset] & 0xff) != 0xb5) {
+            return false;
+        }
+        int providerCode = ((data[offset + 1] & 0xff) << 8) | (data[offset + 2] & 0xff);
+        int providerOrientedCode = ((data[offset + 3] & 0xff) << 8) | (data[offset + 4] & 0xff);
+        int applicationIdentifier = data[offset + 5] & 0xff;
+        return providerCode == 0x003c
+                && providerOrientedCode == 0x0001
+                && applicationIdentifier == 4;
+    }
+
+    private static byte[] removeEmulationPreventionBytes(byte[] data, int start, int end) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream(Math.max(0, end - start));
+        int zeroCount = 0;
+        for (int i = start; i < end; i++) {
+            if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
+            int value = data[i] & 0xff;
+            if (zeroCount >= 2 && value == 3) {
+                zeroCount = 2;
+                continue;
+            }
+            output.write(value);
+            zeroCount = value == 0 ? zeroCount + 1 : 0;
+        }
+        return output.toByteArray();
     }
 
     private static boolean containsDolbyVisionMarker(byte[] data, int length) {
-        if (data == null || length <= 0) {
-            return false;
-        }
-        int safeLength = Math.min(length, data.length);
-        String text = new String(data, 0, safeLength, StandardCharsets.ISO_8859_1).toLowerCase(Locale.US);
-        return text.contains("dvc1")
-                || text.contains("dvh1")
-                || text.contains("dvhe")
-                || text.contains("dvcc")
-                || text.contains("dvvc")
-                || text.contains("dvv1")
-                || text.contains("dovi configuration")
-                || text.contains("dolby vision");
+        return VideoStreamByteMarkers.contains(data, length, VideoStreamByteMarkers.DOLBY_VISION);
     }
 
     private static boolean isConfirmedDolbyVisionByteProbe(boolean hasDvTextMarker,
@@ -1978,14 +2175,6 @@ public final class VideoStreamProbe {
         return !localProxyByteProbe;
     }
 
-    private static boolean containsHevcCodecMarker(byte[] data) {
-        if (data == null || data.length == 0) {
-            return false;
-        }
-        String text = new String(data, StandardCharsets.ISO_8859_1).toLowerCase(Locale.US);
-        return containsHevcCodecTextMarker(text);
-    }
-
     private static boolean containsHevcCodecTextMarker(String text) {
         if (TextUtils.isEmpty(text)) {
             return false;
@@ -1997,22 +2186,6 @@ public final class VideoStreamProbe {
                 || text.contains("h265")
                 || text.contains("v_mpegh/iso/hevc")
                 || text.contains("v_mpegh/iso/hevc");
-    }
-
-    private static boolean containsHdr10Marker(byte[] data) {
-        if (data == null || data.length == 0) {
-            return false;
-        }
-        String text = new String(data, StandardCharsets.ISO_8859_1).toLowerCase(Locale.US);
-        return containsHdr10TextMarker(text) || containsMatroskaHdrColorMarker(data);
-    }
-
-    private static boolean containsHdr10PlusMarker(byte[] data) {
-        if (data == null || data.length == 0) {
-            return false;
-        }
-        String text = new String(data, StandardCharsets.ISO_8859_1).toLowerCase(Locale.US);
-        return containsHdr10PlusTextMarker(text);
     }
 
     private static boolean containsHevcRpuNal(byte[] data, int length) {
@@ -2036,6 +2209,7 @@ public final class VideoStreamProbe {
         boolean pqOrHlgTransfer = false;
         boolean masteringMetadata = false;
         for (int i = 0; i + 4 < data.length; i++) {
+            if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
             int id = ((data[i] & 0xff) << 8) | (data[i + 1] & 0xff);
             if (id == 0x55BA) { // TransferCharacteristics
                 long value = readEbmlUIntElement(data, i + 2);
@@ -2074,7 +2248,8 @@ public final class VideoStreamProbe {
         if (firstData == null || firstData.length < 16 || totalSize <= 0L) {
             return null;
         }
-        boolean aggressiveReopen = localProxyUrl && (weakInitialSubtitleProbe || weakInitialTrackSummary);
+        boolean aggressiveReopen = localProxyUrl && (weakInitialSubtitleProbe
+                || weakInitialTrackSummary);
         List<Long> candidateOffsets = findMatroskaTracksAbsoluteOffsets(firstData, aggressiveReopen);
         if (candidateOffsets.isEmpty()) {
             return null;
@@ -2083,6 +2258,7 @@ public final class VideoStreamProbe {
         MatroskaTracksChunk bestChunk = null;
         int bestScore = Integer.MIN_VALUE;
         for (Long candidateOffset : candidateOffsets) {
+            VideoStreamByteMarkers.throwIfCancelled();
             if (candidateOffset == null || candidateOffset < 0L) {
                 continue;
             }
@@ -2414,6 +2590,9 @@ public final class VideoStreamProbe {
             }
             summary.hasAvcVideo = summary.hasAvcVideo || containsAvcCodecMarker(combined);
             summary.hasHevcVideo = summary.hasHevcVideo || containsHevcCodecTextMarker(combined);
+            MatroskaVideoColorInfo colorInfo = readMatroskaVideoColorInfo(data, start, end);
+            summary.hasHdr10 = summary.hasHdr10 || colorInfo.isHdr;
+            summary.hasHdr10Plus = summary.hasHdr10Plus || colorInfo.isHdr10Plus;
             return;
         }
         if (trackType == 0x11L) { // subtitle
@@ -2516,6 +2695,8 @@ public final class VideoStreamProbe {
         merged.hasDtsAudio = primary.hasDtsAudio || secondary.hasDtsAudio;
         merged.hasTrueHdAudio = primary.hasTrueHdAudio || secondary.hasTrueHdAudio;
         merged.hasAtmosLikeAudio = primary.hasAtmosLikeAudio || secondary.hasAtmosLikeAudio;
+        merged.hasHdr10 = primary.hasHdr10 || secondary.hasHdr10;
+        merged.hasHdr10Plus = primary.hasHdr10Plus || secondary.hasHdr10Plus;
         merged.audioTrackCount = Math.max(primary.audioTrackCount, secondary.audioTrackCount);
         return merged.freeze();
     }
@@ -2534,7 +2715,114 @@ public final class VideoStreamProbe {
                 || summary.hasDtsAudio
                 || summary.hasTrueHdAudio
                 || summary.hasAtmosLikeAudio
+                || summary.hasHdr10
+                || summary.hasHdr10Plus
                 || summary.audioTrackCount > 0);
+    }
+
+    static boolean hasMatroskaHdrTrackMetadata(byte[] data) {
+        if (!looksLikeMatroskaTracksChunk(data)) {
+            return false;
+        }
+        EbmlElement tracks = readEbmlElementHeader(data, 0, data.length);
+        if (tracks == null || tracks.id != 0x1654AE6BL) {
+            return false;
+        }
+        for (int offset = tracks.dataStart; offset < tracks.dataEnd; ) {
+            EbmlElement entry = readEbmlElementHeader(data, offset, tracks.dataEnd);
+            if (entry == null || entry.totalEnd <= offset) {
+                break;
+            }
+            if (entry.id == 0xAE) {
+                for (int childOffset = entry.dataStart; childOffset < entry.dataEnd; ) {
+                    EbmlElement child = readEbmlElementHeader(data, childOffset, entry.dataEnd);
+                    if (child == null || child.totalEnd <= childOffset) {
+                        break;
+                    }
+                    if (child.id == 0x83
+                            && readEbmlUnsignedValue(data, child.dataStart, child.dataEnd) == 0x01L) {
+                        MatroskaVideoColorInfo info = readMatroskaVideoColorInfo(
+                                data, entry.dataStart, entry.dataEnd);
+                        if (info.isHdr || info.isHdr10Plus) {
+                            return true;
+                        }
+                        break;
+                    }
+                    childOffset = child.totalEnd;
+                }
+            }
+            offset = entry.totalEnd;
+        }
+        return false;
+    }
+
+    private static MatroskaVideoColorInfo readMatroskaVideoColorInfo(byte[] data, int start, int end) {
+        boolean sawColour = false;
+        long transfer = -1L;
+        long primaries = -1L;
+        long matrix = -1L;
+        long bitsPerChannel = -1L;
+        boolean mastering = false;
+        boolean contentLightLevel = false;
+        boolean hdr10Plus = false;
+        for (int offset = start; offset < end; ) {
+            EbmlElement element = readEbmlElementHeader(data, offset, end);
+            if (element == null || element.totalEnd <= offset) {
+                break;
+            }
+            if (element.id == 0xE0) { // Video
+                for (int videoOffset = element.dataStart; videoOffset < element.dataEnd; ) {
+                    EbmlElement videoElement = readEbmlElementHeader(data, videoOffset, element.dataEnd);
+                    if (videoElement == null || videoElement.totalEnd <= videoOffset) {
+                        break;
+                    }
+                    if (videoElement.id == 0x55B0) { // Colour
+                        sawColour = true;
+                        for (int colorOffset = videoElement.dataStart; colorOffset < videoElement.dataEnd; ) {
+                            EbmlElement colorElement = readEbmlElementHeader(data, colorOffset, videoElement.dataEnd);
+                            if (colorElement == null || colorElement.totalEnd <= colorOffset) {
+                                break;
+                            }
+                            switch ((int) colorElement.id) {
+                                case 0x55B1: // MatrixCoefficients
+                                    matrix = readEbmlUnsignedValue(data, colorElement.dataStart, colorElement.dataEnd);
+                                    break;
+                                case 0x55B2: // BitsPerChannel
+                                    bitsPerChannel = readEbmlUnsignedValue(data, colorElement.dataStart, colorElement.dataEnd);
+                                    break;
+                                case 0x55BA: // TransferCharacteristics
+                                    transfer = readEbmlUnsignedValue(data, colorElement.dataStart, colorElement.dataEnd);
+                                    break;
+                                case 0x55BB: // Primaries
+                                    primaries = readEbmlUnsignedValue(data, colorElement.dataStart, colorElement.dataEnd);
+                                    break;
+                                case 0x55BC: // MaxCLL
+                                case 0x55BD: // MaxFALL
+                                    contentLightLevel = true;
+                                    break;
+                                case 0x55D0: // MasteringMetadata
+                                    mastering = true;
+                                    break;
+                                default:
+                                    hdr10Plus |= containsHdr10PlusTextMarker(
+                                            new String(data, colorElement.dataStart,
+                                                    Math.max(0, colorElement.dataEnd - colorElement.dataStart),
+                                                    StandardCharsets.ISO_8859_1));
+                                    break;
+                            }
+                            colorOffset = colorElement.totalEnd;
+                        }
+                    }
+                    videoOffset = videoElement.totalEnd;
+                }
+            }
+            offset = element.totalEnd;
+        }
+        boolean pqOrHlg = transfer == 16L || transfer == 18L;
+        boolean wideGamutMastered = (primaries == 9L || matrix == 9L)
+                && (mastering || contentLightLevel)
+                && (bitsPerChannel < 0L || bitsPerChannel >= 10L);
+        return new MatroskaVideoColorInfo(sawColour && (pqOrHlg || wideGamutMastered), hdr10Plus);
     }
 
     private static boolean looksLikeMatroskaTracksChunk(byte[] data) {
@@ -2551,6 +2839,7 @@ public final class VideoStreamProbe {
 
     private static int[] findMatroskaSegmentRange(byte[] data) {
         for (int i = 0; i + 4 < data.length; i++) {
+            if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
             if ((data[i] & 0xff) == 0x18
                     && (data[i + 1] & 0xff) == 0x53
                     && (data[i + 2] & 0xff) == 0x80
@@ -2621,6 +2910,7 @@ public final class VideoStreamProbe {
                 : Math.max(0, segmentRange[0] - MATROSKA_TRACKS_ID_BYTES.length);
         int scanEnd = segmentRange == null ? data.length : Math.min(data.length, segmentRange[1]);
         for (int i = scanStart; i + MATROSKA_TRACKS_ID_BYTES.length <= scanEnd; i++) {
+            if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
             boolean match = true;
             for (int j = 0; j < MATROSKA_TRACKS_ID_BYTES.length; j++) {
                 if (data[i + j] != MATROSKA_TRACKS_ID_BYTES[j]) {
@@ -2965,6 +3255,7 @@ public final class VideoStreamProbe {
     private static boolean containsAnnexBHevcRpuNal(byte[] data, int length) {
         int i = 0;
         while (i + 5 < length) {
+            if ((i & 0x3fff) == 0) VideoStreamByteMarkers.throwIfCancelled();
             int startCode = startCodeLengthAt(data, i, length);
             if (startCode > 0) {
                 int nalOffset = i + startCode;
@@ -3284,6 +3575,7 @@ public final class VideoStreamProbe {
         extractor.selectTrack(extractorTrackIndex);
         try {
             while (true) {
+                VideoStreamByteMarkers.throwIfCancelled();
                 long sampleTimeUs = extractor.getSampleTime();
                 if (sampleTimeUs < 0L) {
                     break;
@@ -3823,6 +4115,8 @@ public final class VideoStreamProbe {
         private boolean hasDtsAudio;
         private boolean hasTrueHdAudio;
         private boolean hasAtmosLikeAudio;
+        private boolean hasHdr10;
+        private boolean hasHdr10Plus;
         private int audioTrackCount;
 
         private boolean hasImmersiveOrCompressedAudio() {
@@ -3837,6 +4131,28 @@ public final class VideoStreamProbe {
             subtitleTrackCount = Math.max(0, subtitleTrackCount);
             audioTrackCount = Math.max(0, audioTrackCount);
             return this;
+        }
+    }
+
+    private static final class MatroskaVideoColorInfo {
+        private final boolean isHdr;
+        private final boolean isHdr10Plus;
+
+        private MatroskaVideoColorInfo(boolean isHdr, boolean isHdr10Plus) {
+            this.isHdr = isHdr;
+            this.isHdr10Plus = isHdr10Plus;
+        }
+    }
+
+    private static final class VideoSampleDynamicRange {
+        private boolean hasDolbyVision;
+        private boolean hasHdr10;
+        private boolean hasHdr10Plus;
+
+        private void clear() {
+            hasDolbyVision = false;
+            hasHdr10 = false;
+            hasHdr10Plus = false;
         }
     }
 

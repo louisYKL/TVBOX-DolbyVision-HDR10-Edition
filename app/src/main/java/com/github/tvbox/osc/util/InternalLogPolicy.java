@@ -9,6 +9,10 @@ public final class InternalLogPolicy {
     private InternalLogPolicy() {
     }
 
+    public static boolean shouldRecordLevel(String level) {
+        return "E".equals(level);
+    }
+
     public static boolean shouldRotate(long currentBytes, long incomingBytes) {
         return currentBytes > 0L && incomingBytes > 0L
                 && currentBytes + incomingBytes > MAX_FILE_BYTES;

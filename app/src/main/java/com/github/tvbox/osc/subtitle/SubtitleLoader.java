@@ -42,7 +42,7 @@ import okhttp3.Response;
 
 public class SubtitleLoader {
     private static final String TAG = SubtitleLoader.class.getSimpleName();
-    private static final int MAX_LOCAL_SUBTITLE_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_SUBTITLE_BYTES = 8 * 1024 * 1024;
 
     private SubtitleLoader() {
         throw new AssertionError("No instance for you.");
@@ -151,48 +151,54 @@ public class SubtitleLoader {
             referer = "https://secure.assrt.net/";
         }
         String ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.54 Safari/537.36";
-        Response response = OkGo.<String>get(remoteSubtitlePath.split("#")[0])
+        try (Response response = OkGo.<String>get(remoteSubtitlePath.split("#")[0])
                 .headers("Referer", referer)
                 .headers("User-Agent", ua)
-                .execute();
-        byte[] bytes = response.body().bytes();
-        UniversalDetector detector = new UniversalDetector(null);
-        detector.handleData(bytes, 0, bytes.length);
-        detector.dataEnd();
-        String encoding = detector.getDetectedCharset();
-        if (TextUtils.isEmpty(encoding)) encoding = "UTF-8";
-        String content = new String(bytes, encoding);
-        InputStream is = new ByteArrayInputStream(content.getBytes());
-        String filename = "";
-        String contentDispostion = response.header("content-disposition", "");
-        String[] cd = contentDispostion.split(";");
-        if (cd.length > 1) {
-            String filenameInfo = cd[1];
-            filenameInfo = filenameInfo.trim();
-            if (filenameInfo.startsWith("filename=")) {
-                filename = filenameInfo.replace("filename=", "");
-                filename = filename.replace("\"", "");
-            } else if (filenameInfo.startsWith("filename*=")) {
-                filename = filenameInfo.substring(filenameInfo.lastIndexOf("''")+2);
+                .execute()) {
+            if (response.body() == null) {
+                throw new IOException("Subtitle response is empty");
             }
-            filename = filename.trim();
-            filename = URLDecoder.decode(filename);
+            // A remote subtitle has the same memory budget as a local subtitle, including
+            // responses without Content-Length. Never materialize an unbounded response body.
+            byte[] bytes = readLimited(response.body().byteStream(), MAX_SUBTITLE_BYTES);
+            UniversalDetector detector = new UniversalDetector(null);
+            detector.handleData(bytes, 0, bytes.length);
+            detector.dataEnd();
+            String encoding = detector.getDetectedCharset();
+            if (TextUtils.isEmpty(encoding)) encoding = "UTF-8";
+            String content = new String(bytes, encoding);
+            InputStream is = new ByteArrayInputStream(content.getBytes());
+            String filename = "";
+            String contentDispostion = response.header("content-disposition", "");
+            String[] cd = contentDispostion.split(";");
+            if (cd.length > 1) {
+                String filenameInfo = cd[1];
+                filenameInfo = filenameInfo.trim();
+                if (filenameInfo.startsWith("filename=")) {
+                    filename = filenameInfo.replace("filename=", "");
+                    filename = filename.replace("\"", "");
+                } else if (filenameInfo.startsWith("filename*=")) {
+                    filename = filenameInfo.substring(filenameInfo.lastIndexOf("''")+2);
+                }
+                filename = filename.trim();
+                filename = URLDecoder.decode(filename);
+            }
+            String filePath = filename;
+            if (filename == null || filename.length() < 1) {
+                Uri uri = Uri.parse(remoteSubtitlePath);
+                filePath = uri.getPath();
+            }
+            if (!filePath.contains(".") && remoteSubtitlePath.contains("#")) {
+                filePath = remoteSubtitlePath.split("#")[1];
+                filePath = URLDecoder.decode(filePath);
+            }
+            SubtitleLoadSuccessResult subtitleLoadSuccessResult = new SubtitleLoadSuccessResult();
+            subtitleLoadSuccessResult.timedTextObject = loadAndParse(is, filePath);
+            subtitleLoadSuccessResult.fileName = filePath;
+            subtitleLoadSuccessResult.content = content;
+            subtitleLoadSuccessResult.subtitlePath = remoteSubtitlePath;
+            return subtitleLoadSuccessResult;
         }
-        String filePath = filename;
-        if (filename == null || filename.length() < 1) {
-            Uri uri = Uri.parse(remoteSubtitlePath);
-            filePath = uri.getPath();
-        }
-        if (!filePath.contains(".") && remoteSubtitlePath.contains("#")) {
-            filePath = remoteSubtitlePath.split("#")[1];
-            filePath = URLDecoder.decode(filePath);
-        }
-        SubtitleLoadSuccessResult subtitleLoadSuccessResult = new SubtitleLoadSuccessResult();
-        subtitleLoadSuccessResult.timedTextObject = loadAndParse(is, filePath);
-        subtitleLoadSuccessResult.fileName = filePath;
-        subtitleLoadSuccessResult.content = content;
-        subtitleLoadSuccessResult.subtitlePath = remoteSubtitlePath;
-        return subtitleLoadSuccessResult;
     }
 
     private static SubtitleLoadSuccessResult loadFromLocal(final String localSubtitlePath)
@@ -208,7 +214,7 @@ public class SubtitleLoader {
         }
         byte[] bytes;
         try (InputStream stream = new BufferedInputStream(new FileInputStream(file))) {
-            bytes = readLimited(stream, MAX_LOCAL_SUBTITLE_BYTES);
+            bytes = readLimited(stream, MAX_SUBTITLE_BYTES);
         }
         return createLocalResult(bytes, localSubtitlePath, file.getName());
     }
@@ -221,7 +227,7 @@ public class SubtitleLoader {
             if (stream == null) {
                 throw new IOException("Unable to open selected subtitle");
             }
-            return createLocalResult(readLimited(stream, MAX_LOCAL_SUBTITLE_BYTES), value, displayName);
+            return createLocalResult(readLimited(stream, MAX_SUBTITLE_BYTES), value, displayName);
         }
     }
 
@@ -315,7 +321,7 @@ public class SubtitleLoader {
                 continue;
             }
         }
-        return null;
+        throw new FatalParsingException("Unsupported or unreadable subtitle format: " + fileName);
     }
 
     private static byte[] readAllBytes(InputStream inputStream) throws IOException {

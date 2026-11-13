@@ -17,5 +17,8 @@ public interface DataReceiver {
     void onApiReceived(String url, String liveUrl);
     void onApiReceived(String url, String liveUrl, boolean hasVodChange, boolean hasLiveChange);
 
+    /** Returns true only after the targeted native input was filled, without saving it. */
+    boolean onInputFieldReceived(RemoteInputRequest request);
+
     void onPushReceived(String url);
 }

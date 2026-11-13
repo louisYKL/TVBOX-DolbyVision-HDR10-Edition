@@ -61,13 +61,25 @@ final class RealtimeNetworkSpeedMeter implements TransferListener {
             return;
         }
         synchronized (this) {
-            if (activeNetworkTransfers++ == 0) {
-                sampleStartMs = clock.elapsedRealtime();
+            activeNetworkTransfers++;
+            long now = clock.elapsedRealtime();
+            if (sampleStartMs == TIME_UNSET
+                    || (lastDataSampleAtMs != TIME_UNSET
+                    && now - lastDataSampleAtMs > STALE_AFTER_MS)) {
+                sampleStartMs = now;
                 sampleStartBytes = totalNetworkBytes.get();
                 latestBytesPerSecond = 0L;
                 lastDataSampleAtMs = TIME_UNSET;
             }
         }
+    }
+
+    synchronized void resetRate() {
+        sampleStartMs = TIME_UNSET;
+        sampleStartBytes = totalNetworkBytes.get();
+        latestBytesPerSecond = 0L;
+        lastDataSampleAtMs = TIME_UNSET;
+        activeNetworkTransfers = 0;
     }
 
     @Override
@@ -110,6 +122,15 @@ final class RealtimeNetworkSpeedMeter implements TransferListener {
         }
         long elapsedMs = now - sampleStartMs;
         if (elapsedMs < SAMPLE_INTERVAL_MS) {
+            // A completed Range window can arrive faster than the 250 ms sample period. Expose
+            // a conservative provisional rate instead of returning 0 during that first poll;
+            // the next normal sample replaces it with the exact window rate.
+            if (latestBytesPerSecond <= 0L) {
+                long transferredBytes = Math.max(0L, totalNetworkBytes.get() - sampleStartBytes);
+                if (transferredBytes > 0L) {
+                    return bytesPerSecond(transferredBytes, Math.max(100L, elapsedMs));
+                }
+            }
             return latestBytesPerSecond;
         }
         long currentBytes = totalNetworkBytes.get();
@@ -124,6 +145,10 @@ final class RealtimeNetworkSpeedMeter implements TransferListener {
         sampleStartMs = now;
         sampleStartBytes = currentBytes;
         return latestBytesPerSecond;
+    }
+
+    long getTotalNetworkBytes() {
+        return totalNetworkBytes.get();
     }
 
     private static long bytesPerSecond(long bytes, long elapsedMs) {

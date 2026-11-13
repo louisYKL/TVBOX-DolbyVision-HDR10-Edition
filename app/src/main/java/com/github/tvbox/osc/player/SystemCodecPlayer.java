@@ -32,6 +32,7 @@ import com.google.android.exoplayer2.Player;
 import com.google.android.exoplayer2.Renderer;
 import com.google.android.exoplayer2.SeekParameters;
 import com.google.android.exoplayer2.SimpleExoPlayer;
+import com.google.android.exoplayer2.Timeline;
 import com.google.android.exoplayer2.Tracks;
 import com.google.android.exoplayer2.analytics.AnalyticsListener;
 import com.google.android.exoplayer2.audio.AudioCapabilities;
@@ -43,6 +44,7 @@ import com.google.android.exoplayer2.ExoPlaybackException;
 import com.google.android.exoplayer2.decoder.DecoderCounters;
 import com.google.android.exoplayer2.decoder.DecoderInputBuffer;
 import com.google.android.exoplayer2.decoder.DecoderReuseEvaluation;
+import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory;
 import com.google.android.exoplayer2.ext.ffmpeg.FfmpegLibrary;
 import com.google.android.exoplayer2.mediacodec.MediaCodecAdapter;
 import com.google.android.exoplayer2.mediacodec.MediaCodecInfo;
@@ -67,12 +69,14 @@ import com.google.android.exoplayer2.video.VideoRendererEventListener;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import xyz.doikki.videoplayer.player.AbstractPlayer;
 
@@ -84,6 +88,21 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private static final String TAG = "SystemCodecPlayer";
     private final Context appContext;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    // Subtitle lookup runs on its own HandlerThread. ExoPlayer getters are confined to
+    // the application looper, so expose a small clock snapshot instead of querying Exo
+    // from that worker (which throws and used to stop external subtitle refresh).
+    private volatile long subtitleClockPositionMs;
+    private volatile long subtitleClockDurationMs;
+    private final Runnable subtitleClockPoll = new Runnable() {
+        @Override
+        public void run() {
+            if (released || player == null) {
+                return;
+            }
+            refreshSubtitleClock();
+            mainHandler.postDelayed(this, 100L);
+        }
+    };
     private final LinkedHashMap<Integer, TrackSelectionTarget> audioTargets = new LinkedHashMap<>();
     private final LinkedHashMap<Integer, TrackSelectionTarget> subtitleTargets = new LinkedHashMap<>();
 
@@ -94,19 +113,46 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private DefaultBandwidthMeter bandwidthMeter;
     private RealtimeNetworkSpeedMeter networkSpeedMeter;
     private DefaultAllocator allocator;
+    private SystemCodecLoadControl loadControl;
+    private volatile boolean currentSourceRangeBacked;
     private Surface surface;
     private SurfaceHolder surfaceHolder;
     private Surface boundSurface;
     private String dataSource;
     private Map<String, String> requestHeaders = Collections.emptyMap();
+    // Probe headers are internal (removed before network requests) but carry reliable dynamic
+    // range evidence into vendor MediaCodec implementations that drop ExoPlayer ColorInfo.
+    private boolean sourceHdr10Hint;
+    private boolean sourceHdr10PlusHint;
+    private boolean sourceDolbyVisionHint;
     private boolean prepared;
-    private boolean released;
+    // Release can be requested from a Surface callback while ExoPlayer is dispatching a
+    // playback callback. Volatile visibility prevents a stale callback from touching a torn
+    // down player and turning a normal Activity transition into a crash.
+    private volatile boolean released;
     private boolean firstFrameRendered;
     private boolean renderingStartNotified;
     private boolean selectedVideoTrackPresent;
     private boolean selectedAudioTrackPresent;
     private boolean bufferingNotified;
     private boolean startRequested;
+    private long lastPerformanceErrorAtMs;
+    private long droppedVideoFrames;
+    private long audioUnderruns;
+    private long lastBufferStallAhead = -1L;
+    private long lastBufferStallProgressAt;
+    private long lastBufferStallStallErrorAt;
+    private final ArrayDeque<BufferEventSnapshot> recentBufferEvents = new ArrayDeque<>();
+    private long lastRebufferErrorAt;
+    private int rebufferEpisodes;
+    private static final long BUFFER_STALL_POLL_MS = 250L;
+    private static final long BUFFER_STALL_ERROR_MS = 8_000L;
+    private final Runnable bufferStallPoll = new Runnable() {
+        @Override
+        public void run() {
+            checkBufferStall();
+        }
+    };
     private long firstFramePositionMs = C.TIME_UNSET;
     private long lastObservedPositionMs = C.TIME_UNSET;
     private int renderingStartPollCount;
@@ -115,9 +161,17 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private boolean passthroughVolumeLocked;
     private long pendingInitialSeekMs = C.TIME_UNSET;
     private long pendingSeekCompleteMs = C.TIME_UNSET;
+    // ExoPlayer can report position 0 until the first frame even when the source was opened at
+    // a saved position. Keep that target for a transient source retry so the replacement range
+    // starts at the same point instead of silently restarting from byte/time zero.
+    private long initialResumePositionMs = C.TIME_UNSET;
     private int seekGeneration;
     private int bufferProgressTargetBytes;
-    private int bufferingStartAllocatedBytes;
+    private volatile int bufferingStartAllocatedBytes;
+    private volatile long bufferingStartTransferredBytes;
+    // LoadControl runs on ExoPlayer's playback thread, while Player getters are main-thread
+    // confined. Keep the end-of-media decision as a main-thread snapshot.
+    private final AtomicBoolean bufferedToEndSnapshot = new AtomicBoolean(false);
     // Transient source errors (HttpDataSourceException etc.) from the slow local network-disk
     // proxy (6677 quark/baidu spider) are retried in-place a few times before giving up, so a
     // momentary proxy stall/reconnect does not turn into a permanent black screen. Retry resumes
@@ -128,10 +182,10 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     // watchdog remains the terminal guard, while a continuously slow/large file is allowed to
     // stream for as long as bytes keep arriving.
     private static final int HTTP_CONNECT_TIMEOUT_MS = 20_000;
-    // 6677 serves chunked Range entities from a remote drive. A 15-second inactivity cutoff
-    // aborts valid slow windows before the next bytes arrive and presents as a permanent 0 B/s
-    // source. The outer buffering watchdog still bounds a genuinely dead playback attempt.
-    private static final int HTTP_READ_TIMEOUT_MS = 60_000;
+    // This is an inactivity timeout for one HTTP body read, not a total playback timeout. A
+    // stalled WebDAV/proxy connection is retried, while a slow but continuously transferring
+    // large file may keep playing for as long as it needs.
+    private static final int HTTP_READ_TIMEOUT_MS = 30_000;
     private static final String HTTP_USER_AGENT = "TVBox-SystemCodec/0.2.7";
     private TrackInfo lastTrackInfo = new TrackInfo();
     private SubtitleTextListener subtitleTextListener;
@@ -139,9 +193,14 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private RuntimeVideoModeListener runtimeVideoModeListener;
     private boolean lastRuntimeHdr;
     private boolean lastRuntimeDolbyVision;
+    private boolean runtimeVideoFormatSeen;
+    private boolean runtimeVideoModeDispatched;
+    private boolean lastDispatchedRuntimeHdr;
+    private boolean lastDispatchedRuntimeDolbyVision;
     private boolean nativeDolbyVisionCapable;
     private String lastRuntimeOutputMode = "sdr";
     private String lastRuntimeReason = "init";
+    private String playbackErrorMessage;
 
     public SystemCodecPlayer(Context context) {
         appContext = context.getApplicationContext();
@@ -178,29 +237,47 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 HTTP_CONNECT_TIMEOUT_MS,
                 HTTP_READ_TIMEOUT_MS);
         loopbackRangeFactory.setDefaultRequestHeaders(requestHeaders);
-        DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(appContext, loopbackRangeFactory)
-                .setTransferListener(networkSpeedMeter);
-        DefaultMediaSourceFactory mediaSourceFactory = new DefaultMediaSourceFactory(dataSourceFactory);
+        // In this ExoPlayer version the two-argument constructor uses the supplied factory for
+        // HTTP/HTTPS as well as the other supported schemes. Keep the Range adapter as the base
+        // factory so VOD/WebDAV requests use the contiguous cache; the one-argument builder API
+        // is not available in the bundled 2.19.1 classes.
+        DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(appContext,
+                loopbackRangeFactory).setTransferListener(networkSpeedMeter);
+        final LoopbackRangeDataSource.Factory rangeFactory = loopbackRangeFactory;
+        DefaultMediaSourceFactory mediaSourceFactory = new DefaultMediaSourceFactory(
+                dataSourceFactory,
+                new RangeAwareExtractorsFactory(new DefaultExtractorsFactory(), (position, timeUs) -> {
+                    bufferedToEndSnapshot.set(false);
+                    rangeFactory.onExtractorSeekStarted(position, timeUs);
+                    mainHandler.post(() -> {
+                        if (loopbackRangeFactory == rangeFactory) {
+                            recordBufferEvent("extractor-seek byte=" + position + " timeUs=" + timeUs);
+                            checkBufferStall();
+                        }
+                    });
+                }, rangeFactory::onSeekMapResolved));
 
         ActivityManager activityManager = (ActivityManager) appContext.getSystemService(Context.ACTIVITY_SERVICE);
         int memoryClassMb = activityManager == null ? 256 : activityManager.getMemoryClass();
         int targetBufferBytes = SystemCodecBufferPolicy.targetBufferBytes(memoryClassMb);
         allocator = new DefaultAllocator(true, C.DEFAULT_BUFFER_SEGMENT_SIZE);
         bufferProgressTargetBytes = SystemCodecBufferPolicy.bufferProgressTargetBytes(memoryClassMb);
-        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setAllocator(allocator)
-                .setBufferDurationsMs(
-                        SystemCodecBufferPolicy.MIN_BUFFER_MS,
-                        SystemCodecBufferPolicy.MAX_BUFFER_MS,
-                        SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS,
-                        SystemCodecBufferPolicy.REBUFFER_MS)
-                .setTargetBufferBytes(targetBufferBytes)
-                // Cap allocator growth on low-memory devices. Large media stays range-streamed;
-                // this bounded sample queue is independent of total file size.
-                .setPrioritizeTimeOverSizeThresholds(
-                        SystemCodecBufferPolicy.PRIORITIZE_TIME_OVER_SIZE_THRESHOLDS)
-                .setBackBuffer(SystemCodecBufferPolicy.BACK_BUFFER_MS, true)
-                .build();
+        loadControl = new SystemCodecLoadControl(
+                allocator,
+                SystemCodecBufferPolicy.MIN_BUFFER_MS,
+                SystemCodecBufferPolicy.MAX_BUFFER_MS,
+                SystemCodecBufferPolicy.MIN_BUFFER_BYTES,
+                targetBufferBytes,
+                true,
+                requiredBytes -> {
+                    // Allocator bytes are segment capacity, not verified media bytes. The
+                    // session's contiguous Range runway is the startup/seek byte evidence.
+                    return currentSourceRangeBacked
+                            && loopbackRangeFactory != null
+                            && (loopbackRangeFactory.hasRequiredBuffer(requiredBytes)
+                            || loopbackRangeFactory.hasWholeFileBuffered());
+                },
+                () -> bufferedToEndSnapshot.get());
 
         try {
             nativeDolbyVisionCapable = com.github.tvbox.osc.util.HdrDeviceSupport
@@ -209,12 +286,13 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             nativeDolbyVisionCapable = false;
         }
         SystemCodecRenderersFactory renderersFactory = new SystemCodecRenderersFactory(
-                appContext, nativeDolbyVisionCapable);
+                appContext, nativeDolbyVisionCapable, this);
         player = new SimpleExoPlayer.Builder(appContext, renderersFactory)
                 .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
                 .setBandwidthMeter(bandwidthMeter)
+                .setLooper(Looper.getMainLooper())
                 // PREVIOUS_SYNC (not CLOSEST_SYNC): resuming to a saved position seeks to the
                 // keyframe at/before the target instead of the nearest one. On a network-drive
                 // proxy serving a huge REMUX, this needs less forward reading from a random byte
@@ -223,6 +301,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 .setReleaseTimeoutMs(750L)
                 .setDetachSurfaceTimeoutMs(750L)
                 .build();
+        mainHandler.removeCallbacks(subtitleClockPoll);
+        mainHandler.post(subtitleClockPoll);
         player.setAudioAttributes(new com.google.android.exoplayer2.audio.AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
@@ -244,16 +324,82 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         }
         player.addListener(new Player.Listener() {
             @Override
+            public void onTimelineChanged(Timeline timeline, int reason) {
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    mainHandler.post(() -> onTimelineChanged(timeline, reason));
+                    return;
+                }
+                if (loadControl != null) {
+                    // Progressive HTTP/WebDAV VOD can expose a temporary dynamic timeline
+                    // while its length/index is still being resolved. The URL policy is the
+                    // authoritative live-vs-VOD decision for our byte-gated Range source;
+                    // otherwise the initial playWhenReady=false gate can be left paused
+                    // forever after this callback.
+                    boolean timelineDynamic = isLiveOrDynamicTimeline(timeline);
+                    boolean liveOrDynamic = isLiveOrDynamicSourceUrl(dataSource)
+                            || (timelineDynamic && !currentSourceRangeBacked);
+                    loadControl.setLiveOrDynamicSource(liveOrDynamic);
+                    if (startRequested) {
+                        if (liveOrDynamic) {
+                            mainHandler.removeCallbacks(bufferStallPoll);
+                        } else {
+                            scheduleBufferStallPoll();
+                        }
+                    }
+                }
+                updateBufferedToEndSnapshot();
+            }
+
+            @Override
+            public void onIsLoadingChanged(boolean isLoading) {
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    mainHandler.post(() -> onIsLoadingChanged(isLoading));
+                    return;
+                }
+                updateBufferedToEndSnapshot();
+                recordBufferEvent("loading=" + isLoading);
+                if (startRequested) {
+                    checkBufferStall();
+                }
+            }
+
+            @Override
+            public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                // Output intent is applied by applyPlayIntent using the same byte evidence as
+                // LoadControl. Never derive readiness from this asynchronous notification.
+            }
+
+            @Override
             public void onPlaybackStateChanged(int state) {
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    mainHandler.post(() -> onPlaybackStateChanged(state));
+                    return;
+                }
                 logPlaybackState("state", state);
+                updateBufferedToEndSnapshot();
                 handlePlaybackStateChanged(state);
+                // Vendor Exo builds can enter READY/BUFFERING while the byte-gated source is
+                // being handed off. Re-evaluate on the callback itself so a delayed or removed
+                // poll cannot leave a validly buffered source paused at 100%.
+                if (startRequested) {
+                    checkBufferStall();
+                }
             }
 
             @Override
             public void onIsPlayingChanged(boolean isPlaying) {
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    mainHandler.post(() -> onIsPlayingChanged(isPlaying));
+                    return;
+                }
+                updateBufferedToEndSnapshot();
                 logPlaybackState("is-playing=" + isPlaying,
                         player == null ? Player.STATE_IDLE : player.getPlaybackState());
-                if (!released && isPlaying) {
+                if (!released && isPlaying
+                        && (!isByteGatedVod() || loadControl.hasRequiredBufferNow())) {
+                    if (isByteGatedVod() && loopbackRangeFactory != null) {
+                        loopbackRangeFactory.onPlaybackOutputResumed();
+                    }
                     maybeNotifyRenderingStart("is-playing");
                     if (renderingStartNotified) {
                         notifyBufferingEnd();
@@ -263,9 +409,26 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
 
             @Override
             public void onPlayerError(PlaybackException error) {
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    // Some vendor ExoPlayer builds dispatch this callback from the playback
+                    // thread despite the main Looper supplied to the builder. Error recovery
+                    // reads position/state and must therefore never run on that thread.
+                    mainHandler.post(() -> onPlayerError(error));
+                    return;
+                }
+                if (released || playbackErrorMessage != null) {
+                    return;
+                }
+                if (handlePlaybackCacheError()) {
+                    return;
+                }
                 log("echo-system-codec error code=" + error.errorCode
                         + " message=" + error.getMessage()
                         + " cause=" + describeThrowable(error.getCause()));
+                // Keep the full cause chain in the app log. Vendor ExoPlayer wraps renderer and
+                // thread-affinity failures in PlaybackException; the short cause summary alone
+                // is not enough to identify which callback accessed the Player.
+                log("echo-system-codec error-stack=" + Log.getStackTraceString(error));
                 if (tryRetryTransientSourceError(error)) {
                     return;
                 }
@@ -280,6 +443,10 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
 
             @Override
             public void onRenderedFirstFrame() {
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    mainHandler.post(this::onRenderedFirstFrame);
+                    return;
+                }
                 firstFrameRendered = true;
                 firstFramePositionMs = player == null ? C.TIME_UNSET : player.getCurrentPosition();
                 lastObservedPositionMs = firstFramePositionMs;
@@ -293,6 +460,10 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
 
             @Override
             public void onTracksChanged(Tracks tracks) {
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    mainHandler.post(() -> onTracksChanged(tracks));
+                    return;
+                }
                 rebuildTrackInfo(tracks);
                 maybeNotifyRenderingStart("tracks-changed");
             }
@@ -314,6 +485,27 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             }
         });
         player.addAnalyticsListener(new AnalyticsListener() {
+            @Override
+            public void onDroppedVideoFrames(EventTime eventTime, int droppedFrames,
+                                              long elapsedMs) {
+                runOnMain(() -> {
+                    droppedVideoFrames += Math.max(0, droppedFrames);
+                    reportPlaybackPerformanceError("dropped-video-frames",
+                            " dropped=" + droppedFrames + " elapsedMs=" + elapsedMs);
+                });
+            }
+
+            @Override
+            public void onAudioUnderrun(EventTime eventTime, int bufferSize,
+                                         long bufferSizeMs, long elapsedSinceLastFeedMs) {
+                runOnMain(() -> {
+                    audioUnderruns++;
+                    reportPlaybackPerformanceError("audio-underrun",
+                            " audioBufferBytes=" + bufferSize + " audioBufferMs=" + bufferSizeMs
+                                    + " sinceLastFeedMs=" + elapsedSinceLastFeedMs);
+                });
+            }
+
             @Override
             public void onVideoDecoderInitialized(EventTime eventTime,
                                                   String decoderName,
@@ -338,16 +530,30 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     public void setDataSource(String path, Map<String, String> headers) {
         PlaybackUrlNormalizer.UrlWithHeaders parsed = PlaybackUrlNormalizer.splitUrlAndHeaders(path, headers);
         dataSource = PlaybackUrlNormalizer.normalizeHttpUrl(parsed.url);
+        currentSourceRangeBacked = LoopbackRangeDataSource.shouldHandleVodUrl(dataSource);
+        if (loopbackRangeFactory != null) {
+            loopbackRangeFactory.resetPlaybackBufferSnapshot();
+        }
         passthroughVolumeLocked = hasHeaderValue(parsed.headers, "X-TVBox-Probe-AudioPassthrough", "1");
+        sourceHdr10Hint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-Hdr10", "1");
+        sourceHdr10PlusHint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-Hdr10Plus", "1");
+        sourceDolbyVisionHint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-DolbyVision", "1");
         requestHeaders = sanitizeRequestHeaders(parsed.headers);
+        if (networkSpeedMeter != null) {
+            networkSpeedMeter.resetRate();
+        }
         // A new source gets a fresh transient-error budget. Retry prepares do not call
         // setDataSource, so they keep the same bounded budget for this source session.
         sourceRetryCount = 0;
+        initialResumePositionMs = C.TIME_UNSET;
         resetPlaybackFlags();
         enforceExternalPcmVolume();
         log("echo-system-codec source network=" + isNetworkSource(dataSource)
                 + " headers=" + requestHeaders.size()
-                + " passthroughVolume=" + passthroughVolumeLocked);
+                + " passthroughVolume=" + passthroughVolumeLocked
+                + " hdrHint=" + sourceHdr10Hint
+                + " hdr10PlusHint=" + sourceHdr10PlusHint
+                + " dvHint=" + sourceDolbyVisionHint);
     }
 
     @Override
@@ -361,12 +567,14 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             return;
         }
         startRequested = true;
-        player.setPlayWhenReady(true);
+        applyPlayIntent();
+        scheduleBufferStallPoll();
     }
 
     @Override
     public void pause() {
         startRequested = false;
+        mainHandler.removeCallbacks(bufferStallPoll);
         if (player != null && !released) {
             player.setPlayWhenReady(false);
         }
@@ -396,13 +604,14 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             long initialPositionMs = pendingInitialSeekMs;
             resetPlaybackFlags();
             pendingInitialSeekMs = initialPositionMs;
+            if (initialPositionMs > 0L) {
+                initialResumePositionMs = initialPositionMs;
+            }
             startRequested = true;
+            configureSourceBufferPolicy();
             httpFactory.setDefaultRequestProperties(requestHeaders);
             loopbackRangeFactory.setDefaultRequestHeaders(requestHeaders);
-            // Let ExoPlayer's LoadControl own the startup gate. Keeping playWhenReady=false
-            // makes a paused player report READY before the configured playback buffer is met,
-            // which deadlocks an additional application-level buffer gate on some TV firmware.
-            player.setPlayWhenReady(true);
+            applyPlayIntent();
             player.clearMediaItems();
             MediaItem.Builder mediaItemBuilder = new MediaItem.Builder().setUri(Uri.parse(dataSource));
             String mimeType = resolveMediaItemMimeType(dataSource);
@@ -410,12 +619,19 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 mediaItemBuilder.setMimeType(mimeType);
             }
             pendingInitialSeekMs = C.TIME_UNSET;
+            loopbackRangeFactory.setInitialResumePosition(Math.max(0L, initialPositionMs));
             if (initialPositionMs > 0L) {
+                // ExoPlayer creates the Range DataSource after setMediaItem(), and may replace
+                // it while probing a resumed stream. Mark the factory first so every replacement
+                // treats its first decoder read as the new playback anchor.
                 player.setMediaItem(mediaItemBuilder.build(), initialPositionMs);
             } else {
                 player.setMediaItem(mediaItemBuilder.build());
             }
             player.prepare();
+            if (isByteGatedVod()) {
+                scheduleBufferStallPoll();
+            }
             notifyBufferingStart();
             log("echo-system-codec prepare mime=" + (TextUtils.isEmpty(mimeType) ? "auto" : mimeType)
                     + " initialPositionMs=" + Math.max(0L, initialPositionMs));
@@ -441,6 +657,14 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     }
 
     @Override
+    public boolean isStartPending() {
+        SimpleExoPlayer current = player;
+        return current != null && !released && startRequested
+                && (current.getPlaybackState() == Player.STATE_BUFFERING
+                || (isByteGatedVod() && !loadControl.hasRequiredBufferNow()));
+    }
+
+    @Override
     public void seekTo(long time) {
         if (player == null || released) {
             return;
@@ -450,10 +674,32 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             pendingInitialSeekMs = safeTime;
             return;
         }
+        if (safeTime == player.getCurrentPosition()) {
+            // Exo can acknowledge an unchanged position without touching the source. There
+            // is no new byte episode to wait for in that case.
+            notifySeekComplete(safeTime);
+            return;
+        }
         pendingSeekCompleteMs = safeTime;
         int generation = ++seekGeneration;
+        if (loopbackRangeFactory != null) {
+            bufferedToEndSnapshot.set(false);
+            loopbackRangeFactory.onPlaybackSeekStarted(safeTime);
+        }
+        // A seek starts a new HTTP Range episode. Reset the meter so the overlay reports the
+        // current seek transfer instead of a stale pre-seek sample (or a zero left by a quiet
+        // interval between two Range requests).
+        if (networkSpeedMeter != null) {
+            networkSpeedMeter.resetRate();
+        }
+        if (isByteGatedVod()) {
+            applyPlayIntent();
+            scheduleBufferStallPoll();
+        }
+        resetBufferingReadinessBaseline();
         notifyBufferingStart();
         player.seekTo(safeTime);
+        refreshSubtitleClock();
         mainHandler.postDelayed(() -> completePendingSeekIfReady(generation), 75L);
     }
 
@@ -467,16 +713,39 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     }
 
     @Override
-    public void release() {
+    public synchronized void release() {
+        // Surface callbacks and error recovery can race with Activity teardown on vendor
+        // firmware. Make release idempotent and never let a codec teardown exception escape
+        // into the UI thread (which otherwise appears as a random return to the home screen).
+        if (released && player == null) {
+            return;
+        }
         released = true;
-        if (player != null) {
+        mainHandler.removeCallbacks(bufferStallPoll);
+        mainHandler.removeCallbacks(subtitleClockPoll);
+        if (loopbackRangeFactory != null) {
+            try {
+                // Wake a loader waiting on HTTP before waiting for Exo's release message.
+                // The reverse order needlessly hits Exo's release timeout on source switches
+                // and lets the old download/cache overlap the replacement player.
+                loopbackRangeFactory.release();
+            } catch (Throwable throwable) {
+                log("echo-system-codec range-release-failed " + describeThrowable(throwable));
+            }
+        }
+        SimpleExoPlayer playerToRelease = player;
+        if (playerToRelease != null) {
             try {
                 clearBoundVideoOutput();
             } catch (Throwable ignored) {
             }
-            player.release();
-            player = null;
+            try {
+                playerToRelease.release();
+            } catch (Throwable throwable) {
+                log("echo-system-codec release-failed " + describeThrowable(throwable));
+            }
         }
+        player = null;
         trackSelector = null;
         httpFactory = null;
         loopbackRangeFactory = null;
@@ -492,16 +761,36 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
 
     @Override
     public long getCurrentPosition() {
-        return player == null ? 0L : Math.max(0L, player.getCurrentPosition());
+        if (released) {
+            return 0L;
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            refreshSubtitleClock();
+        }
+        return subtitleClockPositionMs;
     }
 
     @Override
     public long getDuration() {
-        if (player == null) {
+        if (released) {
             return 0L;
         }
-        long duration = player.getDuration();
-        return duration == C.TIME_UNSET ? 0L : Math.max(0L, duration);
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            refreshSubtitleClock();
+        }
+        return subtitleClockDurationMs;
+    }
+
+    private void refreshSubtitleClock() {
+        SimpleExoPlayer current = player;
+        if (current == null || released) {
+            subtitleClockPositionMs = 0L;
+            subtitleClockDurationMs = 0L;
+            return;
+        }
+        subtitleClockPositionMs = Math.max(0L, current.getCurrentPosition());
+        long duration = current.getDuration();
+        subtitleClockDurationMs = duration == C.TIME_UNSET ? 0L : Math.max(0L, duration);
     }
 
     @Override
@@ -510,29 +799,29 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         if (current == null) {
             return 0;
         }
-        if (current.getPlaybackState() == Player.STATE_BUFFERING) {
-            long bufferedDurationMs = Math.max(0L, current.getBufferedPosition()
-                    - current.getCurrentPosition());
-            long allocatedDeltaBytes = allocator == null ? 0L
-                    : Math.max(0L, (long) allocator.getTotalBytesAllocated()
-                    - bufferingStartAllocatedBytes);
-            // The direct 6677 DataSource commits bytes into its Range window before ExoPlayer's
-            // allocator accounts for the corresponding load chunk. Include that
-            // real forward cache so a healthy source does not display "0%" while its body is
-            // already available to the decoder. This is a data-source snapshot, never a speed
-            // or elapsed-time estimate, and the normal HTTP path remains unchanged.
-            long committedRangeBytes = loopbackRangeFactory == null
-                    ? 0L : loopbackRangeFactory.getBufferedAheadBytes();
-            long bufferedBytes = Math.max(allocatedDeltaBytes, committedRangeBytes);
-            int requiredBufferMs = firstFrameRendered
-                    ? SystemCodecBufferPolicy.REBUFFER_MS
-                    : SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS;
-            return SystemCodecBufferPolicy.bufferingProgressPercent(
-                    bufferedDurationMs,
-                    requiredBufferMs,
-                    bufferedBytes,
-                    bufferProgressTargetBytes,
-                    false);
+        if (isByteGatedVod()) {
+            // Display arriving contiguous bytes; only committed bytes can release LoadControl.
+            // The media session owns this cache across header/index/sample DataSource reopens.
+            long rangeCacheAheadBytes = loopbackRangeFactory.getBufferedAheadBytesForProgress();
+            // Verified bytes may already have moved into the sample queues. Keep that episode's
+            // byte proof when the extractor advances, rather than displaying a second 0-100 fill.
+            boolean bufferReady = loadControl != null && loadControl.hasRequiredBufferNow();
+            if (bufferReady) {
+                rangeCacheAheadBytes = Math.max(rangeCacheAheadBytes, bufferProgressTargetBytes);
+            }
+            boolean ready = bufferReady && (current.getPlaybackState() == Player.STATE_READY
+                    || current.getPlaybackState() == Player.STATE_ENDED);
+            long sourceTarget = loopbackRangeFactory.getPlaybackStartBufferTargetBytes();
+            long progressTarget = sourceTarget > 0L
+                    ? Math.min(bufferProgressTargetBytes, sourceTarget) : bufferProgressTargetBytes;
+            int rangePercent = SystemCodecBufferPolicy.bufferingProgressPercent(
+                    0L, 0L, rangeCacheAheadBytes, progressTarget, ready);
+            if (current.getPlaybackState() == Player.STATE_BUFFERING
+                    || rangePercent > 0
+                    || current.getPlaybackState() == Player.STATE_READY) {
+                return rangePercent;
+            }
+            return 0;
         }
         return Math.max(0, Math.min(100, current.getBufferedPercentage()));
     }
@@ -673,10 +962,19 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             return;
         }
         if (state == Player.STATE_BUFFERING) {
+            recordBufferEvent("state-buffering");
+            if (renderingStartNotified && pendingSeekCompleteMs == C.TIME_UNSET) {
+                reportRebufferError();
+                if (isByteGatedVod()) {
+                    bufferedToEndSnapshot.set(false);
+                    loopbackRangeFactory.onPlaybackRebufferStarted();
+                }
+            }
             notifyBufferingStart();
             return;
         }
         if (state == Player.STATE_READY) {
+            recordBufferEvent("state-ready");
             if (!prepared) {
                 prepared = true;
                 notifyPrepared();
@@ -699,11 +997,16 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
 
     private void completePendingSeekIfReady(int generation) {
         if (released || generation != seekGeneration || pendingSeekCompleteMs == C.TIME_UNSET
-                || player == null || player.getPlaybackState() != Player.STATE_READY) {
+                || player == null || player.getPlaybackState() != Player.STATE_READY
+                || (isByteGatedVod() && !loadControl.hasRequiredBufferNow())) {
             return;
         }
         long completedPosition = Math.max(0L, player.getCurrentPosition());
         pendingSeekCompleteMs = C.TIME_UNSET;
+        // A completed user seek supersedes the original saved resume point, including a seek
+        // back to exactly 0 ms. Keep a positive target for a possible retry before the native
+        // clock has advanced enough to expose it through getCurrentPosition().
+        initialResumePositionMs = completedPosition > 0L ? completedPosition : C.TIME_UNSET;
         notifySeekComplete(completedPosition);
         if (player.getPlayWhenReady()
                 && (player.isPlaying() || hasObservedPositionAdvance(player))) {
@@ -820,7 +1123,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 + " surface=" + describeBoundSurface());
     }
 
-    private String stateName(int state) {
+    private static String stateName(int state) {
         if (state == Player.STATE_IDLE) {
             return "idle";
         }
@@ -843,16 +1146,20 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         selectedVideoTrackPresent = false;
         selectedAudioTrackPresent = false;
         Format selectedVideoFormat = null;
+        boolean hasVideoTrack = false;
+        boolean hasMp3Track = false;
         if (tracks != null) {
             int audioId = 0;
             int subtitleId = 1000;
             for (Tracks.Group group : tracks.getGroups()) {
                 TrackGroup mediaGroup = group.getMediaTrackGroup();
                 int trackType = group.getType();
+                hasVideoTrack |= trackType == C.TRACK_TYPE_VIDEO;
                 for (int i = 0; i < mediaGroup.length; i++) {
                     Format format = mediaGroup.getFormat(i);
                     boolean selected = group.isTrackSelected(i);
                     if (trackType == C.TRACK_TYPE_AUDIO) {
+                        hasMp3Track |= MimeTypes.AUDIO_MPEG.equals(format.sampleMimeType);
                         TrackInfoBean bean = buildTrackBean("音轨", audioId++, format, selected, i, 0, 2);
                         info.addAudio(bean);
                         audioTargets.put(bean.trackId, new TrackSelectionTarget(mediaGroup, i));
@@ -867,6 +1174,11 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                     }
                 }
             }
+        }
+        if (!hasVideoTrack && hasMp3Track && loopbackRangeFactory != null && loadControl != null) {
+            loopbackRangeFactory.onMp3OnlySourceResolved();
+            loadControl.setSourcePolicy(false, false);
+            applyPlayIntent();
         }
         lastTrackInfo = info;
         updateRuntimeVideoMode(selectedVideoFormat, "tracks-changed");
@@ -978,13 +1290,47 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 sampleMimeType, codecs, metadataText);
         boolean hdrCodecMarker = SystemCodecHdrPolicy.hasExplicitHdrMarker(codecs)
                 || SystemCodecHdrPolicy.hasExplicitHdrMarker(metadataText);
-        lastRuntimeDolbyVision = dolbyVision;
         // Use the complete ExoPlayer Format as well as the explicit fields. On
         // several phone extractors PQ/HLG is present only in Format.toString(),
         // so relying on ColorInfo alone leaves HDR10/HDR10+ on the SDR path.
-        lastRuntimeHdr = SystemCodecHdrPolicy.isHdr(
+        boolean detectedHdr = SystemCodecHdrPolicy.isHdr(
                 sampleMimeType, codecs, colorInfo, metadataText)
                 || SystemCodecHdrPolicy.isHdr(format);
+        boolean explicitSdr = SystemCodecHdrPolicy.isExplicitSdr(format);
+        if (!detectedHdr && !dolbyVision) {
+            if (!explicitSdr) {
+                // Vendor extractors often expose HEVC/Main10 without ColorInfo even while the
+                // decoder and display have already entered HDR. Unknown must not erase the
+                // preflight/runtime HDR state or turn the corner badge back to SDR.
+                log("echo-system-codec video-format mime=" + sampleMimeType
+                        + " codecs=" + codecs
+                        + " colorTransfer=" + (colorInfo == null ? "none" : colorInfo.colorTransfer)
+                        + " colorSpace=" + (colorInfo == null ? "none" : colorInfo.colorSpace)
+                        + " hdrStatic=" + (colorInfo != null && colorInfo.hdrStaticInfo != null)
+                        + " hdrCodecMarker=" + hdrCodecMarker
+                        + " metadata=" + (TextUtils.isEmpty(metadataText) ? "none" : "present")
+                        + " -> dynamicRange=unknown (preserving output mode)");
+                return;
+            }
+            runtimeVideoFormatSeen = true;
+            lastRuntimeDolbyVision = false;
+            lastRuntimeHdr = false;
+            lastRuntimeOutputMode = "sdr";
+            lastRuntimeReason = reason;
+            log("echo-system-codec video-format mime=" + sampleMimeType
+                    + " codecs=" + codecs
+                    + " colorTransfer=" + (colorInfo == null ? "none" : colorInfo.colorTransfer)
+                    + " colorSpace=" + (colorInfo == null ? "none" : colorInfo.colorSpace)
+                    + " hdrStatic=" + (colorInfo != null && colorInfo.hdrStaticInfo != null)
+                    + " hdrCodecMarker=" + hdrCodecMarker
+                    + " metadata=" + (TextUtils.isEmpty(metadataText) ? "none" : "present")
+                    + " -> dynamicRange=sdr (explicit output metadata)");
+            dispatchRuntimeVideoModeIfNeeded(reason);
+            return;
+        }
+        runtimeVideoFormatSeen = true;
+        lastRuntimeDolbyVision = dolbyVision;
+        lastRuntimeHdr = detectedHdr || dolbyVision;
         lastRuntimeOutputMode = dolbyVision
                 ? (nativeDolbyVisionCapable ? "native-dv" : "dv-base-hdr")
                 : (lastRuntimeHdr ? "base-hdr" : "sdr");
@@ -1004,20 +1350,97 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         dispatchRuntimeVideoModeIfNeeded(reason);
     }
 
-    private void dispatchRuntimeVideoModeIfNeeded(String reason) {
-        if (runtimeVideoModeListener == null || (!lastRuntimeHdr && !lastRuntimeDolbyVision)) {
+    private void onCodecOutputFormatChanged(@Nullable Format inputFormat,
+                                            @Nullable MediaFormat outputFormat) {
+        // MediaCodec renderer callbacks are dispatched on ExoPlayer's playback thread, while
+        // the player-facing runtime-mode state is consumed by the main-looper UI. Keep all
+        // state mutation and listener dispatch on the same looper as the Player instance.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            final Format callbackInputFormat = inputFormat;
+            final MediaFormat callbackOutputFormat = outputFormat;
+            mainHandler.post(() -> onCodecOutputFormatChanged(callbackInputFormat,
+                    callbackOutputFormat));
             return;
         }
+        if (SystemCodecHdrPolicy.isHdr(outputFormat)) {
+            String mime = inputFormat == null ? "" : nullToEmpty(inputFormat.sampleMimeType);
+            String codecs = inputFormat == null ? "" : nullToEmpty(inputFormat.codecs);
+            boolean dolbyVision = SystemCodecHdrPolicy.isDolbyVision(mime, codecs,
+                    SystemCodecHdrPolicy.metadataText(inputFormat == null ? null : inputFormat.metadata));
+            lastRuntimeDolbyVision = dolbyVision;
+            lastRuntimeHdr = true;
+            lastRuntimeOutputMode = dolbyVision
+                    ? (nativeDolbyVisionCapable ? "native-dv" : "dv-base-hdr")
+                    : "base-hdr";
+            runtimeVideoFormatSeen = true;
+            lastRuntimeReason = "codec-output-format";
+            log("echo-system-codec codec-output-hdr mime=" + mime
+                    + " transfer=" + safeMediaFormatInteger(outputFormat, MediaFormat.KEY_COLOR_TRANSFER)
+                    + " standard=" + safeMediaFormatInteger(outputFormat, MediaFormat.KEY_COLOR_STANDARD)
+                    + " hdrStatic=" + hasMediaFormatValue(outputFormat, MediaFormat.KEY_HDR_STATIC_INFO)
+                    + " hdr10Plus=" + hasMediaFormatValue(outputFormat, "hdr10-plus-info"));
+            dispatchRuntimeVideoModeIfNeeded("codec-output-format");
+        } else if (SystemCodecHdrPolicy.isExplicitSdr(inputFormat, outputFormat)) {
+            lastRuntimeDolbyVision = false;
+            lastRuntimeHdr = false;
+            lastRuntimeOutputMode = "sdr";
+            runtimeVideoFormatSeen = true;
+            lastRuntimeReason = "codec-output-format";
+            log("echo-system-codec codec-output-sdr transfer="
+                    + safeMediaFormatInteger(outputFormat, MediaFormat.KEY_COLOR_TRANSFER)
+                    + " standard=" + safeMediaFormatInteger(outputFormat, MediaFormat.KEY_COLOR_STANDARD));
+            dispatchRuntimeVideoModeIfNeeded("codec-output-format");
+        }
+    }
+
+    private static int safeMediaFormatInteger(MediaFormat format, String key) {
+        try {
+            return format != null && format.containsKey(key) ? format.getInteger(key) : -1;
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
+    private static boolean hasMediaFormatValue(MediaFormat format, String key) {
+        if (format == null) {
+            return false;
+        }
+        try {
+            java.nio.ByteBuffer value = format.getByteBuffer(key);
+            return value != null && value.remaining() > 0;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private void dispatchRuntimeVideoModeIfNeeded(String reason) {
+        if (runtimeVideoModeListener == null || !runtimeVideoFormatSeen) {
+            return;
+        }
+        if (runtimeVideoModeDispatched
+                && lastDispatchedRuntimeHdr == lastRuntimeHdr
+                && lastDispatchedRuntimeDolbyVision == lastRuntimeDolbyVision) {
+            return;
+        }
+        runtimeVideoModeDispatched = true;
+        lastDispatchedRuntimeHdr = lastRuntimeHdr;
+        lastDispatchedRuntimeDolbyVision = lastRuntimeDolbyVision;
         final String callbackReason = TextUtils.isEmpty(reason) ? lastRuntimeReason : reason;
+        final boolean callbackHdr = lastRuntimeHdr;
+        final boolean callbackDolbyVision = lastRuntimeDolbyVision;
+        final String callbackOutputMode = lastRuntimeOutputMode;
         runOnMain(() -> {
             if (!released && runtimeVideoModeListener != null) {
-                runtimeVideoModeListener.onRuntimeVideoMode(lastRuntimeHdr, lastRuntimeDolbyVision,
-                        lastRuntimeOutputMode, callbackReason);
+                runtimeVideoModeListener.onRuntimeVideoMode(callbackHdr, callbackDolbyVision,
+                        callbackOutputMode, callbackReason);
             }
         });
     }
 
     private void resetPlaybackFlags() {
+        playbackErrorMessage = null;
+        subtitleClockPositionMs = 0L;
+        subtitleClockDurationMs = 0L;
         prepared = false;
         firstFrameRendered = false;
         renderingStartNotified = false;
@@ -1025,6 +1448,13 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         selectedAudioTrackPresent = false;
         bufferingNotified = false;
         startRequested = false;
+        mainHandler.removeCallbacks(bufferStallPoll);
+        lastBufferStallAhead = -1L;
+        lastBufferStallProgressAt = 0L;
+        lastBufferStallStallErrorAt = 0L;
+        recentBufferEvents.clear();
+        lastRebufferErrorAt = 0L;
+        rebufferEpisodes = 0;
         firstFramePositionMs = C.TIME_UNSET;
         lastObservedPositionMs = C.TIME_UNSET;
         renderingStartPollCount = 0;
@@ -1032,13 +1462,266 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         pendingSeekCompleteMs = C.TIME_UNSET;
         seekGeneration++;
         bufferingStartAllocatedBytes = allocator == null ? 0 : allocator.getTotalBytesAllocated();
+        bufferingStartTransferredBytes = networkSpeedMeter == null
+                ? 0L : networkSpeedMeter.getTotalNetworkBytes();
+        bufferedToEndSnapshot.set(false);
         audioTargets.clear();
         subtitleTargets.clear();
         lastTrackInfo = new TrackInfo();
         lastRuntimeHdr = false;
         lastRuntimeDolbyVision = false;
+        runtimeVideoFormatSeen = false;
+        runtimeVideoModeDispatched = false;
+        lastDispatchedRuntimeHdr = false;
+        lastDispatchedRuntimeDolbyVision = false;
         lastRuntimeOutputMode = "sdr";
         lastRuntimeReason = "init";
+    }
+
+    private boolean isByteGatedVod() {
+        return currentSourceRangeBacked
+                && loadControl != null
+                && loadControl.shouldWaitForByteBuffer()
+                && loopbackRangeFactory != null;
+    }
+
+    private void scheduleBufferStallPoll() {
+        if (released || !startRequested || !isByteGatedVod()) {
+            return;
+        }
+        mainHandler.removeCallbacks(bufferStallPoll);
+        mainHandler.postDelayed(bufferStallPoll, BUFFER_STALL_POLL_MS);
+    }
+
+    private void applyPlayIntent() {
+        SimpleExoPlayer current = player;
+        if (current == null || released) {
+            return;
+        }
+        // Exo can enter READY without calling LoadControl when its loader temporarily stops.
+        // Enforce the same readiness predicate at output as well; there is no second latch.
+        boolean waitingForBytes = isByteGatedVod() && !loadControl.hasRequiredBufferNow();
+        boolean play = startRequested && !waitingForBytes;
+        if (startRequested && waitingForBytes) {
+            // READY describes the sample queue, not our Range runway. Pausing output for
+            // this gate must keep the same visible buffering episode as native BUFFERING.
+            notifyBufferingStart();
+        }
+        if (current.getPlayWhenReady() != play) {
+            current.setPlayWhenReady(play);
+            recordBufferEvent("output-intent=" + play);
+        }
+    }
+
+    private void recordBufferEvent(String event) {
+        SimpleExoPlayer current = player;
+        if (released || current == null || !currentSourceRangeBacked) {
+            return;
+        }
+        // Loading can toggle several times per second on a high-bitrate remux. Retain only
+        // scalars here: formatting the full Range interval map on every toggle allocated
+        // diagnostic strings and acquired the cache monitor during healthy playback.
+        BufferEventSnapshot snapshot = recentBufferEvents.size() >= 8
+                ? recentBufferEvents.removeFirst() : new BufferEventSnapshot();
+        snapshot.timeMs = android.os.SystemClock.uptimeMillis();
+        snapshot.event = event;
+        snapshot.state = current.getPlaybackState();
+        snapshot.positionMs = current.getCurrentPosition();
+        snapshot.bufferedPositionMs = current.getBufferedPosition();
+        snapshot.sampleBufferMs = current.getTotalBufferedDuration();
+        snapshot.loading = current.isLoading();
+        snapshot.playWhenReady = current.getPlayWhenReady();
+        snapshot.allocatorBytes = allocator == null ? -1 : allocator.getTotalBytesAllocated();
+        snapshot.heapUsedBytes = Runtime.getRuntime().totalMemory()
+                - Runtime.getRuntime().freeMemory();
+        snapshot.speedBytesPerSecond = getTcpSpeed();
+        snapshot.rangeAheadBytes = loopbackRangeFactory == null
+                ? -1L : loopbackRangeFactory.getBufferedAheadBytes();
+        snapshot.rangeTargetBytes = loopbackRangeFactory == null
+                ? -1L : loopbackRangeFactory.getPlaybackStartBufferTargetBytes();
+        snapshot.rangeReady = loadControl != null && loadControl.hasRequiredBufferNow();
+        recentBufferEvents.addLast(snapshot);
+    }
+
+    /** Eight reusable event slots; expensive diagnostics are formatted only on an error. */
+    private static final class BufferEventSnapshot {
+        long timeMs;
+        String event;
+        int state;
+        long positionMs;
+        long bufferedPositionMs;
+        long sampleBufferMs;
+        boolean loading;
+        boolean playWhenReady;
+        int allocatorBytes;
+        long heapUsedBytes;
+        long speedBytesPerSecond;
+        long rangeAheadBytes;
+        long rangeTargetBytes;
+        boolean rangeReady;
+
+        String format() {
+            return timeMs + ":" + event
+                    + " state=" + stateName(state)
+                    + " posMs=" + positionMs
+                    + " bufferedMs=" + bufferedPositionMs
+                    + " sampleBufferMs=" + sampleBufferMs
+                    + " loading=" + loading
+                    + " playWhenReady=" + playWhenReady
+                    + " allocator=" + allocatorBytes
+                    + " heapUsedBytes=" + heapUsedBytes
+                    + " speed=" + speedBytesPerSecond
+                    + " rangeAheadBytes=" + rangeAheadBytes
+                    + " rangeTargetBytes=" + rangeTargetBytes
+                    + " rangeReady=" + rangeReady;
+        }
+    }
+
+    private String getPlaybackBufferSnapshot() {
+        SimpleExoPlayer current = player;
+        if (current == null) {
+            return "player=none";
+        }
+        Format video = current.getVideoFormat();
+        return "state=" + stateName(current.getPlaybackState())
+                + " posMs=" + current.getCurrentPosition()
+                + " durationMs=" + current.getDuration()
+                + " bufferedMs=" + current.getBufferedPosition()
+                + " sampleBufferMs=" + current.getTotalBufferedDuration()
+                + " loading=" + current.isLoading()
+                + " playWhenReady=" + current.getPlayWhenReady()
+                + " allocator=" + (allocator == null ? -1 : allocator.getTotalBytesAllocated())
+                + " heapMaxBytes=" + Runtime.getRuntime().maxMemory()
+                + " heapUsedBytes=" + (Runtime.getRuntime().totalMemory()
+                    - Runtime.getRuntime().freeMemory())
+                + " speed=" + getTcpSpeed()
+                + " video=" + (video == null ? "none" : video.width + "x" + video.height
+                    + "/" + video.frameRate + "/avg=" + video.averageBitrate)
+                + " " + (loadControl == null ? "loadControl=none" : loadControl.getBufferDiagnostics())
+                + " " + (loopbackRangeFactory == null ? "range=none"
+                    : loopbackRangeFactory.getBufferDiagnostics());
+    }
+
+    private void reportRebufferError() {
+        rebufferEpisodes++;
+        long now = android.os.SystemClock.uptimeMillis();
+        if (lastRebufferErrorAt > 0L && now - lastRebufferErrorAt < 3_000L) {
+            return;
+        }
+        lastRebufferErrorAt = now;
+        log("echo-system-codec buffer-error-rebuffer count=" + rebufferEpisodes
+                + " current={" + getPlaybackBufferSnapshot() + "}");
+        // Android truncates a single log record around 4 KiB. Emit the small bounded
+        // history only on this error, so the state leading to starvation stays readable.
+        int index = 0;
+        for (BufferEventSnapshot event : recentBufferEvents) {
+            log("echo-system-codec buffer-error-history count=" + rebufferEpisodes
+                    + " event=" + index++ + " {" + event.format() + "}");
+        }
+    }
+
+    private void reportPlaybackPerformanceError(String event, String detail) {
+        if (released || player == null) {
+            return;
+        }
+        long now = android.os.SystemClock.uptimeMillis();
+        // These are renderer errors, independent of a network BUFFERING transition. Keep
+        // normal frames silent and bound detailed snapshots even on a struggling decoder.
+        if (lastPerformanceErrorAtMs > 0L && now - lastPerformanceErrorAtMs < 10_000L) {
+            return;
+        }
+        lastPerformanceErrorAtMs = now;
+        log("echo-system-codec performance-error event=" + event + detail
+                + " totalDroppedFrames=" + droppedVideoFrames + " audioUnderruns=" + audioUnderruns
+                + " current={" + getPlaybackBufferSnapshot() + "}");
+    }
+
+    /** Uses LoadControl's byte evidence at the output boundary and records stalled episodes. */
+    private void checkBufferStall() {
+        if (released || !startRequested || player == null) {
+            return;
+        }
+        if (handlePlaybackCacheError()) {
+            return;
+        }
+        if (!isByteGatedVod()) {
+            applyPlayIntent();
+            return;
+        }
+        applyPlayIntent();
+        boolean ready = loadControl.hasRequiredBufferNow();
+        if (player.getPlaybackState() != Player.STATE_BUFFERING && ready) {
+            lastBufferStallAhead = -1L;
+            lastBufferStallProgressAt = 0L;
+            return;
+        }
+        long ahead = loopbackRangeFactory.getBufferedAheadBytes();
+        long arrivingAhead = loopbackRangeFactory.getBufferedAheadBytesForProgress();
+        boolean wholeFile = loopbackRangeFactory.hasWholeFileBuffered();
+        long now = android.os.SystemClock.uptimeMillis();
+        if (lastBufferStallAhead < 0L || arrivingAhead != lastBufferStallAhead) {
+            lastBufferStallAhead = arrivingAhead;
+            lastBufferStallProgressAt = now;
+        } else if (lastBufferStallProgressAt > 0L
+                && now - lastBufferStallProgressAt >= BUFFER_STALL_ERROR_MS
+                && now - lastBufferStallStallErrorAt >= BUFFER_STALL_ERROR_MS) {
+            lastBufferStallStallErrorAt = now;
+            log("echo-system-codec buffer-error-stalled aheadBytes=" + ahead
+                    + " requiredBytes=" + SystemCodecBufferPolicy.MIN_BUFFER_BYTES
+                    + " progressPercent=" + getBufferedPercentage()
+                    + " speedBytesPerSecond=" + getTcpSpeed()
+                    + " wholeFile=" + wholeFile
+                    + " state=" + (player == null ? "null" : stateName(player.getPlaybackState()))
+                    + " loading=" + (player != null && player.isLoading())
+                    + " playWhenReady=" + (player != null && player.getPlayWhenReady())
+                    + " startRequested=" + startRequested
+                    + " rangeReady=" + ready
+                    + " rangeBacked=" + currentSourceRangeBacked
+                    + " gateEnabled=" + (loadControl != null
+                            && loadControl.shouldWaitForByteBuffer())
+                    + " sampleBufferMs=" + Math.max(0L,
+                            player.getBufferedPosition() - player.getCurrentPosition())
+                    + " allocatorBytes=" + (allocator == null
+                            ? -1 : allocator.getTotalBytesAllocated())
+                    + " heapMaxBytes=" + Runtime.getRuntime().maxMemory()
+                    + " heapUsedBytes=" + (Runtime.getRuntime().totalMemory()
+                        - Runtime.getRuntime().freeMemory())
+                    + " " + loopbackRangeFactory.getBufferDiagnostics());
+        }
+        scheduleBufferStallPoll();
+    }
+
+    @Override
+    public String getPlaybackErrorMessage() {
+        return playbackErrorMessage;
+    }
+
+    private boolean handlePlaybackCacheError() {
+        if (playbackErrorMessage != null) {
+            return true;
+        }
+        java.io.IOException error = loopbackRangeFactory == null
+                ? null : loopbackRangeFactory.getPlaybackCacheError();
+        if (error == null) {
+            return false;
+        }
+        playbackErrorMessage = "播放可用内存不足，请关闭其他应用后重试";
+        startRequested = false;
+        mainHandler.removeCallbacks(bufferStallPoll);
+        log("echo-system-codec cache-memory-error " + error.getMessage());
+        // Cancel readers before stopping Exo, so its loader can return all raw/sample storage.
+        loopbackRangeFactory.release();
+        if (player != null) {
+            try {
+                player.stop();
+                player.clearMediaItems();
+            } catch (RuntimeException stopError) {
+                log("echo-system-codec memory-error-stop-failed " + describeThrowable(stopError));
+            }
+        }
+        notifyBufferingEnd();
+        notifyError();
+        return true;
     }
 
     private void notifyBufferingStart() {
@@ -1046,8 +1729,36 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             return;
         }
         bufferingNotified = true;
-        bufferingStartAllocatedBytes = allocator == null ? 0 : allocator.getTotalBytesAllocated();
+        resetBufferingReadinessBaseline();
         notifyInfo(MEDIA_INFO_BUFFERING_START, 0);
+    }
+
+    private void resetBufferingReadinessBaseline() {
+        if (allocator != null) {
+            allocator.trim();
+        }
+        bufferingStartAllocatedBytes = allocator == null ? 0 : allocator.getTotalBytesAllocated();
+        bufferingStartTransferredBytes = networkSpeedMeter == null
+                ? 0L : networkSpeedMeter.getTotalNetworkBytes();
+    }
+
+    /** Refreshes the main-thread-only Player getters used by the playback-thread LoadControl. */
+    private void updateBufferedToEndSnapshot() {
+        SimpleExoPlayer current = player;
+        if (current == null) {
+            bufferedToEndSnapshot.set(false);
+            return;
+        }
+        try {
+            long duration = current.getDuration();
+            long bufferedPosition = current.getBufferedPosition();
+            bufferedToEndSnapshot.set(duration > 0L
+                    && duration != C.TIME_UNSET
+                    && bufferedPosition != C.TIME_UNSET
+                    && bufferedPosition >= duration);
+        } catch (Throwable ignored) {
+            bufferedToEndSnapshot.set(false);
+        }
     }
 
     private void notifyBufferingEnd() {
@@ -1187,7 +1898,9 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             return false;
         }
         sourceRetryCount = attempt;
-        final long resumeMs = Math.max(0L, player.getCurrentPosition());
+        final long resumeMs = SystemCodecRetryPolicy.resolveRetryResumePosition(
+                player.getCurrentPosition(), pendingSeekCompleteMs != C.TIME_UNSET,
+                pendingSeekCompleteMs, initialResumePositionMs);
         log("echo-system-codec source-retry attempt=" + attempt + "/"
                 + SystemCodecRetryPolicy.MAX_SOURCE_RETRIES
                 + " resumeMs=" + resumeMs + " code=" + code);
@@ -1197,16 +1910,29 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 return;
             }
             try {
+                // A retry creates a fresh DataSource. Clear the retained byte snapshot before
+                // the replacement starts so the gate cannot mistake the previous source's
+                // runway for bytes at the new retry anchor (especially when resuming at 0 ms).
+                if (loopbackRangeFactory != null) {
+                    loopbackRangeFactory.resetPlaybackBufferSnapshot();
+                }
                 resetPlaybackFlagsForRetry();
-                player.setPlayWhenReady(true);
+                configureSourceBufferPolicy();
+                applyPlayIntent();
                 player.clearMediaItems();
                 MediaItem.Builder mediaItemBuilder = new MediaItem.Builder().setUri(Uri.parse(dataSource));
                 String mimeType = resolveMediaItemMimeType(dataSource);
                 if (!TextUtils.isEmpty(mimeType)) {
                     mediaItemBuilder.setMimeType(mimeType);
                 }
+                if (loopbackRangeFactory != null) {
+                    loopbackRangeFactory.setInitialResumePosition(resumeMs);
+                }
                 player.setMediaItem(mediaItemBuilder.build(), resumeMs);
                 player.prepare();
+                if (isByteGatedVod()) {
+                    scheduleBufferStallPoll();
+                }
                 log("echo-system-codec source-retry re-prepared attempt=" + attempt
                         + " resumeMs=" + resumeMs);
             } catch (Throwable throwable) {
@@ -1259,6 +1985,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         selectedAudioTrackPresent = false;
         pendingInitialSeekMs = C.TIME_UNSET;
         pendingSeekCompleteMs = C.TIME_UNSET;
+        bufferedToEndSnapshot.set(false);
         seekGeneration++;
     }
 
@@ -1337,6 +2064,34 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         return false;
     }
 
+    /**
+     * Returns true only when the preflight probe positively identified HDR and the codec input
+     * is HEVC but the vendor omitted all HDR color metadata. Explicit codec metadata always wins;
+     * this prevents a stale probe hint from changing an explicitly SDR output format.
+     */
+    private boolean shouldInjectProbedHdrMetadata(@Nullable Format format,
+                                                   @Nullable String codecMimeType,
+                                                   @Nullable MediaFormat mediaFormat) {
+        if (!(sourceHdr10Hint || sourceHdr10PlusHint || sourceDolbyVisionHint)
+                || format == null || mediaFormat == null) {
+            return false;
+        }
+        try {
+            if (mediaFormat.containsKey(MediaFormat.KEY_COLOR_TRANSFER)
+                    || mediaFormat.containsKey(MediaFormat.KEY_HDR_STATIC_INFO)
+                    || mediaFormat.containsKey("hdr10-plus-info")) {
+                return false;
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+        String codecMime = codecMimeType == null ? "" : codecMimeType;
+        String inputMime = format.sampleMimeType == null ? "" : format.sampleMimeType;
+        return MimeTypes.VIDEO_H265.equals(codecMime)
+                || MimeTypes.VIDEO_H265.equals(inputMime)
+                || MimeTypes.VIDEO_DOLBY_VISION.equals(inputMime);
+    }
+
     private boolean isNetworkSource(@Nullable String source) {
         if (TextUtils.isEmpty(source)) {
             return false;
@@ -1347,6 +2102,35 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    /** Live/HLS uses its streaming policy; HTTP VOD waits for its contiguous Range cache. */
+    private void configureSourceBufferPolicy() {
+        if (loadControl == null) {
+            return;
+        }
+        boolean liveOrDynamic = isLiveOrDynamicSourceUrl(dataSource);
+        // Live/HLS stays stream-driven. Remote HTTP/WebDAV VOD is read through the bounded
+        // Range source so startup readiness is based on contiguous media bytes, not time.
+        boolean byteGated = currentSourceRangeBacked && !liveOrDynamic;
+        loadControl.setSourcePolicy(byteGated, liveOrDynamic);
+        log("echo-system-codec source-buffer-policy byteGate=" + byteGated
+                + " rangeBacked=" + currentSourceRangeBacked
+                + " liveOrDynamic=" + liveOrDynamic);
+    }
+
+    private boolean isLiveOrDynamicSourceUrl(@Nullable String url) {
+        return isControlledHlsProxySource()
+                || PlaybackUrlNormalizer.isHlsLike(url)
+                || !TextUtils.isEmpty(resolveMediaItemMimeType(url));
+    }
+
+    private boolean isLiveOrDynamicTimeline(@Nullable Timeline timeline) {
+        if (timeline == null || timeline.isEmpty()) {
+            return false;
+        }
+        Timeline.Window window = timeline.getWindow(0, new Timeline.Window());
+        return window.isLive() || window.isDynamic;
     }
 
     @Nullable
@@ -1395,8 +2179,24 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     }
 
     private void log(String message) {
-        Log.i(TAG, message);
-        LOG.i(message);
+        if (!isErrorLog(message)) {
+            return;
+        }
+        Log.e(TAG, message);
+        LOG.e(message);
+    }
+
+    private static boolean isErrorLog(String message) {
+        if (message == null) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.contains("error")
+                || lower.contains("failed")
+                || lower.contains("exception")
+                || lower.contains("stalled")
+                || lower.contains("timeout")
+                || lower.contains("retry");
     }
 
     private static final class TrackSelectionTarget {
@@ -1411,18 +2211,19 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
 
     private static final class SystemCodecRenderersFactory extends DefaultRenderersFactory {
         private final Context context;
+        private final SystemCodecPlayer owner;
         // True only when the device can natively decode AND display Dolby Vision end to end. On
         // such devices we leave DV completely alone (native DV decode). On every other TV/box we
         // decode the DV HDR10/HLG base layer through the HEVC/AVC decoder and re-inject HDR
         // metadata + strip DV RPU, which is what makes DV files play on non-DV hardware.
         private final boolean nativeDvCapable;
 
-        SystemCodecRenderersFactory(Context context, boolean nativeDvCapable) {
+        SystemCodecRenderersFactory(Context context, boolean nativeDvCapable,
+                                    SystemCodecPlayer owner) {
             super(context);
             this.context = context.getApplicationContext();
+            this.owner = owner;
             this.nativeDvCapable = nativeDvCapable;
-            Log.i(TAG, "echo-system-codec dv-route nativeDvCapable=" + nativeDvCapable);
-            LOG.i("echo-system-codec dv-route nativeDvCapable=" + nativeDvCapable);
             // Let the TV's MediaCodec audio decoder run first. The affected NVT hardware can
             // decode this route without starving the video clock; FFmpeg remains the fallback
             // for formats the platform does not expose. Both paths feed the stereo-PCM sink
@@ -1464,8 +2265,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             String capsLog = "echo-system-codec audio-caps forced=stereo-pcm"
                     + " inputMaxChannels=" + pcmInputChannelCount
                     + " deviceMaxChannels=" + deviceCapabilities.getMaxChannelCount();
-            Log.i(TAG, capsLog);
-            LOG.i(capsLog);
 
             return new DefaultAudioSink.Builder(context)
                     .setAudioCapabilities(pcmOnlyCaps)
@@ -1493,7 +2292,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                     out.set(i, new SafeSurfaceMediaCodecVideoRenderer(context,
                             getCodecAdapterFactory(), mediaCodecSelector,
                             allowedVideoJoiningTimeMs, enableDecoderFallback,
-                            eventHandler, eventListener, !nativeDvCapable));
+                            eventHandler, eventListener, !nativeDvCapable, owner));
                     break;
                 }
             }
@@ -1589,8 +2388,17 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             }
 
             private static void log(String message) {
-                Log.i(TAG, message);
-                LOG.i(message);
+                if (message == null) {
+                    return;
+                }
+                String lower = message.toLowerCase(Locale.ROOT);
+                if (!(lower.contains("error") || lower.contains("failed")
+                        || lower.contains("exception") || lower.contains("timeout")
+                        || lower.contains("retry"))) {
+                    return;
+                }
+                Log.e(TAG, message);
+                LOG.e(message);
             }
 
             private static String safe(String value) {
@@ -1612,6 +2420,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         // has native DV support this stays false and DV streams are handed to the DV decoder
         // untouched.
         private final boolean hdr10CompatMode;
+        private final SystemCodecPlayer owner;
 
         SafeSurfaceMediaCodecVideoRenderer(Context context,
                                            MediaCodecAdapter.Factory codecAdapterFactory,
@@ -1620,10 +2429,21 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                                            boolean enableDecoderFallback,
                                            Handler eventHandler,
                                            VideoRendererEventListener eventListener,
-                                           boolean hdr10CompatMode) {
+                                           boolean hdr10CompatMode,
+                                           SystemCodecPlayer owner) {
             super(context, codecAdapterFactory, mediaCodecSelector, allowedVideoJoiningTimeMs,
                     enableDecoderFallback, eventHandler, eventListener, 50);
             this.hdr10CompatMode = hdr10CompatMode;
+            this.owner = owner;
+        }
+
+        @Override
+        protected void onOutputFormatChanged(Format format, MediaFormat mediaFormat)
+                {
+            super.onOutputFormatChanged(format, mediaFormat);
+            if (owner != null) {
+                owner.onCodecOutputFormatChanged(format, mediaFormat);
+            }
         }
 
         // Set when the current stream is a Dolby Vision track being decoded by the HEVC decoder
@@ -1653,10 +2473,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             // NVT/Novatek HEVC decoder to emit a base-layer picture. Stutter is addressed
             // separately (zero-alloc single-pass compaction below), not by disabling stripping.
             stripDolbyVisionRpu = hdr10CompatMode && anyDolbyVision;
-            Log.i(TAG, "echo-system-codec dv-strip-rpu=" + stripDolbyVisionRpu
-                    + " hdr10CompatMode=" + hdr10CompatMode + " dvStream=" + anyDolbyVision);
-            LOG.i("echo-system-codec dv-strip-rpu=" + stripDolbyVisionRpu
-                    + " hdr10CompatMode=" + hdr10CompatMode + " dvStream=" + anyDolbyVision);
         }
 
         @Override
@@ -1692,6 +2508,34 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                                              int tunnelingAudioSessionId) {
             MediaFormat mediaFormat = super.getMediaFormat(format, codecMimeType, codecMaxValues,
                     codecOperatingRate, deviceNeedsNoPostProcessWorkaround, tunnelingAudioSessionId);
+            // A number of phone/TV extractors expose a valid HDR10/HDR10+ stream in the
+            // preflight probe but omit ColorInfo from ExoPlayer's Format. In that case the
+            // codec receives 10-bit HEVC with an unspecified transfer and the display remains
+            // SDR. The probe flags are internal, source-bound evidence; inject only for HEVC
+            // and only when the codec did not already provide color metadata.
+            if (owner != null && owner.shouldInjectProbedHdrMetadata(format, codecMimeType,
+                    mediaFormat)) {
+                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
+                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_TRANSFER,
+                            MediaFormat.COLOR_TRANSFER_ST2084);
+                }
+                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_STANDARD)) {
+                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_STANDARD,
+                            MediaFormat.COLOR_STANDARD_BT2020);
+                }
+                if (!mediaFormat.containsKey(MediaFormat.KEY_COLOR_RANGE)) {
+                    mediaFormat.setInteger(MediaFormat.KEY_COLOR_RANGE,
+                            MediaFormat.COLOR_RANGE_LIMITED);
+                }
+                if (!mediaFormat.containsKey(MediaFormat.KEY_HDR_STATIC_INFO)) {
+                    mediaFormat.setByteBuffer(MediaFormat.KEY_HDR_STATIC_INFO,
+                            buildDefaultHdr10StaticInfo());
+                }
+                String hintLog = "echo-system-codec probed-hdr-metadata-injected mime="
+                        + codecMimeType + " hdr10=" + owner.sourceHdr10Hint
+                        + " hdr10Plus=" + owner.sourceHdr10PlusHint
+                        + " dv=" + owner.sourceDolbyVisionHint;
+            }
             // Dolby Vision Profile 8 (and 8.1) carries an HDR10 / HLG base layer inside an HEVC
             // stream. On a device with no single-layer DV decoder, ExoPlayer falls back to the
             // HEVC decoder (video/hevc) to decode that base layer — but the DV track's Format
@@ -1725,10 +2569,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                     mediaFormat.setByteBuffer(MediaFormat.KEY_HDR_STATIC_INFO,
                             buildDefaultHdr10StaticInfo());
                 }
-                Log.i(TAG, "echo-system-codec dv-profile8-hdr10-baselayer codecMime="
-                        + codecMimeType + " injected BT2020/ST2084+staticInfo");
-                LOG.i("echo-system-codec dv-profile8-hdr10-baselayer codecMime="
-                        + codecMimeType + " injected BT2020/ST2084+staticInfo");
             }
             return mediaFormat;
         }
@@ -1771,11 +2611,6 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             if (removed > 0 && !dvStripLogged) {
                 dvStripLogged = true;
                 int outputBytes = data.remaining();
-                Log.i(TAG, "echo-system-codec dv-strip removed=" + removed
-                        + " bytes " + inputBytes + "->" + outputBytes
-                        + " scratchCapacity=" + rpuStripper.scratchCapacity());
-                LOG.i("echo-system-codec dv-strip removed=" + removed
-                        + " bytes " + inputBytes + "->" + outputBytes);
             }
         }
 

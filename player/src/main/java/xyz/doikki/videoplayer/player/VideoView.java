@@ -14,8 +14,6 @@ import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.Gravity;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -65,10 +63,22 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     private boolean mPendingPrepareAfterSurface;
     private boolean mPendingPrepareResetAfterSurface;
     private int mPendingPrepareSurfaceAttempts;
+    private boolean mPendingResumeAfterSurface;
     private final IRenderView.SurfaceListener mRenderSurfaceListener = new IRenderView.SurfaceListener() {
         @Override
         public void onSurfaceAvailable(@NonNull IRenderView renderView) {
-            post(() -> startPendingPrepareIfSurfaceReady("surface-available"));
+            post(() -> {
+                if (renderView != mRenderView || mMediaPlayer == null) {
+                    return;
+                }
+                startPendingPrepareIfSurfaceReady("surface-available");
+                if (mPendingResumeAfterSurface && !mPlaybackLifecycle.isPauseRequested()
+                        && renderView.hasValidSurface()) {
+                    mPendingResumeAfterSurface = false;
+                    renderView.refreshSurface();
+                    resumePlay();
+                }
+            });
         }
 
         @Override
@@ -104,6 +114,13 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     protected boolean mRenderStartSeen;
     protected boolean mSeekInFlight;
     protected boolean mInitialPositionApplied;
+    /**
+     * Lifecycle/manual pause intent must survive the prepare and byte-gated startup window.
+     * Native players can call start after their prepared callback returns, so a simple
+     * isPlaying() check in pause() is not sufficient.
+     */
+    private final PlaybackLifecycleState mPlaybackLifecycle = new PlaybackLifecycleState();
+    private volatile boolean mReleasing;
     //播放器的各种状态
     public static final int STATE_ERROR = -1;
     public static final int STATE_IDLE = 0;
@@ -252,6 +269,12 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void start() {
+        if (mReleasing) {
+            return;
+        }
+        if (!mPlaybackLifecycle.requestResume()) {
+            return;
+        }
         if (isInIdleState()
                 || isInStartAbortState()) {
             startPlay();
@@ -266,6 +289,12 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * @return 是否成功开始播放
      */
     protected boolean startPlay() {
+        // A partially initialized core can still exist after a failed prepare. Always
+        // dispose of it before creating a replacement, including an IDLE wrapper state.
+        if (mMediaPlayer != null || mRenderView != null) {
+            release();
+        }
+        mPlaybackLifecycle.reset();
         //如果要显示移动网络提示则不继续播放
         if (showNetWarning()) {
             //中止播放
@@ -320,7 +349,36 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     protected void initPlayer() {
         mMediaPlayer = mPlayerFactory.createPlayer(getContext());
-        mMediaPlayer.setPlayerEventListener(this);
+        final P owner = mMediaPlayer;
+        mMediaPlayer.setPlayerEventListener(new AbstractPlayer.PlayerEventListener() {
+            private boolean isCurrent() {
+                return !mReleasing && mMediaPlayer == owner;
+            }
+
+            @Override public void onError() {
+                if (isCurrent()) VideoView.this.onError();
+            }
+
+            @Override public void onCompletion() {
+                if (isCurrent()) VideoView.this.onCompletion();
+            }
+
+            @Override public void onInfo(int what, int extra) {
+                if (isCurrent()) VideoView.this.onInfo(what, extra);
+            }
+
+            @Override public void onPrepared() {
+                if (isCurrent()) VideoView.this.onPrepared();
+            }
+
+            @Override public void onVideoSizeChanged(int width, int height) {
+                if (isCurrent()) VideoView.this.onVideoSizeChanged(width, height);
+            }
+
+            @Override public void onSeekComplete(long position) {
+                if (isCurrent()) VideoView.this.onSeekComplete(position);
+            }
+        });
         setInitOptions();
         mMediaPlayer.initPlayer();
         setOptions();
@@ -360,6 +418,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     }
 
     private void startPrepareWhenRenderReady(boolean reset, String reason) {
+        mPlaybackLifecycle.onPrepareStarted();
         if (mRenderView != null
                 && mRenderView.requiresValidSurfaceBeforePrepare()
                 && !mRenderView.hasValidSurface()) {
@@ -438,7 +497,11 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             // implementations can report buffering/prepared synchronously from prepareAsync;
             // setting PREPARING afterwards overwrites that real state and leaves the UI/watchdog
             // stuck in "preparing" even though the source has started loading.
+            mPlaybackLifecycle.onPrepareStarted();
             mMediaPlayer.prepareAsync();
+            // prepareAsync can itself arm an automatic start after a pause raced a pending
+            // Surface. Reassert the latest intent after its synchronous setup returns.
+            enforcePendingPauseAfterCallback();
         }
     }
 
@@ -462,6 +525,9 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 播放状态下开始播放
      */
     protected void startInPlaybackState() {
+        if (mMediaPlayer == null || mPlaybackLifecycle.isPauseRequested()) {
+            return;
+        }
         mMediaPlayer.start();
         setPlayState(isMediaPlayerStartPending() ? STATE_BUFFERING : STATE_PLAYING);
         if (mAudioFocusHelper != null) {
@@ -475,10 +541,22 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void pause() {
-        if (isInPlaybackState()
-                && mMediaPlayer.isPlaying()) {
-            mMediaPlayer.pause();
-            setPlayState(STATE_PAUSED);
+        mPlaybackLifecycle.requestPause();
+        mPendingResumeAfterSurface = false;
+        if (mMediaPlayer != null && (isInPlaybackState()
+                || mCurrentPlayState == STATE_PREPARING)) {
+            try {
+                mMediaPlayer.pause();
+            } catch (Throwable throwable) {
+                Log.w(TAG, "pause during lifecycle transition failed", throwable);
+            }
+            if (mCurrentPlayState != STATE_IDLE
+                    && mCurrentPlayState != STATE_ERROR
+                    && mCurrentPlayState != STATE_PLAYBACK_COMPLETED
+                    && mCurrentPlayState != STATE_START_ABORT
+                    && mCurrentPlayState != STATE_PAUSED) {
+                setPlayState(STATE_PAUSED);
+            }
             if (mAudioFocusHelper != null) {
                 mAudioFocusHelper.abandonFocus();
             }
@@ -490,40 +568,22 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      * 继续播放
      */
     public void resume() {
-        if (isInPlaybackState() && !mMediaPlayer.isPlaying()) {
-            assert mRenderView != null;
-            View renderView = mRenderView.getView();
-            if (renderView instanceof SurfaceView) {
-                final SurfaceView surfaceView = (SurfaceView) renderView;
-                final SurfaceHolder holder = surfaceView.getHolder();
-                if (holder.getSurface() != null && holder.getSurface().isValid()) {
-                    mMediaPlayer.setDisplay(holder);
-                    resumePlay();
-                } else {
-                    holder.addCallback(new SurfaceHolder.Callback() {
-                        @Override
-                        public void surfaceCreated(SurfaceHolder holder) {
-                            addDisplay();
-                            if (mRenderView != null) {
-                                mRenderView.setScaleType(mCurrentScreenScaleType);
-                                mRenderView.setVideoSize(mVideoSize[0], mVideoSize[1]);
-                            }
-                            mMediaPlayer.setDisplay(holder);
-                            resumePlay();
-                            // 移除回调，避免重复调用
-                            holder.removeCallback(this);
-                        }
-
-                        @Override
-                        public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-                        }
-
-                        @Override
-                        public void surfaceDestroyed(SurfaceHolder holder) {
-                        }
-                    });
-                }
+        if (mReleasing) {
+            return;
+        }
+        if (!mPlaybackLifecycle.requestResume()) {
+            // The native player will invoke onPrepared and its normal start path. Calling
+            // start() here would race prepareAsync on MediaPlayer implementations.
+            return;
+        }
+        if (isInPlaybackState() && !mMediaPlayer.isPlaying() && mRenderView != null) {
+            // Retain this render view. Replacing it from the old holder's surfaceCreated
+            // callback and then binding that old holder starts audio on a detached Surface.
+            mRenderView.refreshSurface();
+            if (mRenderView.requiresValidSurfaceBeforePrepare() && !mRenderView.hasValidSurface()) {
+                mPendingResumeAfterSurface = true;
             } else {
+                mPendingResumeAfterSurface = false;
                 resumePlay();
             }
             if (mRenderView != null) {
@@ -539,6 +599,9 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     }
 
     private void resumePlay(){
+        if (mMediaPlayer == null || mPlaybackLifecycle.isPauseRequested()) {
+            return;
+        }
         mMediaPlayer.start();
         setPlayState(isMediaPlayerStartPending() ? STATE_BUFFERING : STATE_PLAYING);
         if (mAudioFocusHelper != null) {
@@ -546,66 +609,92 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         }
         mPlayerContainer.setKeepScreenOn(true);
     }
+
+    private void enforcePendingPauseAfterCallback() {
+        if (!mPlaybackLifecycle.isPauseRequested() || mMediaPlayer == null) {
+            return;
+        }
+        // In particular this runs synchronously inside the native prepared callback:
+        // changing its prepared state stops the callback's automatic-start tail.
+        pause();
+    }
     /**
      * 释放播放器
      */
     public void release() {
-        if (mIsFullScreen) {
-            stopFullScreen();
+        if (mReleasing) {
+            return;
         }
-        mPendingPrepareAfterSurface = false;
-        mPendingPrepareResetAfterSurface = false;
-        mPendingPrepareSurfaceAttempts = 0;
-        if (!isInIdleState()) {
-            // Decide while the player still exists. In particular, an in-flight seek must
-            // remain a deliberate skip instead of being mistaken for the last cached position
-            // after mMediaPlayer has been cleared.
-            saveProgress();
-            // Detach the Surface before releasing MediaPlayer. Some vendor implementations
-            // recreate the Surface asynchronously; releasing first leaves the old player
-            // attached to a destroyed Surface and can produce audio-only live playback.
-            if (mRenderView != null) {
-                mRenderView.setSurfaceListener(null);
+        mReleasing = true;
+        try {
+            mPlaybackLifecycle.reset();
+            mPlaybackLifecycle.requestPause();
+            mPendingResumeAfterSurface = false;
+            mPendingPrepareAfterSurface = false;
+            mPendingPrepareResetAfterSurface = false;
+            mPendingPrepareSurfaceAttempts = 0;
+            // Persistence must never prevent releasing the decoder, its Range cache or Surface.
+            // Resolve it before clearing the old core so an in-flight seek remains a skip.
+            runReleaseStep("save progress", this::saveProgress);
+
+            final P playerToRelease = mMediaPlayer;
+            final IRenderView renderToRelease = mRenderView;
+            final AssetFileDescriptor assetToClose = mAssetFileDescriptor;
+            final AudioFocusHelper focusToRelease = mAudioFocusHelper;
+            // Drop ownership before invoking vendor code or controller/Surface callbacks.
+            mMediaPlayer = null;
+            mRenderView = null;
+            mAssetFileDescriptor = null;
+            mAudioFocusHelper = null;
+            if (playerToRelease != null) {
+                runReleaseStep("detach player listener", () -> playerToRelease.setPlayerEventListener(null));
             }
-            if (mMediaPlayer != null) {
-                try {
-                    mMediaPlayer.setDisplay(null);
-                } catch (Throwable ignored) {
-                }
+            if (renderToRelease != null) {
+                runReleaseStep("detach render listener", () -> renderToRelease.setSurfaceListener(null));
             }
-            //释放renderView
-            if (mRenderView != null) {
-                mPlayerContainer.removeView(mRenderView.getView());
-                mRenderView.release();
-                mRenderView = null;
+            if (mIsFullScreen) {
+                runReleaseStep("leave fullscreen", this::stopFullScreen);
             }
-            //释放播放器
-            if (mMediaPlayer != null) {
-                mMediaPlayer.release();
-                mMediaPlayer = null;
+            if (mIsTinyScreen) {
+                runReleaseStep("leave tiny screen", this::stopTinyScreen);
             }
-            //释放Assets资源
-            if (mAssetFileDescriptor != null) {
-                try {
-                    mAssetFileDescriptor.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
+            if (playerToRelease != null) {
+                runReleaseStep("detach display", () -> playerToRelease.setDisplay(null));
             }
-            //关闭AudioFocus监听
-            if (mAudioFocusHelper != null) {
-                mAudioFocusHelper.abandonFocus();
-                mAudioFocusHelper = null;
+            if (renderToRelease != null) {
+                runReleaseStep("remove render", () -> mPlayerContainer.removeView(renderToRelease.getView()));
+                runReleaseStep("release render", renderToRelease::release);
             }
-            //关闭屏幕常亮
-            mPlayerContainer.setKeepScreenOn(false);
-            //重置播放进度
-            mCurrentPosition = 0;
+            if (playerToRelease != null) {
+                runReleaseStep("release player", playerToRelease::release);
+            }
+            if (assetToClose != null) {
+                runReleaseStep("close asset", assetToClose::close);
+            }
+            if (focusToRelease != null) {
+                runReleaseStep("abandon audio focus", focusToRelease::abandonFocus);
+            }
+            runReleaseStep("clear screen flag", () -> mPlayerContainer.setKeepScreenOn(false));
+            mCurrentPosition = 0L;
             mLastConfirmedSeekPosition = -1L;
             mRenderStartSeen = false;
             mSeekInFlight = false;
-            //切换转态
-            setPlayState(STATE_IDLE);
+            // Also finish partially initialized cores whose wrapper state never left IDLE.
+            runReleaseStep("reset playback state", () -> setPlayState(STATE_IDLE));
+        } finally {
+            mReleasing = false;
+        }
+    }
+
+    private interface ReleaseStep {
+        void run() throws Exception;
+    }
+
+    private void runReleaseStep(String operation, ReleaseStep step) {
+        try {
+            step.run();
+        } catch (Throwable throwable) {
+            Log.e(TAG, "Failed to " + operation + " during release", throwable);
         }
     }
 
@@ -705,6 +794,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void replay(boolean resetPosition) {
+        mPlaybackLifecycle.reset();
+        mPendingResumeAfterSurface = false;
         long resumePosition = resetPosition ? 0L
                 : Math.max(0L, mCurrentPosition > 0L ? mCurrentPosition : mResumePosition);
         mCurrentPosition = 0L;
@@ -813,11 +904,12 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
      */
     @Override
     public void onPrepared() {
+        boolean resumeAfterPrepare = mPlaybackLifecycle.onPrepared();
         setPlayState(STATE_PREPARED);
         resolvePersistableDuration();
         long resumePosition = sanitizeResumePosition(mResumePosition);
         mResumePosition = resumePosition;
-        if (mAudioFocusHelper != null) {
+        if (mAudioFocusHelper != null && !mPlaybackLifecycle.isPauseRequested()) {
             mAudioFocusHelper.requestFocus();
         }
         if (resumePosition > 0L && !mInitialPositionApplied) {
@@ -827,6 +919,10 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
             mLastConfirmedSeekPosition = resumePosition;
             mSeekInFlight = false;
         }
+        if (resumeAfterPrepare && !mPlaybackLifecycle.isPauseRequested()) {
+            startInPlaybackState();
+        }
+        enforcePendingPauseAfterCallback();
     }
 
     @Override
@@ -844,14 +940,17 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         switch (what) {
             case AbstractPlayer.MEDIA_INFO_BUFFERING_START:
                 setPlayState(STATE_BUFFERING);
+                enforcePendingPauseAfterCallback();
                 break;
             case AbstractPlayer.MEDIA_INFO_BUFFERING_END:
                 setPlayState(STATE_BUFFERED);
+                enforcePendingPauseAfterCallback();
                 break;
             case AbstractPlayer.MEDIA_INFO_RENDERING_START: // 视频/音频开始渲染
                 mRenderStartSeen = true;
                 setPlayState(STATE_PLAYING);
                 mPlayerContainer.setKeepScreenOn(true);
+                enforcePendingPauseAfterCallback();
                 break;
             case AbstractPlayer.MEDIA_INFO_VIDEO_ROTATION_CHANGED:
                 if (mRenderView != null) mRenderView.setVideoRotation(extra);
@@ -985,6 +1084,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
         mAssetFileDescriptor = null;
         mUrl = url;
         mHeaders = headers;
+        mVideoSize[0] = 0;
+        mVideoSize[1] = 0;
         mCurrentPosition = 0L;
         mLastConfirmedSeekPosition = -1L;
         mResumePosition = 0L;
@@ -999,6 +1100,8 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     public void setAssetFileDescriptor(AssetFileDescriptor fd) {
         mUrl = null;
         this.mAssetFileDescriptor = fd;
+        mVideoSize[0] = 0;
+        mVideoSize[1] = 0;
         mCurrentPosition = 0L;
         mLastConfirmedSeekPosition = -1L;
         mResumePosition = 0L;
@@ -1042,8 +1145,7 @@ public class VideoView<P extends AbstractPlayer> extends FrameLayout
     }
 
     private boolean isMediaPlayerStartPending() {
-        return mMediaPlayer instanceof AndroidMediaPlayer
-                && ((AndroidMediaPlayer) mMediaPlayer).isStartPending();
+        return mMediaPlayer != null && mMediaPlayer.isStartPending();
     }
 
     private long sanitizeResumePosition(long position) {

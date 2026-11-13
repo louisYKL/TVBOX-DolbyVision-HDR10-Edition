@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="@dimen/vs_60"
+    android:layout_marginBottom="@dimen/vs_5"
+    android:background="@drawable/button_dialog_main"
+    android:clickable="true"
+    android:focusable="true"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="@dimen/vs_16"
+    android:paddingEnd="@dimen/vs_16">
+
+    <ImageView
+        android:id="@+id/ivExternalSubtitleFile"
+        android:layout_width="@dimen/vs_30"
+        android:layout_height="@dimen/vs_30"
+        android:alpha="0.9" />
+
+    <TextView
+        android:id="@+id/tvExternalSubtitleFile"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/vs_12"
+        android:layout_weight="1"
+        android:ellipsize="middle"
+        android:maxLines="1"
+        android:textColor="@color/apple_tv_text_primary"
+        android:textSize="@dimen/ts_18" />
+
+    <TextView
+        android:id="@+id/tvExternalSubtitleFileDetail"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:textColor="@color/apple_tv_text_secondary"
+        android:textSize="@dimen/ts_16" />
+</LinearLayout>

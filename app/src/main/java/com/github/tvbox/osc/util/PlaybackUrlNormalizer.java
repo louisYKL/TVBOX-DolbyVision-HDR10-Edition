@@ -212,11 +212,15 @@ public final class PlaybackUrlNormalizer {
     }
 
     public static boolean isHlsLike(String uri) {
-        if (TextUtils.isEmpty(uri)) {
+        // Keep this URL classifier usable from the JVM unit tests as well as Android. This
+        // method is called by the Range route selector, which is intentionally a pure URL
+        // decision and must not depend on a mocked Android framework class.
+        if (uri == null || uri.trim().isEmpty()) {
             return false;
         }
         String lower = uri.toLowerCase(Locale.US);
-        if (lower.contains(".m3u8") || lower.contains("type=hls") || lower.contains("format=hls")) {
+        if (lower.contains(".m3u8") || lower.contains("type=hls") || lower.contains("format=hls")
+                || lower.contains("type=m3u8") || lower.contains("format=m3u8")) {
             return true;
         }
         try {

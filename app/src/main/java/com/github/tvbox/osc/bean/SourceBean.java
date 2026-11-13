@@ -1,8 +1,11 @@
 package com.github.tvbox.osc.bean;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 
-public class SourceBean {
+/** A source definition is also passed to the dedicated :player process. */
+public class SourceBean implements Serializable {
+    private static final long serialVersionUID = 1L;
     private String key;
     private String name;
     private String api;

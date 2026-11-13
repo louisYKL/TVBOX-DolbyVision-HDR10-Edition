@@ -16,6 +16,8 @@ import android.view.ViewTreeObserver;
 import java.util.ArrayList;
 import java.util.WeakHashMap;
 
+import xyz.doikki.videoplayer.player.VideoView;
+
 public final class LiquidGlassSnapshotManager {
     private static final WeakHashMap<View, SnapshotHolder> HOLDERS = new WeakHashMap<>();
     private static final int DOWNSAMPLE = 6;
@@ -105,13 +107,23 @@ public final class LiquidGlassSnapshotManager {
         final ViewTreeObserver.OnGlobalLayoutListener layoutListener = new ViewTreeObserver.OnGlobalLayoutListener() {
             @Override
             public void onGlobalLayout() {
-                schedule();
+                // Text/progress/subtitle layouts do not change this static backdrop. Redrawing
+                // the entire detail screen on each one competes with demux and MediaCodec.
+                int width = root.getWidth();
+                int height = root.getHeight();
+                if (width != layoutWidth || height != layoutHeight) {
+                    layoutWidth = width;
+                    layoutHeight = height;
+                    schedule();
+                }
             }
         };
         Bitmap bitmap;
         final int downsample;
         final boolean reducedQuality;
         boolean scheduled;
+        int layoutWidth;
+        int layoutHeight;
 
         SnapshotHolder(View root) {
             this.root = root;
@@ -134,12 +146,16 @@ public final class LiquidGlassSnapshotManager {
 
         void capture() {
             scheduled = false;
-            if (root.getWidth() <= 0 || root.getHeight() <= 0) {
+            if (root.getWidth() <= 0 || root.getHeight() <= 0
+                    || !root.isAttachedToWindow() || hasVideoSession(root)) {
                 return;
             }
             ArrayList<View> glassViews = new ArrayList<>();
             collectGlassViews(root, glassViews);
             int size = glassViews.size();
+            if (size == 0) {
+                return;
+            }
             float[] previousAlpha = new float[size];
             for (int i = 0; i < size; i++) {
                 previousAlpha[i] = glassViews.get(i).getAlpha();
@@ -147,19 +163,51 @@ public final class LiquidGlassSnapshotManager {
             }
             int bmpWidth = Math.max(1, root.getWidth() / downsample);
             int bmpHeight = Math.max(1, root.getHeight() / downsample);
-            Bitmap captureBitmap = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888);
-            Canvas canvas = new Canvas(captureBitmap);
-            canvas.scale(1f / downsample, 1f / downsample);
-            root.draw(canvas);
-            for (int i = 0; i < size; i++) {
-                glassViews.get(i).setAlpha(previousAlpha[i]);
+            Bitmap captureBitmap = null;
+            Bitmap blurred = null;
+            try {
+                captureBitmap = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888);
+                Canvas canvas = new Canvas(captureBitmap);
+                canvas.scale(1f / downsample, 1f / downsample);
+                root.draw(canvas);
+                blurred = StackBlur.blur(captureBitmap, BLUR_RADIUS);
+            } catch (RuntimeException | OutOfMemoryError failure) {
+                android.util.Log.e("TVBox-runtime", "glass-backdrop-capture-failed", failure);
+                return;
+            } finally {
+                for (int i = 0; i < size; i++) {
+                    glassViews.get(i).setAlpha(previousAlpha[i]);
+                }
+                if (captureBitmap != null && captureBitmap != blurred
+                        && !captureBitmap.isRecycled()) {
+                    captureBitmap.recycle();
+                }
             }
-            Bitmap blurred = StackBlur.blur(captureBitmap, BLUR_RADIUS);
             if (bitmap != null && !bitmap.isRecycled()) {
                 bitmap.recycle();
             }
             bitmap = blurred;
             invalidateGlassViews(glassViews);
+        }
+
+        private boolean hasVideoSession(View view) {
+            if (view instanceof VideoView) {
+                int state = ((VideoView) view).getCurrentPlayState();
+                // Preparing and user-paused sessions still own codec/cache resources. Retain
+                // the previous backdrop (or the glass gradient) throughout their lifetime.
+                return state != VideoView.STATE_IDLE && state != VideoView.STATE_START_ABORT
+                        && state != VideoView.STATE_ERROR
+                        && state != VideoView.STATE_PLAYBACK_COMPLETED;
+            }
+            if (view instanceof ViewGroup) {
+                ViewGroup group = (ViewGroup) view;
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    if (hasVideoSession(group.getChildAt(i))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         void release() {

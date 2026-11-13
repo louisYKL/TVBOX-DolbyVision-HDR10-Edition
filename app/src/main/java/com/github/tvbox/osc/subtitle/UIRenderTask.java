@@ -32,24 +32,44 @@ import com.github.tvbox.osc.subtitle.runtime.AppTaskExecutor;
  * @author AveryZhong.
  */
 
-public class UIRenderTask implements Runnable {
+public class UIRenderTask {
 
-    private Subtitle mSubtitle;
-    private SubtitleEngine.OnSubtitleChangeListener mOnSubtitleChangeListener;
+    private final SubtitleEngine.OnSubtitleChangeListener mOnSubtitleChangeListener;
+    /**
+     * A subtitle selection can be replaced while callbacks are queued on the main looper.
+     * Cancelling the task prevents an old cue from being rendered into the new selection.
+     */
+    private volatile boolean mCancelled;
 
     public UIRenderTask(final SubtitleEngine.OnSubtitleChangeListener l) {
         mOnSubtitleChangeListener = l;
     }
 
-    @Override
-    public void run() {
-        if (mOnSubtitleChangeListener != null) {
-            mOnSubtitleChangeListener.onSubtitleChanged(mSubtitle);
-        }
+    public void cancel() {
+        mCancelled = true;
     }
 
     public void execute(final Subtitle subtitle) {
-        mSubtitle = subtitle;
-        AppTaskExecutor.mainThread().execute(this);
+        execute(subtitle, null);
+    }
+
+    public void execute(final Subtitle subtitle, final GenerationGuard generationGuard) {
+        if (mCancelled) {
+            return;
+        }
+        AppTaskExecutor.mainThread().execute(new Runnable() {
+            @Override
+            public void run() {
+                if (!mCancelled
+                        && (generationGuard == null || generationGuard.isCurrent())
+                        && mOnSubtitleChangeListener != null) {
+                    mOnSubtitleChangeListener.onSubtitleChanged(subtitle);
+                }
+            }
+        });
+    }
+
+    public interface GenerationGuard {
+        boolean isCurrent();
     }
 }

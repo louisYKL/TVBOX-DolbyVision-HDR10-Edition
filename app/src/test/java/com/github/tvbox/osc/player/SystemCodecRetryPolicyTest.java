@@ -39,4 +39,24 @@ public class SystemCodecRetryPolicyTest {
         assertEquals(-1, SystemCodecRetryPolicy.nextRetryAttempt(-1, 2004));
         assertTrue(SystemCodecRetryPolicy.isTransientSourceError(2004));
     }
+
+    @Test
+    public void retryKeepsSavedResumeWhenCurrentPositionIsNotAvailableYet() {
+        assertEquals(18_000L, SystemCodecRetryPolicy.resolveRetryResumePosition(
+                0L, false, -1L, 18_000L));
+        assertEquals(24_000L, SystemCodecRetryPolicy.resolveRetryResumePosition(
+                0L, true, 24_000L, 18_000L));
+        assertEquals(0L, SystemCodecRetryPolicy.resolveRetryResumePosition(
+                0L, true, 0L, 18_000L));
+        assertEquals(31_000L, SystemCodecRetryPolicy.resolveRetryResumePosition(
+                31_000L, false, 24_000L, 18_000L));
+        assertEquals(24_000L, SystemCodecRetryPolicy.resolveRetryResumePosition(
+                31_000L, true, 24_000L, 18_000L));
+    }
+
+    @Test
+    public void retryDoesNotInventAResumePositionForFreshPlayback() {
+        assertEquals(0L, SystemCodecRetryPolicy.resolveRetryResumePosition(
+                0L, false, -1L, 0L));
+    }
 }

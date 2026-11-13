@@ -2,6 +2,9 @@ package com.github.tvbox.osc.player;
 
 import android.content.Context;
 import android.util.AttributeSet;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -29,6 +32,23 @@ public class MyVideoView extends VideoView {
 
     public AbstractPlayer getMediaPlayer() {
         return mMediaPlayer;
+    }
+
+    /** Keep the single loading surface above the video, including container fullscreen moves. */
+    public void attachPlaybackLoadingViews(View... views) {
+        for (View view : views) {
+            if (view == null || view.getParent() == mPlayerContainer) {
+                continue;
+            }
+            ViewGroup.LayoutParams params = view.getLayoutParams();
+            FrameLayout.LayoutParams overlayParams = params instanceof FrameLayout.LayoutParams
+                    ? new FrameLayout.LayoutParams((FrameLayout.LayoutParams) params)
+                    : new FrameLayout.LayoutParams(params);
+            if (view.getParent() instanceof ViewGroup) {
+                ((ViewGroup) view.getParent()).removeView(view);
+            }
+            mPlayerContainer.addView(view, overlayParams);
+        }
     }
 
     public void persistProgressNow() {

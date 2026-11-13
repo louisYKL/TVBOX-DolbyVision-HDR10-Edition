@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     package="com.github.tvbox.osc">
+
+    <!-- OkGo declares this privileged system permission; the app never uses it. -->
+    <uses-permission
+        android:name="android.permission.MOUNT_UNMOUNT_FILESYSTEMS"
+        tools:node="remove" />
 
     <queries>
         <package android:name="com.brouken.player" />
@@ -23,11 +29,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".base.App"
@@ -57,6 +60,7 @@
 
         <activity
             android:name=".ui.activity.LivePlayActivity"
+            android:process=":player"
             android:screenOrientation="sensorLandscape" />
         <activity
             android:name=".ui.activity.DetailActivity"
@@ -67,6 +71,7 @@
             android:name=".ui.activity.PlayActivity"
             android:colorMode="hdr"
             android:configChanges="orientation|screenSize"
+            android:process=":player"
             android:screenOrientation="sensorLandscape" />
         <activity
             android:name=".ui.activity.PushActivity"

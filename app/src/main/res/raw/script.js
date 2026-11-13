@@ -2,24 +2,79 @@ function search() {
     doAction('search', { word: $('#search_key_word').val() });
 }
 
-function api() {
-    const url = $('#diy_api_url').val().trim();
-    const liveUrl = $('#diy_live_api_url').val().trim();
-    const payload = {};
-    if (url.length > 0) {
-        payload.subscription_url = url;
-    }
-    if (liveUrl.length > 0) {
-        payload.live_url = liveUrl;
-    }
-    if (!payload.subscription_url && !payload.live_url) {
-        warnToast('请至少填写一项地址');
+// Each field is sent independently. The receiver only fills the matching in-app field;
+// saving and applying the configuration remains an explicit action inside the app.
+const remoteConfigFields = {
+    config: { input: '#diy_api_url', status: '#status_config', label: '订阅源' },
+    live: { input: '#diy_live_api_url', status: '#status_live', label: '直播源' },
+    webdav_url: { input: '#webdav_url', status: '#status_webdav_url', label: 'WebDAV地址' },
+    webdav_username: { input: '#webdav_username', status: '#status_webdav_username', label: 'WebDAV账号' },
+    webdav_password: { input: '#webdav_password', status: '#status_webdav_password', label: 'WebDAV密码' }
+};
+const remoteConfigPending = Object.create(null);
+
+function submitConfigField(target) {
+    const field = remoteConfigFields[target];
+    if (!field || remoteConfigPending[target]) {
         return false;
     }
-    payload['do'] = 'api';
-    $.post('/action', payload)
-        .done(function () { warnToast('配置地址已保存'); })
-        .fail(function () { warnToast('连接电视失败，请确认电视和浏览器处于同一网络'); });
+    const rawValue = $(field.input).val();
+    const value = target === 'config' || target === 'live' || target === 'webdav_url'
+        ? rawValue.trim() : rawValue;
+    const status = $(field.status);
+    const button = $('#confirm_' + target);
+    remoteConfigPending[target] = true;
+    button.prop('disabled', true).text('发送中');
+    status.removeClass('remote-config__status_ok remote-config__status_error')
+        .text('正在发送...');
+    $.ajax({
+        url: '/action',
+        type: 'POST',
+        dataType: 'json',
+        timeout: 15000,
+        data: { 'do': 'inputField', target: target, value: value }
+    })
+        .done(function (data) {
+            let response;
+            try {
+                response = typeof data === 'string' ? JSON.parse(data) : data;
+            } catch (ignored) {
+                response = null;
+            }
+            if (!response || response.success !== true || response.target !== target
+                || (response.state !== 'filled' && response.state !== 'queued')) {
+                const message = response && typeof response.message === 'string'
+                    ? response.message : '电视未确认接收，请重试';
+                status.addClass('remote-config__status_error').text(message);
+                return;
+            }
+            const message = response.message || (response.state === 'filled'
+                ? '已填入应用对应设置项，请在应用内保存'
+                : '已接收，请打开应用对应设置项并手动保存');
+            status.addClass('remote-config__status_ok').text(message);
+            warnToast(message);
+        })
+        .fail(function (xhr) {
+            let message = '连接电视失败，请确认电视和浏览器处于同一网络';
+            try {
+                const response = JSON.parse(xhr.responseText);
+                if (response && typeof response.message === 'string') message = response.message;
+            } catch (ignored) {
+            }
+            status.addClass('remote-config__status_error').text(message);
+            warnToast(message);
+        })
+        .always(function () {
+            delete remoteConfigPending[target];
+            button.prop('disabled', false).text('确认');
+        });
+    return false;
+}
+
+// Kept for local-file actions and older pages that still call api(). New configuration
+// controls always call submitConfigField() so a blank field can intentionally be cleared.
+function api() {
+    return submitConfigField('config');
 }
 
 function push() {
@@ -98,12 +153,8 @@ function selectFile(path, canDel) {
 }
 
 function fileToApi(type) {
-    if (type === 1) {
-        doAction('api', { url: "clan://localhost/" + current_file });
-    } else {
-        doAction('api', { url: current_remote + current_file });
-    }
     $('#diy_api_url').val(type === 1 ? "clan://localhost/" + current_file : current_remote + current_file);
+    submitConfigField('config');
 }
 
 function hideFileInfo() {
@@ -144,7 +195,7 @@ function listFile(path) {
 }
 
 function warnToast(msg) {
-    $('#warnToastContent').html(msg);
+    $('#warnToastContent').text(msg);
     $('#warnToast').show();
     setTimeout(() => {
         $('#warnToast').hide();
@@ -277,7 +328,7 @@ $(function () {
     $('.weui-tabbar__item').on('click', function () {
         showPanel(parseInt($(this).attr('id').substr(3)));
     });
-    $('#diy_api_url, #diy_live_api_url').on('keydown', function (event) {
+    $('#diy_api_url, #diy_live_api_url, #webdav_url, #webdav_username, #webdav_password').on('keydown', function (event) {
         if (event.key === 'Enter') {
             event.preventDefault();
             this.blur();

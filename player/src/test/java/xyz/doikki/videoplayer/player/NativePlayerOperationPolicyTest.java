@@ -44,4 +44,19 @@ public class NativePlayerOperationPolicyTest {
         assertFalse(NativePlayerOperationPolicy.shouldStartAfterSeekCompletion(false, true));
         assertTrue(NativePlayerOperationPolicy.shouldStartAfterSeekCompletion(false, false));
     }
+
+    @Test
+    public void logicalStartedStateRearmsWhenNativePlayerStopped() {
+        assertFalse(NativePlayerOperationPolicy.shouldRearmStartedPlayer(true, true, true));
+        assertTrue(NativePlayerOperationPolicy.shouldRearmStartedPlayer(true, true, false));
+        assertTrue(NativePlayerOperationPolicy.shouldRearmStartedPlayer(false, true, false));
+    }
+
+    @Test
+    public void preparedAndPreparingPauseOnlyUpdateIntent() {
+        assertFalse(NativePlayerOperationPolicy.shouldInvokeNativePause(true, false, false));
+        assertFalse(NativePlayerOperationPolicy.shouldInvokeNativePause(false, true, false));
+        assertFalse(NativePlayerOperationPolicy.shouldInvokeNativePause(false, false, false));
+        assertTrue(NativePlayerOperationPolicy.shouldInvokeNativePause(false, false, true));
+    }
 }

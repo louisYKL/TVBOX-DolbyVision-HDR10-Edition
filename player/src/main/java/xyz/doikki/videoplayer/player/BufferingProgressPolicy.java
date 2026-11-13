@@ -48,10 +48,14 @@ final class BufferingProgressPolicy {
             return 0;
         }
         long safeBuffered = Math.max(0L, bufferedBytes);
-        long percent = safeBuffered >= targetBytes
-                ? 99L
-                : (safeBuffered * 100L) / targetBytes;
-        return Math.min(99, Math.max(clampPercent(previousPercent), (int) percent));
+        if (safeBuffered >= targetBytes) {
+            return 100;
+        }
+        long percent = (safeBuffered * 100L) / targetBytes;
+        // The byte snapshot is the source of truth. Retaining the historical maximum makes a
+        // stale 99% survive a source handoff or a seek even when the new Range has received no
+        // bytes, which is exactly the endless-99% state seen on the TV.
+        return Math.min(99, (int) percent);
     }
 
     static boolean isRangePrebufferReady(long bufferedBytes, long targetBytes) {
@@ -60,6 +64,17 @@ final class BufferingProgressPolicy {
 
     static boolean shouldHoldBufferingEnd(boolean nativeBuffering) {
         return nativeBuffering;
+    }
+
+    static long resolveFirstFrameDeadlineMs(boolean playbackStarted,
+                                            long existingDeadlineMs,
+                                            long nowMs,
+                                            long timeoutMs) {
+        if (!playbackStarted) {
+            return 0L;
+        }
+        // Repeated callbacks must not extend a genuine decoder failure indefinitely.
+        return existingDeadlineMs > 0L ? existingDeadlineMs : nowMs + timeoutMs;
     }
 
     static boolean shouldDeferFirstFrameFailure(boolean nativeBuffering,

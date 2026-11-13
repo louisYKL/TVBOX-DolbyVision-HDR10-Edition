@@ -9,15 +9,9 @@ public final class PlaybackLoadingOverlayPolicy {
     public static boolean shouldShowNetworkSpeed(int playState,
                                                  boolean seekOverlayVisible,
                                                  boolean embeddedPreviewMode) {
-        if (embeddedPreviewMode) {
-            return false;
-        }
-        // The seek overlay is the single transport status surface during a
-        // drag. Suppress the separate network-speed label so buffering does
-        // not render two competing overlays at once.
-        return !seekOverlayVisible
-                && (playState == VideoView.STATE_PREPARING
-                || playState == VideoView.STATE_BUFFERING);
+        // The Activity/Fragment loading surface is the single owner of phase, percentage and
+        // speed. A controller label here created the observed overlapping small/large text.
+        return false;
     }
 
     public static boolean shouldShowControllerLoading(int playState, boolean embeddedPreviewMode) {
@@ -27,10 +21,8 @@ public final class PlaybackLoadingOverlayPolicy {
     public static boolean shouldShowControllerLoading(int playState,
                                                       boolean embeddedPreviewMode,
                                                       boolean seekOverlayVisible) {
-        return !embeddedPreviewMode
-                && !seekOverlayVisible
-                && (playState == VideoView.STATE_PREPARING
-                || playState == VideoView.STATE_BUFFERING);
+        // Keep one centered loading surface instead of a second controller spinner.
+        return false;
     }
 
     public static String formatSeekStatus(String position,

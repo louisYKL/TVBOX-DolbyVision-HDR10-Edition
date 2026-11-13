@@ -1,5 +1,7 @@
 package com.github.tvbox.osc.player;
 
+import android.media.MediaFormat;
+
 import androidx.annotation.Nullable;
 
 import com.google.android.exoplayer2.C;
@@ -43,17 +45,8 @@ final class SystemCodecHdrPolicy {
         boolean hdrStaticInfo = colorInfo != null
                 && colorInfo.hdrStaticInfo != null
                 && colorInfo.hdrStaticInfo.length > 0;
-        // Some vendor extractors preserve the BT.2020 + 10-bit signal but
-        // replace the transfer characteristic with UNSPECIFIED (-1). Treat
-        // that combination as HDR, while keeping an explicit SDR transfer
-        // (and BT.2020 by itself) on the SDR path.
-        boolean main10WideGamutWithoutSdrTransfer = colorInfo != null
-                && colorInfo.colorSpace == C.COLOR_SPACE_BT2020
-                && colorInfo.colorTransfer == -1
-                && isHevcMain10(mime, codec);
         boolean textMarker = containsHdrMarker(codec) || containsHdrMarker(metadata);
-        return dolbyVision || hdrTransfer || hdrStaticInfo
-                || main10WideGamutWithoutSdrTransfer || textMarker;
+        return dolbyVision || hdrTransfer || hdrStaticInfo || textMarker;
     }
 
     /**
@@ -78,6 +71,89 @@ final class SystemCodecHdrPolicy {
         return isHdr(format.sampleMimeType, format.codecs, format.colorInfo, metadata)
                 || containsHdrMarker(lower(format.id))
                 || containsHdrMarker(lower(format.containerMimeType));
+    }
+
+    static boolean isExplicitSdr(@Nullable Format format) {
+        if (format == null || isHdr(format) || format.colorInfo == null
+                || format.colorInfo.colorTransfer != C.COLOR_TRANSFER_SDR) {
+            return false;
+        }
+        String mime = lower(format.sampleMimeType);
+        String codec = lower(format.codecs);
+        // BT.2020 Main10 with an SDR default transfer is ambiguous on several TV
+        // extractors. Do not let that incomplete metadata turn off a known HDR route.
+        return !(format.colorInfo.colorSpace == C.COLOR_SPACE_BT2020 && isHevcMain10(mime, codec));
+    }
+
+    static boolean isHdr(@Nullable MediaFormat mediaFormat) {
+        if (mediaFormat == null) {
+            return false;
+        }
+        int transfer = safeGetInteger(mediaFormat, MediaFormat.KEY_COLOR_TRANSFER, -1);
+        if (transfer == MediaFormat.COLOR_TRANSFER_ST2084
+                || transfer == MediaFormat.COLOR_TRANSFER_HLG) {
+            return true;
+        }
+        if (containsNonEmptyValue(mediaFormat, MediaFormat.KEY_HDR_STATIC_INFO)) {
+            return true;
+        }
+        if (containsNonEmptyValue(mediaFormat, "hdr10-plus-info")) {
+            return true;
+        }
+        // Some phone codecs expose the transfer as a vendor string in the
+        // MediaFormat dump instead of the integer COLOR_TRANSFER key.
+        String dump;
+        try {
+            dump = mediaFormat.toString();
+        } catch (Throwable ignored) {
+            dump = "";
+        }
+        return containsHdrMarker(lower(dump));
+    }
+
+    static boolean isExplicitSdr(@Nullable MediaFormat mediaFormat) {
+        if (mediaFormat == null) {
+            return false;
+        }
+        int transfer = safeGetInteger(mediaFormat, MediaFormat.KEY_COLOR_TRANSFER, -1);
+        return transfer == C.COLOR_TRANSFER_SDR
+                && !isHdr(mediaFormat);
+    }
+
+    static boolean isExplicitSdr(@Nullable Format format, @Nullable MediaFormat outputFormat) {
+        if (!isExplicitSdr(format) || outputFormat == null) {
+            return false;
+        }
+        int transfer = safeGetInteger(outputFormat, MediaFormat.KEY_COLOR_TRANSFER, -1);
+        return transfer == C.COLOR_TRANSFER_SDR
+                && !isHdr(outputFormat);
+    }
+
+    private static int safeGetInteger(MediaFormat mediaFormat, String key, int fallback) {
+        try {
+            return mediaFormat.containsKey(key) ? mediaFormat.getInteger(key) : fallback;
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private static boolean containsNonEmptyValue(MediaFormat mediaFormat, String key) {
+        try {
+            if (!mediaFormat.containsKey(key)) {
+                return false;
+            }
+            java.nio.ByteBuffer value = mediaFormat.getByteBuffer(key);
+            return value != null && value.remaining() > 0;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isHevcMain10(String mime, String codecs) {
+        if (!("video/hevc".equals(mime) || "video/dolby-vision".equals(mime))) {
+            return false;
+        }
+        return codecs.startsWith("hvc1.2.") || codecs.startsWith("hev1.2.");
     }
 
     static boolean isDolbyVision(@Nullable String sampleMimeType,
@@ -119,13 +195,6 @@ final class SystemCodecHdrPolicy {
         return containsHdrMarker(lower(value));
     }
 
-    private static boolean isHevcMain10(String mime, String codecs) {
-        if (!("video/hevc".equals(mime) || "video/dolby-vision".equals(mime))) {
-            return false;
-        }
-        return codecs.startsWith("hvc1.2.") || codecs.startsWith("hev1.2.");
-    }
-
     private static boolean containsHdrMarker(String value) {
         if (value == null || value.length() == 0) {
             return false;
@@ -164,7 +233,11 @@ final class SystemCodecHdrPolicy {
                 || value.contains("hdr-static-info")
                 || value.contains("mastering-display")
                 || value.contains("max-cll")
-                || value.contains("maxfall");
+                || value.contains("maxfall")
+                || value.contains("hdr vivid")
+                || value.contains("hdr-vivid")
+                || value.contains("hdrvivid")
+                || value.contains("cuva");
     }
 
     private static String lower(String value) {

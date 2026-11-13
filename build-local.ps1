@@ -1,8 +1,8 @@
 param(
     [string[]]$Tasks = @(
-        ":app:assembleNormalDebug",
-        ":app:assembleJava64Debug",
-        ":app:assembleHisenseDebug"
+        ":app:assembleNormalRelease",
+        ":app:assembleJava64Release",
+        ":app:assembleHisenseRelease"
     )
 )
 

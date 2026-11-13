@@ -75,6 +75,8 @@ import okhttp3.Call;
  * @description:
  */
 public class SourceViewModel extends ViewModel {
+    /** Spider login/QR flows may legitimately wait for user approval. */
+    private static final long SPIDER_PLAY_TIMEOUT_SECONDS = 180L;
     public MutableLiveData<AbsSortXml> sortResult;
     public MutableLiveData<AbsXml> listResult;
     public MutableLiveData<AbsXml> searchResult;
@@ -99,6 +101,11 @@ public class SourceViewModel extends ViewModel {
 
     private boolean isCurrentPlayRequest(long requestToken) {
         return playRequestSerial.get() == requestToken;
+    }
+
+    public void cancelPlayRequests() {
+        playRequestSerial.incrementAndGet();
+        OkGo.getInstance().cancelTag("play");
     }
 
     private void postPlayResult(long requestToken, JSONObject result) {
@@ -1004,6 +1011,13 @@ public class SourceViewModel extends ViewModel {
         final long requestToken = playRequestSerial.incrementAndGet();
         OkGo.getInstance().cancelTag("play");
         SourceBean sourceBean = ApiConfig.get().getSource(sourceKey);
+        if (sourceBean == null) {
+            LOG.e("echo--getPlay--missing-source key=" + sourceKey
+                    + " flag=" + playFlag + " request=" + requestKey);
+            postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey,
+                    "播放源不可用，请重新加载配置");
+            return;
+        }
         int type = sourceBean.getType();
         if (type == 3) {
             if (shouldFastPathDirectPlayUrl(url)) {
@@ -1039,7 +1053,7 @@ public class SourceViewModel extends ViewModel {
                     });
 
                     try {
-                        String json = future.get(10, TimeUnit.SECONDS);
+                        String json = future.get(SPIDER_PLAY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                         LOG.i("echo--getPlay--result:" + json);
                         if (!TextUtils.isEmpty(json)) {
                             JSONObject result = normalizePlayResult(new JSONObject(json), url, progressKey, subtitleKey, playFlag, requestKey);
@@ -1048,7 +1062,8 @@ public class SourceViewModel extends ViewModel {
                             postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey, "播放信息为空");
                         }
                     } catch (TimeoutException e) {
-                        LOG.i("echo--getPlay--timeout");
+                        LOG.e("echo--getPlay--timeout seconds=" + SPIDER_PLAY_TIMEOUT_SECONDS
+                                + " source=" + sourceKey + " flag=" + playFlag);
                         future.cancel(true);
                         postPlayError(requestToken, url, progressKey, subtitleKey, playFlag, requestKey, "获取播放信息超时");
                     } catch (Exception e) {

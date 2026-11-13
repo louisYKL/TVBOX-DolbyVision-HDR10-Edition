@@ -122,11 +122,22 @@ public class HomeActivity extends BaseActivity {
         @SuppressLint({"DefaultLocale", "SetTextI18n"})
         @Override
         public void run() {
+            // The clock runnable can already be queued while the Activity is
+            // leaving (or being recreated after a remote config update).  Do not
+            // touch a detached/null view and do not reschedule after lifecycle
+            // teardown; this was the source of HomeActivity$2 TextView NPEs.
+            if (!activityResumed || isFinishing()
+                    || (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR1
+                    && isDestroyed()) || tvDate == null) {
+                return;
+            }
             Date date = new Date();
             @SuppressLint("SimpleDateFormat")
             SimpleDateFormat timeFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm");
             tvDate.setText(timeFormat.format(date));
-            mHandler.postDelayed(this, 1000);
+            if (activityResumed && !isFinishing()) {
+                mHandler.postDelayed(this, 1000);
+            }
         }
     };
 
@@ -212,7 +223,15 @@ public class HomeActivity extends BaseActivity {
 
             @Override
             public void onItemClick(TvRecyclerView parent, View itemView, int position) {
+                MovieSort.SortData selectedSort = sortAdapter.getItem(position);
+                if (selectedSort != null && "settings0".equals(selectedSort.id)) {
+                    jumpActivity(SettingActivity.class);
+                    return;
+                }
                 if (itemView != null && currentSelected == position) {
+                    if (currentSelected < 0 || currentSelected >= fragments.size()) {
+                        return;
+                    }
                     BaseLazyFragment baseLazyFragment = fragments.get(currentSelected);
                     if ((baseLazyFragment instanceof GridFragment) && !sortAdapter.getItem(position).filters.isEmpty()) {// 弹出筛选
                         ((GridFragment) baseLazyFragment).showFilter();
@@ -225,6 +244,9 @@ public class HomeActivity extends BaseActivity {
 
         this.mGridView.setOnInBorderKeyEventListener(new TvRecyclerView.OnInBorderKeyEventListener() {
             public boolean onInBorderKeyEvent(int direction, View view) {
+                if (sortFocused < 0 || sortFocused >= fragments.size()) {
+                    return false;
+                }
                 if (direction == View.FOCUS_UP) {
                     BaseLazyFragment baseLazyFragment = fragments.get(sortFocused);
                     if ((baseLazyFragment instanceof GridFragment)) {
@@ -245,6 +267,11 @@ public class HomeActivity extends BaseActivity {
             @Override
             public void onClick(View v) {
                 FastClickCheckUtil.check(v);
+                SourceBean homeSource = ApiConfig.get().getHomeSourceBean();
+                if (homeSource == null || homeSource.getKey() == null || homeSource.getKey().isEmpty()) {
+                    jumpActivity(SettingActivity.class);
+                    return;
+                }
                 if(dataInitOk && jarInitOk){
                     String cspCachePath = FileUtils.getFilePath()+"/csp/";
                     String jar=ApiConfig.get().getHomeSourceBean().getJar();
@@ -294,12 +321,17 @@ public class HomeActivity extends BaseActivity {
                     return;
                 }
                 showSuccess();
-                if (absXml != null && absXml.classes != null && absXml.classes.sortList != null) {
+                if (absXml != null && absXml.classes != null && absXml.classes.sortList != null
+                        && !absXml.classes.sortList.isEmpty()) {
                     sortAdapter.setNewData(DefaultConfig.adjustSort(ApiConfig.get().getHomeSourceBean().getKey(), absXml.classes.sortList, true));
-                } else {
-                    sortAdapter.setNewData(DefaultConfig.adjustSort(ApiConfig.get().getHomeSourceBean().getKey(), new ArrayList<>(), true));
+                    initViewPager(absXml);
+                } else if (sortAdapter.getData() == null || sortAdapter.getData().isEmpty()) {
+                    // A transient source/config failure must not turn the entire home menu into
+                    // an empty adapter. Keep the last-good page when one exists; only a genuinely
+                    // first load may remain empty and be retried by the normal init flow.
+                    LOG.i("echo-home-sort empty-result keep-existing-menu");
+                    showConfigurationEntry();
                 }
-                initViewPager(absXml);
                 SourceBean home = ApiConfig.get().getHomeSourceBean();
                 if (home != null && home.getName() != null && !home.getName().isEmpty()) tvName.setText(home.getName());
                 tvName.clearAnimation();
@@ -312,7 +344,6 @@ public class HomeActivity extends BaseActivity {
     private boolean configLoadInProgress = false;
     private boolean jarLoadInProgress = false;
     private boolean homeSortRequested = false;
-    private boolean defaultLiveJumped = false;
 
     private void initData() {
         if (dataInitOk && jarInitOk) {
@@ -322,15 +353,17 @@ public class HomeActivity extends BaseActivity {
             }
             homeSortRequested = true;
             LOG.i("echo-home-init request sort once");
-            sourceViewModel.getSort(ApiConfig.get().getHomeSourceBean().getKey());
+            SourceBean homeSource = ApiConfig.get().getHomeSourceBean();
+            if (homeSource == null || homeSource.getKey() == null || homeSource.getKey().isEmpty()) {
+                showConfigurationEntry();
+                Toast.makeText(this, "尚未配置有效首页数据源，请进入设置添加订阅或其他来源", Toast.LENGTH_LONG).show();
+                return;
+            }
+            sourceViewModel.getSort(homeSource.getKey());
             if (hasPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
                 LOG.e("有");
             } else {
                 LOG.e("无");
-            }
-            if (!defaultLiveJumped && !useCacheConfig && Hawk.get(HawkConfig.DEFAULT_LOAD_LIVE, false)) {
-                defaultLiveJumped = true;
-                jumpActivity(LivePlayActivity.class);
             }
             return;
         }
@@ -498,6 +531,23 @@ public class HomeActivity extends BaseActivity {
         }, this);
     }
 
+    private void showConfigurationEntry() {
+        if (sortAdapter == null) {
+            return;
+        }
+        if (sortAdapter.getData() != null && sortAdapter.getData().size() == 1
+                && "settings0".equals(sortAdapter.getData().get(0).id)) {
+            return;
+        }
+        fragments.clear();
+        pageAdapter = null;
+        mViewPager.setAdapter(null);
+        mViewPager.setVisibility(View.INVISIBLE);
+        sortAdapter.setNewData(new ArrayList<>(java.util.Collections.singletonList(
+                new MovieSort.SortData("settings0", "设置"))));
+        mGridView.setSelectedPosition(0);
+    }
+
     private void initViewPager(AbsSortXml absXml) {
         if (sortAdapter.getData().size() > 0) {
             fragments.clear();
@@ -643,6 +693,9 @@ public class HomeActivity extends BaseActivity {
         public void run() {
             if (sortChange) {
                 sortChange = false;
+                if (sortFocused < 0 || sortFocused >= fragments.size() || pageAdapter == null) {
+                    return;
+                }
                 if (sortFocused != currentSelected) {
                     currentSelected = sortFocused;
                     mViewPager.setCurrentItem(sortFocused, true);
@@ -729,6 +782,11 @@ public class HomeActivity extends BaseActivity {
 
     @Override
     protected void onDestroy() {
+        activityResumed = false;
+        mHandler.removeCallbacks(mRunnable);
+        mHandler.removeCallbacks(mDataRunnable);
+        mHandler.removeCallbacks(remoteConfigReload);
+        mHandler.removeCallbacksAndMessages(null);
         super.onDestroy();
         unregisterEventBus();
     }
@@ -786,7 +844,9 @@ public class HomeActivity extends BaseActivity {
     private void refreshHome()
     {
         Intent intent = new Intent(getApplicationContext(), HomeActivity.class);
-        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        // CLEAR_TASK is ignored without NEW_TASK and left an entire previous Home/Detail
+        // stack alive. Recreate the existing root and finish obsolete preview owners first.
+        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
         Bundle bundle = new Bundle();
         bundle.putBoolean("useCache", true);
         intent.putExtras(bundle);
@@ -795,11 +855,12 @@ public class HomeActivity extends BaseActivity {
 
     private void refreshEmpty()
     {
-        skipNextUpdate=true;
         showSuccess();
-        sortAdapter.setNewData(DefaultConfig.adjustSort(ApiConfig.get().getHomeSourceBean().getKey(), new ArrayList<>(), true));
-        initViewPager(null);
         tvName.clearAnimation();
+        // Stop the loading indicator without replacing a valid menu with an empty adapter. The
+        // previous implementation made pressing Back during a slow source request erase every
+        // category until the whole Activity was recreated.
+        LOG.i("echo-home-refresh-empty keep-existing-menu");
     }
 
     private void tvNameAnimation()

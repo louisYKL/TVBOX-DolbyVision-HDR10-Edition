@@ -200,6 +200,7 @@ public class VodController extends BaseController {
     TextView mPlayPauseTime;
     TextView mPlayLoadNetSpeed;
     TextView mHdrStatusBadge;
+    TextView mResolutionStatusBadge;
     TextView mVideoSize;
     public SimpleSubtitleView mSubtitleView;
     public com.google.android.exoplayer2.ui.SubtitleView mBitmapSubtitleView;
@@ -230,6 +231,8 @@ public class VodController extends BaseController {
     private boolean menuNavigationStarted = false;
     private int bottomMenuFocusIndex = -1;
     private boolean hdrUiDimmed;
+    @SuppressLint("SimpleDateFormat")
+    private final SimpleDateFormat playbackClockFormat = new SimpleDateFormat("hh:mm a");
 
     /**
      * HDR video is mastered for a brighter transfer function than the SDR
@@ -256,13 +259,23 @@ public class VodController extends BaseController {
     public void setHdrMode(boolean hdrMode) {
         super.setHdrMode(hdrMode);
         if (mHdrStatusBadge != null) {
-            mHdrStatusBadge.setText(hdrMode ? "HDR" : "SDR");
+            setTextIfChanged(mHdrStatusBadge, hdrMode ? "HDR" : "SDR");
+        }
+    }
+
+    public void setVideoResolutionBadge(int width, int height) {
+        if (mResolutionStatusBadge != null) {
+            setTextIfChanged(mResolutionStatusBadge, width > 0 && height > 0
+                    ? width + " x " + height : "—");
         }
     }
 
     private void updateHdrStatusBadgeVisibility(boolean visible) {
         if (mHdrStatusBadge != null) {
             mHdrStatusBadge.setVisibility(visible && isPlayerFullScreen() ? VISIBLE : GONE);
+        }
+        if (mResolutionStatusBadge != null) {
+            mResolutionStatusBadge.setVisibility(visible && isPlayerFullScreen() ? VISIBLE : GONE);
         }
     }
 
@@ -272,26 +285,40 @@ public class VodController extends BaseController {
         }
     }
 
+    private static void setTextIfChanged(TextView view, CharSequence text) {
+        if (view != null && !TextUtils.equals(view.getText(), text)) {
+            view.setText(text);
+        }
+    }
+
     private final Runnable myRunnable2 = new Runnable() {
         @SuppressLint("SetTextI18n")
         @Override
         public void run() {
-            Date date = new Date();
-            @SuppressLint("SimpleDateFormat") SimpleDateFormat timeFormat = new SimpleDateFormat("hh:mm a");
-            mPlayPauseTime.setText(timeFormat.format(date));
+            if (mPlayPauseTime.isShown()) {
+                setTextIfChanged(mPlayPauseTime, playbackClockFormat.format(new Date()));
+            }
             long mSpeed = mControlWrapper.getTcpSpeed();
-            String speed = PlayerHelper.getDisplaySpeed(mSpeed,false);
-            String speedBps = PlayerHelper.getDisplaySpeedBps(mSpeed,true);
-            mPlayLoadNetSpeedRightTop.setText(speedBps);
-            mPlayLoadNetSpeed.setText(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
-                    videoPlayState,
-                    mControlWrapper.getBufferedPercentage(),
-                    speed));
-            net_play_speed.setText(speedBps);
+            if (mPlayLoadNetSpeedRightTop.isShown() || net_play_speed.isShown()) {
+                String speedBps = PlayerHelper.getDisplaySpeedBps(mSpeed, true);
+                if (mPlayLoadNetSpeedRightTop.isShown()) {
+                    setTextIfChanged(mPlayLoadNetSpeedRightTop, speedBps);
+                }
+                if (net_play_speed.isShown()) {
+                    setTextIfChanged(net_play_speed, speedBps);
+                }
+            }
+            if (mPlayLoadNetSpeed.isShown()) {
+                setTextIfChanged(mPlayLoadNetSpeed, PlaybackLoadingOverlayPolicy.formatLoadingStatus(
+                        videoPlayState, mControlWrapper.getBufferedPercentage(),
+                        PlayerHelper.getDisplaySpeed(mSpeed, false)));
+            }
             int[] mVideoSizes = mControlWrapper.getVideoSize();
-            String width = Integer.toString(mVideoSizes[0]);
-            String height = Integer.toString(mVideoSizes[1]);
-            mVideoSize.setText("[ " + width + " X " + height +" ]");
+            if (mVideoSize != null) {
+                setTextIfChanged(mVideoSize, mVideoSizes[0] > 0 && mVideoSizes[1] > 0
+                        ? "[ " + mVideoSizes[0] + " X " + mVideoSizes[1] + " ]" : "");
+            }
+            setVideoResolutionBadge(mVideoSizes[0], mVideoSizes[1]);
             if (touchSeekOverlayPinned && !mIsDragging) {
                 updateTouchSeekOverlay(cachedProgressPosition, mControlWrapper.getDuration());
             }
@@ -341,7 +368,11 @@ public class VodController extends BaseController {
         mPlayPauseTime = findViewById(R.id.tv_sys_time);
         mPlayLoadNetSpeed = findViewById(R.id.tv_play_load_net_speed);
         mHdrStatusBadge = findViewById(R.id.hdr_status_badge);
+        mResolutionStatusBadge = findViewById(R.id.video_resolution_badge);
         mVideoSize = findViewById(R.id.tv_videosize);
+        if (mVideoSize != null) {
+            mVideoSize.setVisibility(GONE);
+        }
         mSubtitleView = findViewById(R.id.subtitle_view);
         mBitmapSubtitleView = findViewById(R.id.bitmap_subtitle_view);
         mResumeAnchor = findViewById(R.id.play_resume_anchor);

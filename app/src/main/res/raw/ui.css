@@ -21,3 +21,43 @@ body {
   box-sizing: border-box;
   z-index: 1;
 }
+
+.remote-config__field {
+  min-width: 0;
+}
+.remote-config__row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+.remote-config__row .weui-input {
+  flex: 1;
+  min-width: 0;
+}
+.remote-config__row .remote-config__confirm {
+  flex: 0 0 auto;
+  min-width: 68px;
+  margin: 0 0 0 12px;
+  padding: 0 12px;
+  font-size: 15px;
+  line-height: 40px;
+}
+.remote-config__confirm:disabled {
+  opacity: 0.6;
+}
+.remote-config__status {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  color: var(--weui-FG-1, #666);
+}
+.remote-config__status:empty {
+  display: none;
+}
+.remote-config__status_ok {
+  color: var(--weui-BRAND, #087f45);
+}
+.remote-config__status_error {
+  color: var(--weui-RED, #c33131);
+}

@@ -85,6 +85,16 @@ public abstract class AbstractPlayer {
      */
     public abstract boolean isPlaying();
 
+    /** Whether a requested start is still waiting for preparation or startup buffering. */
+    public boolean isStartPending() {
+        return false;
+    }
+
+    /** Recoverable player-specific failure to show without switching codecs or leaving playback. */
+    public String getPlaybackErrorMessage() {
+        return null;
+    }
+
     /**
      * 调整进度
      */

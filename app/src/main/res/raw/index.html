@@ -62,36 +62,82 @@
 				<div id="panel3" role="tabpanel" aria-labelledby="tab3" class="weui-tab__panel" style="display: none;">
 					<div class="weui-form" style="min-height: 0;">
 						<div class="weui-form__text-area">
-							<h2 class="weui-form__title">Aerial . 接口</h2>
-							<p class="weui-form__desc">点播订阅源和直播源彼此独立。只会更新你填写的那一项，留空不会清空另一项。</p>
+							<h2 class="weui-form__title">Aerial . 配置</h2>
+							<p class="weui-form__desc">每项单独确认，只更新对应内容。填入后请在应用内确认使用。</p>
 						</div>
 						<div class="weui-form__control-area" style="margin-bottom: 0px !important;">
 							<div class="weui-cells__group weui-cells__group_form">
-								<div class="weui-cells">
+								<div class="weui-cells remote-config">
 									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
-										<div class="weui-cell__hd"><label class="weui-label">订阅源</label></div>
+										<div class="weui-cell__hd"><label for="diy_api_url" class="weui-label">订阅源</label></div>
 									</div>
 									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
-										<div class="weui-cell__bd weui-flex">
+										<div class="weui-cell__bd remote-config__field">
+											<div class="remote-config__row">
 											<input id="diy_api_url"
 												class="weui-input weui-cell__control weui-cell__control_flex"
-												type="text" value="" placeholder="请输入订阅源地址..." />
+												type="text" inputmode="url" autocapitalize="none" spellcheck="false" value="" placeholder="请输入订阅源地址..." />
+											<button id="confirm_config" type="button" onclick="submitConfigField('config'); return false;"
+												class="weui-btn weui-btn_default remote-config__confirm">确认</button>
+											</div>
+											<p id="status_config" class="remote-config__status" role="status" aria-live="polite"></p>
 										</div>
 									</div>
 									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
-										<div class="weui-cell__hd"><label class="weui-label">直播源</label></div>
+										<div class="weui-cell__hd"><label for="diy_live_api_url" class="weui-label">直播源</label></div>
 									</div>
 									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
-										<div class="weui-cell__bd weui-flex">
+										<div class="weui-cell__bd remote-config__field">
+											<div class="remote-config__row">
 											<input id="diy_live_api_url"
 												class="weui-input weui-cell__control weui-cell__control_flex"
-												type="text" value="" placeholder="请输入直播源地址，可单独填写 txt/m3u/json..." />
+												type="text" inputmode="url" autocapitalize="none" spellcheck="false" value="" placeholder="请输入直播源地址，可填写 txt/m3u/json..." />
+											<button id="confirm_live" type="button" onclick="submitConfigField('live'); return false;"
+												class="weui-btn weui-btn_default remote-config__confirm">确认</button>
+											</div>
+											<p id="status_live" class="remote-config__status" role="status" aria-live="polite"></p>
 										</div>
 									</div>
 									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
-										<div class="weui-cell__bd weui-flex">
-											<button onclick="api(); return false;"
-												class="weui-cell__control weui-btn weui-btn_default weui-vcode-btn">确定</button>
+										<div class="weui-cell__hd"><label for="webdav_url" class="weui-label">WebDAV地址</label></div>
+									</div>
+									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
+										<div class="weui-cell__bd remote-config__field">
+											<div class="remote-config__row">
+												<input id="webdav_url" class="weui-input weui-cell__control weui-cell__control_flex"
+													type="text" inputmode="url" autocapitalize="none" spellcheck="false" value="" placeholder="例如 http://192.168.0.100:5244/dav/" />
+												<button id="confirm_webdav_url" type="button" onclick="submitConfigField('webdav_url'); return false;"
+													class="weui-btn weui-btn_default remote-config__confirm">确认</button>
+											</div>
+											<p id="status_webdav_url" class="remote-config__status" role="status" aria-live="polite"></p>
+										</div>
+									</div>
+									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
+										<div class="weui-cell__hd"><label for="webdav_username" class="weui-label">WebDAV账号</label></div>
+									</div>
+									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
+										<div class="weui-cell__bd remote-config__field">
+											<div class="remote-config__row">
+												<input id="webdav_username" class="weui-input weui-cell__control weui-cell__control_flex"
+													type="text" autocomplete="off" autocapitalize="none" spellcheck="false" value="" placeholder="请输入WebDAV账号" />
+												<button id="confirm_webdav_username" type="button" onclick="submitConfigField('webdav_username'); return false;"
+													class="weui-btn weui-btn_default remote-config__confirm">确认</button>
+											</div>
+											<p id="status_webdav_username" class="remote-config__status" role="status" aria-live="polite"></p>
+										</div>
+									</div>
+									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
+										<div class="weui-cell__hd"><label for="webdav_password" class="weui-label">WebDAV密码</label></div>
+									</div>
+									<div class="weui-cell weui-cell_active weui-cell_vcode weui-cell_wrap">
+										<div class="weui-cell__bd remote-config__field">
+											<div class="remote-config__row">
+												<input id="webdav_password" class="weui-input weui-cell__control weui-cell__control_flex"
+													type="password" autocomplete="new-password" value="" placeholder="请输入WebDAV密码" />
+												<button id="confirm_webdav_password" type="button" onclick="submitConfigField('webdav_password'); return false;"
+													class="weui-btn weui-btn_default remote-config__confirm">确认</button>
+											</div>
+											<p id="status_webdav_password" class="remote-config__status" role="status" aria-live="polite"></p>
 										</div>
 									</div>
 								</div>

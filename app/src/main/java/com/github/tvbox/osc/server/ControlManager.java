@@ -47,7 +47,12 @@ public class ControlManager {
 
     public String getAddress(boolean local) {
         if (mServer == null) {
-            return "";
+            // PlayActivity and PlayFragment run in :player. The listener belongs to the main
+            // process, but both processes share the app UID and loopback interface. Returning
+            // the stable local endpoint keeps DASH/proxy URLs valid without starting a second
+            // server in the player process. RemoteServer.serverPort is updated if the main
+            // process had to move away from 9978 before this process was created.
+            return local ? "http://127.0.0.1:" + RemoteServer.serverPort + "/" : "";
         }
         return local ? mServer.getLoadAddress() : mServer.getServerAddress();
     }
@@ -110,6 +115,15 @@ public class ControlManager {
                     if (hasVodChange || hasLiveChange) {
                         EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_REMOTE_API_CONFIG_APPLY));
                     }
+                }
+
+                @Override
+                public boolean onInputFieldReceived(RemoteInputRequest request) {
+                    RemoteInputDrafts.PendingInput pending = RemoteInputDrafts.get().put(request);
+                    // Subscribers fill only the matching opened EditText. No Hawk writes or
+                    // TYPE_REMOTE_API_CONFIG_APPLY: saving remains the native user's action.
+                    EventBus.getDefault().post(new RefreshEvent(RefreshEvent.TYPE_REMOTE_INPUT_FIELD));
+                    return pending.awaitFilled(500L);
                 }
 
                 @Override

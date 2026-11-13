@@ -15,6 +15,9 @@ public final class LOG {
     }
 
     private static void write(String level, String msg) {
+        if (!InternalLogPolicy.shouldRecordLevel(level)) {
+            return;
+        }
         try {
             if (Hawk.get(HawkConfig.INTERNAL_LOG_ENABLED, true)) {
                 RuntimeLogStore.append(level, msg);

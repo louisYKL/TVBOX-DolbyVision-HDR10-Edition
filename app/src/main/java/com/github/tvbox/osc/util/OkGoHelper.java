@@ -17,6 +17,7 @@ import com.lzy.okgo.interceptor.HttpLoggingInterceptor;
 import com.lzy.okgo.model.HttpHeaders;
 import com.orhanobut.hawk.Hawk;
 import com.squareup.picasso.Picasso;
+import com.squareup.picasso.LruCache;
 
 import java.io.File;
 import java.net.InetAddress;
@@ -46,6 +47,7 @@ import okhttp3.dnsoverhttps.DnsOverHttps;
 import okhttp3.internal.Version;
 public class OkGoHelper {
     public static final long DEFAULT_MILLISECONDS = 10000;      //默认的超时时间
+    private static volatile LruCache posterCache;
 
     // 内置doh json
     private static final String dnsConfigJson = "["
@@ -58,13 +60,10 @@ public class OkGoHelper {
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
         HttpLoggingInterceptor loggingInterceptor = new HttpLoggingInterceptor("OkPlayer");
 
-        if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) {
-            loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.BODY);
-            loggingInterceptor.setColorLevel(Level.INFO);
-        } else {
-            loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.NONE);
-            loggingInterceptor.setColorLevel(Level.OFF);
-        }
+        // A BODY interceptor eagerly consumes streaming responses and can retain a movie in
+        // the main heap. Network payload logging stays disabled even with the debug UI open.
+        loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.NONE);
+        loggingInterceptor.setColorLevel(Level.OFF);
         builder.addInterceptor(loggingInterceptor);
 
         builder.retryOnConnectionFailure(true);
@@ -156,13 +155,8 @@ public class OkGoHelper {
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
         HttpLoggingInterceptor loggingInterceptor = new HttpLoggingInterceptor("OkPlayer");
-        if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) {
-            loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.BODY);
-            loggingInterceptor.setColorLevel(Level.INFO);
-        } else {
-            loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.NONE);
-            loggingInterceptor.setColorLevel(Level.OFF);
-        }
+        loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.NONE);
+        loggingInterceptor.setColorLevel(Level.OFF);
         builder.addInterceptor(loggingInterceptor);
         try {
             setOkHttpSsl(builder);
@@ -278,13 +272,8 @@ public class OkGoHelper {
         OkHttpClient.Builder builder = new OkHttpClient.Builder();
         HttpLoggingInterceptor loggingInterceptor = new HttpLoggingInterceptor("OkGo");
 
-        if (Hawk.get(HawkConfig.DEBUG_OPEN, false)) {
-            loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.BODY);
-            loggingInterceptor.setColorLevel(Level.INFO);
-        } else {
-            loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.NONE);
-            loggingInterceptor.setColorLevel(Level.OFF);
-        }
+        loggingInterceptor.setPrintLevel(HttpLoggingInterceptor.Level.NONE);
+        loggingInterceptor.setColorLevel(Level.OFF);
 
         //builder.retryOnConnectionFailure(false);
 
@@ -319,11 +308,27 @@ public class OkGoHelper {
     static void initPicasso(OkHttpClient client) {
         client.dispatcher().setMaxRequestsPerHost(10);
         MyOkhttpDownLoader downloader = new MyOkhttpDownLoader(client);
+        // Picasso's default uses one seventh of the *large* heap (73 MiB on the
+        // affected TV). Posters share that heap with the embedded player and spiders.
+        // Bound retained posters independently; displayed images keep their normal size.
+        long maxHeap = Runtime.getRuntime().maxMemory();
+        int imageBudget = (int) Math.max(4L * 1024L * 1024L,
+                Math.min(16L * 1024L * 1024L, maxHeap / 32L));
+        LruCache cache = new LruCache(imageBudget);
+        posterCache = cache;
         Picasso picasso = new Picasso.Builder(App.getInstance())
                 .downloader(downloader)
+                .memoryCache(cache)
                 .defaultBitmapConfig(Bitmap.Config.RGB_565)
                 .build();
         Picasso.setSingletonInstance(picasso);
+    }
+
+    public static void trimImageMemory() {
+        LruCache cache = posterCache;
+        if (cache != null) {
+            cache.clear();
+        }
     }
 
     private static synchronized void setOkHttpSsl(OkHttpClient.Builder builder) {

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0
+
+### 中文
+
+- 针对已确认的 Java 堆内存耗尽，统一约束同一进程的 Range 缓存、在途下载与播放资源；原始缓存配置上限为 192 MiB，点播正常启播目标为 96 MiB，网络块保持 24 MiB。实际缓存须为样本队列、界面、字幕等保留堆空间。
+- 普通后台预取保留 96 MiB Java 堆余量，补齐最小连续缓冲时至少保留 48 MiB；若无法容纳最小缓冲，保留播放页并显示可重试内存提示，避免无限等待或自动换流。
+- 首播、恢复、Seek 和真实重新缓冲根据当前视频位置之后的连续有效数据就绪状态放行；保留可复用缓存，避免探测尾部索引被计作播放缓冲或重新缓冲反复清空已有数据。直播保持单独流式策略。
+- 退出播放与切源立即使旧回调失效并释放播放器、缓存和字幕任务；历史保存异常不再跳过资源释放。刷新首页数据源时清理旧页面堆栈，避免旧详情预览继续占用资源。
+- 视频探测改为有界字节扫描，减少二进制大字符串分配；播放期间停止反复全页模糊截图；海报内存缓存限制为 4–16 MiB。错误日志总量限制为 512 KiB 并轮转。
+- 9978 网页提供订阅、直播、WebDAV 地址、账号、密码五个独立确认项。网页只填入对应软件输入框，关闭的输入框在下次打开时填入；保存和启用仍须在软件内确认，回车不自动提交。
+- 保留本地/WebDAV 文件夹式外挂字幕选择、字幕选择恢复与独占显示。HDR 仅调整没有源样式的纯文字字幕为浅灰字/黑色描边；保留 ASS/SSA、样式文本和位图字幕的设计。
+- 保持硬件视频解码、HDR 能力路由和既有音频输出策略；独立全屏播放器使用 `:player`，32 位详情预览仍在主进程。三端统一为 `0.3.0`、`versionCode 30000`，沿用既有签名。
+
+### English
+
+- Address confirmed Java heap exhaustion by bounding Range data, in-flight downloads, and playback resources within the same process. The configured raw-cache ceiling is 192 MiB, normal VOD startup targets 96 MiB, and network chunks remain 24 MiB. The effective cache leaves heap room for sample queues, UI, subtitles, and other work.
+- Normal background prefetch leaves 96 MiB of Java heap headroom; completing the minimum contiguous runway leaves at least 48 MiB. If memory cannot support that runway, keep a retryable memory message on the playback page instead of waiting indefinitely or switching sources.
+- Gate startup, resume, seek, and genuine rebuffering on contiguous usable data ahead of the playback position. Retain reusable cache instead of counting tail-index probes as playback data or clearing downloaded data repeatedly. Live retains its separate streaming policy.
+- Invalidate old callbacks and release player, cache, and subtitle work immediately on exit or source change. History-save failures no longer skip teardown. Home-source refresh clears old page stacks to avoid retaining detail previews.
+- Replace large binary-string probes with bounded byte scans, suppress repeated full-page blur captures during playback, and bound poster memory caching to 4–16 MiB. Error-only internal logs rotate within 512 KiB total.
+- Give subscription, live, WebDAV URL, username, and password separate confirmation controls on the port 9978 page. Browser confirmation fills only the matching application input, including a pending fill when its dialog opens later. Saving and activation require in-app confirmation; Enter does not submit.
+- Retain local/WebDAV folder browsing, external-subtitle selection restoration, and exclusive subtitle rendering. HDR light-gray text/black outline applies only to unstyled text; ASS/SSA, styled text, and bitmap designs remain source-defined.
+- Preserve hardware video decoding, HDR capability routing, and audio output policy. Standalone fullscreen playback uses `:player`; 32-bit detail previews remain in the main process. All variants use `0.3.0` (`versionCode 30000`) with the existing signing certificate.
+
 ## 0.2.9.4.1
 
 ### 中文

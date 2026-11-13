@@ -18,7 +18,7 @@ final class ProxyFdHttpDataSource extends ProxyFileDescriptorCallback {
     private volatile boolean released;
 
     ProxyFdHttpDataSource(String url, Map<String, String> headers) {
-        delegate = HttpRangeMediaDataSource.createForProxyFileDescriptor(url, headers);
+        delegate = HttpRangeMediaDataSource.createForSystemPlaybackBuffer(url, headers, true);
     }
 
     void requestPlaybackPrebuffer() {
@@ -49,12 +49,36 @@ final class ProxyFdHttpDataSource extends ProxyFileDescriptorCallback {
         return released ? 0L : delegate.getBufferedAheadBytes();
     }
 
+    long getBufferedAheadBytesForProgress() {
+        return released ? 0L : delegate.getBufferedAheadBytesForProgress();
+    }
+
+    long getCachedBytesSnapshot() {
+        return released ? 0L : delegate.getCachedBytesSnapshot();
+    }
+
+    boolean isPlaybackSeekAnchorPending() {
+        return !released && delegate.isPlaybackSeekAnchorPending();
+    }
+
     long getPlaybackStartBufferTargetBytes() {
         return released ? 0L : delegate.getPlaybackStartBufferTargetBytes();
     }
 
+    IOException getPlaybackCacheError() {
+        return released ? null : delegate.getPlaybackCacheError();
+    }
+
+    long getKnownTotalSize() {
+        return released ? -1L : delegate.getKnownTotalSizeSnapshot();
+    }
+
     long getCachedBytes() {
         return released ? 0L : delegate.getCachedBytes();
+    }
+
+    long getNetworkBytesPerSecond() {
+        return released ? 0L : delegate.getNetworkBytesPerSecond();
     }
 
     @Override

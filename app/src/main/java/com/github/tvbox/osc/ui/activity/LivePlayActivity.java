@@ -2641,15 +2641,39 @@ public class LivePlayActivity extends BaseActivity {
 
     private void initLiveSettingGroupList() {
         liveSettingGroupList=ApiConfig.get().getLiveSettingGroupList();
-        liveSettingGroupList.get(3).getLiveSettingItems().get(Hawk.get(HawkConfig.LIVE_CONNECT_TIMEOUT, 1)).setItemSelected(true);
-        liveSettingGroupList.get(4).getLiveSettingItems().get(0).setItemSelected(Hawk.get(HawkConfig.LIVE_SHOW_TIME, false));
-        liveSettingGroupList.get(4).getLiveSettingItems().get(1).setItemSelected(Hawk.get(HawkConfig.LIVE_SHOW_NET_SPEED, false));
-        liveSettingGroupList.get(4).getLiveSettingItems().get(2).setItemSelected(Hawk.get(HawkConfig.LIVE_CHANNEL_REVERSE, false));
-        liveSettingGroupList.get(4).getLiveSettingItems().get(3).setItemSelected(Hawk.get(HawkConfig.LIVE_CROSS_GROUP, false));
-        liveSettingGroupList.get(5).getLiveSettingItems().get(Hawk.get(HawkConfig.LIVE_GROUP_INDEX, 0)).setItemSelected(true);
+        if (liveSettingGroupList == null || liveSettingGroupList.size() < 6) {
+            LOG.i("echo-live-settings unavailable; keep empty settings model");
+            return;
+        }
+        LiveSettingGroup timeoutGroup = liveSettingGroupList.get(3);
+        if (timeoutGroup != null && timeoutGroup.getLiveSettingItems() != null
+                && !timeoutGroup.getLiveSettingItems().isEmpty()) {
+            int timeout = Hawk.get(HawkConfig.LIVE_CONNECT_TIMEOUT, 1);
+            timeout = Math.max(0, Math.min(timeout, timeoutGroup.getLiveSettingItems().size() - 1));
+            timeoutGroup.getLiveSettingItems().get(timeout).setItemSelected(true);
+        }
+        LiveSettingGroup preferenceGroup = liveSettingGroupList.get(4);
+        if (preferenceGroup != null && preferenceGroup.getLiveSettingItems() != null) {
+            List<LiveSettingItem> items = preferenceGroup.getLiveSettingItems();
+            if (items.size() > 0) items.get(0).setItemSelected(Hawk.get(HawkConfig.LIVE_SHOW_TIME, false));
+            if (items.size() > 1) items.get(1).setItemSelected(Hawk.get(HawkConfig.LIVE_SHOW_NET_SPEED, false));
+            if (items.size() > 2) items.get(2).setItemSelected(Hawk.get(HawkConfig.LIVE_CHANNEL_REVERSE, false));
+            if (items.size() > 3) items.get(3).setItemSelected(Hawk.get(HawkConfig.LIVE_CROSS_GROUP, false));
+        }
+        LiveSettingGroup sourceGroup = liveSettingGroupList.get(5);
+        if (sourceGroup != null && sourceGroup.getLiveSettingItems() != null
+                && !sourceGroup.getLiveSettingItems().isEmpty()) {
+            int source = Hawk.get(HawkConfig.LIVE_GROUP_INDEX, 0);
+            source = Math.max(0, Math.min(source, sourceGroup.getLiveSettingItems().size() - 1));
+            sourceGroup.getLiveSettingItems().get(source).setItemSelected(true);
+        }
     }
 
     private void loadCurrentSourceList() {
+        if (liveSettingGroupList == null || liveSettingGroupList.isEmpty()
+                || currentLiveChannelItem == null) {
+            return;
+        }
         ArrayList<String> currentSourceNames = currentLiveChannelItem.getChannelSourceNames();
         ArrayList<LiveSettingItem> liveSettingItemList = new ArrayList<>();
         for (int j = 0; j < currentSourceNames.size(); j++) {
@@ -2658,7 +2682,9 @@ public class LivePlayActivity extends BaseActivity {
             liveSettingItem.setItemName(currentSourceNames.get(j));
             liveSettingItemList.add(liveSettingItem);
         }
-        liveSettingGroupList.get(0).setLiveSettingItems(liveSettingItemList);
+        if (liveSettingGroupList.get(0) != null) {
+            liveSettingGroupList.get(0).setLiveSettingItems(liveSettingItemList);
+        }
     }
 
     void showTime() {

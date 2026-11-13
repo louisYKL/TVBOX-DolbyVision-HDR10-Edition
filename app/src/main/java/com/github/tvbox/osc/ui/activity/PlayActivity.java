@@ -62,12 +62,12 @@ import com.github.tvbox.osc.player.TrackInfo;
 import com.github.tvbox.osc.player.TrackInfoBean;
 import com.github.tvbox.osc.player.controller.VodController;
 import com.github.tvbox.osc.subtitle.widget.BitmapSubtitleRenderer;
-import com.github.tvbox.osc.subtitle.SubtitleFilePicker;
 import com.github.tvbox.osc.server.ControlManager;
 import com.github.tvbox.osc.ui.adapter.SelectDialogAdapter;
 import com.github.tvbox.osc.ui.dialog.SearchSubtitleDialog;
 import com.github.tvbox.osc.ui.dialog.SelectDialog;
 import com.github.tvbox.osc.ui.dialog.SubtitleDialog;
+import com.github.tvbox.osc.ui.dialog.ExternalSubtitlePickerDialog;
 import com.github.tvbox.osc.util.AdBlocker;
 import com.github.tvbox.osc.util.DefaultConfig;
 import com.github.tvbox.osc.util.DolbyVisionPlaybackRouter;
@@ -77,6 +77,7 @@ import com.github.tvbox.osc.util.HdrDeviceSupport;
 import com.github.tvbox.osc.util.HdrOutputManager;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.MD5;
+import com.github.tvbox.osc.util.PlaybackHandoff;
 import com.github.tvbox.osc.util.PlaybackStartupTimeoutPolicy;
 import com.github.tvbox.osc.util.PlaybackUrlNormalizer;
 import com.github.tvbox.osc.util.PlayerCapability;
@@ -292,7 +293,13 @@ public class PlayActivity extends BaseActivity {
     }
 
     private void persistPlaybackProgress() {
-        persistPlaybackPositionCache();
+        try {
+            persistPlaybackPositionCache();
+        } catch (Throwable error) {
+            // Saving history is best effort. A database failure must never leave the old
+            // codec/Range source alive and prevent exit or the next URL from preparing.
+            LOG.e("echo-progress-cache activity failed: " + error.getClass().getSimpleName());
+        }
         if (mVideoView != null) {
             try {
                 mVideoView.persistProgressNow();
@@ -454,7 +461,8 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean isCurrentPlayGeneration(int generation) {
-        return generation > 0 && generation == activePlayGeneration && generation == playGeneration.get();
+        return !playbackTerminated && generation > 0
+                && generation == activePlayGeneration && generation == playGeneration.get();
     }
 
     private boolean isCurrentParseGeneration(int generation) {
@@ -823,6 +831,7 @@ public class PlayActivity extends BaseActivity {
             public void setAllowSwitchPlayer(boolean isAllow){allowSwitchPlayer=isAllow;}
         });
         mVideoView.setVideoController(mController);
+        mVideoView.attachPlaybackLoadingViews(mPlayLoading, mPlayLoadErr, mPlayLoadTip);
         if (App.isJava64Build() && !isTvDevice()) {
             mVideoView.addOnLayoutChangeListener(fullScreenStateSyncLayoutListener);
         }
@@ -830,9 +839,6 @@ public class PlayActivity extends BaseActivity {
 
     //设置字幕
     void setSubtitle(String path) {
-        if (!subtitleEnabled) {
-            updateSubtitleEnabled(true);
-        }
         applyExternalSubtitle(path, true);
     }
 
@@ -874,12 +880,22 @@ public class PlayActivity extends BaseActivity {
             return;
         }
         if (manualSelection && !subtitleEnabled) {
-            updateSubtitleEnabled(true);
+            subtitleEnabled = true;
+            mController.setSubtitleEnabled(true);
         }
         if (!subtitleEnabled) {
             return;
         }
         LOG.i("echo-subtitle apply external activity manual=" + manualSelection + " path=" + path);
+        // A manual choice must invalidate the in-flight automatic track scan. Otherwise its
+        // delayed callback can reset this overlay immediately after the selected file parses.
+        if (manualSelection) {
+            subtitleInitSeq.incrementAndGet();
+            subtitleInitPendingForPlaybackReady = false;
+            subtitleInitScheduledForGeneration = false;
+            subtitleInitSettledForGeneration = true;
+            subtitleInitSettledPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
+        }
         AbstractPlayer mediaPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
         if (mediaPlayer instanceof AndroidMediaPlayer) {
             SystemPlayerTrackManager.clearSubtitleSelections((AndroidMediaPlayer) mediaPlayer, null);
@@ -891,6 +907,12 @@ public class PlayActivity extends BaseActivity {
         mController.mSubtitleView.stop();
         mController.mSubtitleView.reset();
         mController.mSubtitleView.isInternal = false;
+        mController.mSubtitleView.hasInternal = false;
+        // An explicit external choice is exclusive. Do not leave a native text/bitmap track
+        // selected underneath the custom renderer, otherwise the TV compositor can show only
+        // the native white caption or hide the external view during the next track callback.
+        mController.mSubtitleView.hasInternal = false;
+        clearBitmapSubtitleView();
         mController.mSubtitleView.clearSubtitleCache();
         mController.mSubtitleView.setText("");
         mController.mSubtitleView.setManualExternalSubtitleSelection(manualSelection);
@@ -1177,12 +1199,16 @@ public class PlayActivity extends BaseActivity {
         subtitleDialog.setLocalFileChooserListener(new SubtitleDialog.LocalFileChooserListener() {
             @Override
             public void openLocalFileChooserDialog() {
-                if (webDavPlayback && !TextUtils.isEmpty(webDavDirectoryUrl)) {
-                    startActivityForResult(WebDavBrowserActivity.createSubtitlePickerIntent(
-                            PlayActivity.this, webDavDirectoryUrl), WebDavBrowserActivity.SUBTITLE_REQUEST_CODE);
-                } else {
-                    startActivityForResult(SubtitleFilePicker.createIntent(), SubtitleFilePicker.REQUEST_CODE);
-                }
+                ExternalSubtitlePickerDialog picker = new ExternalSubtitlePickerDialog(
+                        PlayActivity.this,
+                        webDavPlayback ? webDavDirectoryUrl : null,
+                        new ExternalSubtitlePickerDialog.Listener() {
+                            @Override
+                            public void onSubtitleSelected(String path) {
+                                setSubtitle(path);
+                            }
+                        });
+                picker.show();
             }
         });
         subtitleDialog.show();
@@ -1191,22 +1217,6 @@ public class PlayActivity extends BaseActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == WebDavBrowserActivity.SUBTITLE_REQUEST_CODE
-                && resultCode == Activity.RESULT_OK && data != null) {
-            String selectedPath = data.getStringExtra(WebDavBrowserActivity.EXTRA_SELECTED_SUBTITLE_PATH);
-            if (!TextUtils.isEmpty(selectedPath)) {
-                setSubtitle(selectedPath);
-            }
-            return;
-        }
-        if (requestCode != SubtitleFilePicker.REQUEST_CODE || resultCode != Activity.RESULT_OK) {
-            return;
-        }
-        String path = SubtitleFilePicker.keepReadAccess(this, data);
-        if (!TextUtils.isEmpty(path)) {
-            LOG.i("echo-local-subtitle selected uri=" + path);
-            setSubtitle(path);
-        }
     }
 
     void setSubtitleViewTextStyle(int style) {
@@ -1439,14 +1449,14 @@ public class PlayActivity extends BaseActivity {
     }
 
     private void promoteRuntimeHdrState(boolean hdr, boolean dolbyVision, String outputMode, String reason) {
-        if ((!hdr && !dolbyVision) || mVideoView == null) {
+        if (mVideoView == null) {
             return;
         }
-        boolean changed = !currentPlaybackRequiresHdrOutput;
-        currentPlaybackRequiresHdrOutput = true;
-        if (dolbyVision) {
-            lastPlayLooksLikeDolbyVision = true;
-        }
+        boolean requiresHdr = hdr || dolbyVision;
+        boolean changed = currentPlaybackRequiresHdrOutput != requiresHdr;
+        currentPlaybackRequiresHdrOutput = requiresHdr;
+        lastPlayLooksLikeDolbyVision = dolbyVision;
+        keepHdrWindowDuringPlayerSwitch = requiresHdr;
         if (!TextUtils.isEmpty(outputMode)) {
             try {
                 if (mVodPlayerCfg != null) {
@@ -1458,12 +1468,23 @@ public class PlayActivity extends BaseActivity {
         }
         migrateHdrTextSubtitleToOverlay();
         applySubtitleToneForCurrentPlayback();
-        syncHdrWindowForCurrentPlayback(reason + (changed ? "-promote" : "-refresh"));
+        if (requiresHdr) {
+            syncHdrWindowForCurrentPlayback(reason + (changed ? "-promote" : "-refresh"));
+        } else {
+            HdrOutputManager.releaseHdr(this, reason + (changed ? "-sdr" : "-sdr-refresh"));
+        }
     }
 
     /** Move a text track away from Android's native white timed-text renderer when HDR is learned late. */
     private void migrateHdrTextSubtitleToOverlay() {
         if (mVideoView == null || mController == null || mController.mSubtitleView == null) {
+            return;
+        }
+        // An explicitly selected external subtitle owns the subtitle surface. Runtime HDR
+        // promotion must not reset that engine and replace it with the embedded track; doing so
+        // made a successfully parsed WebDAV/local subtitle disappear a moment after selection.
+        if (mController.mSubtitleView.hasManualExternalSubtitleSelection()
+                && !mController.mSubtitleView.isInternal) {
             return;
         }
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
@@ -1673,7 +1694,7 @@ public class PlayActivity extends BaseActivity {
         if (seekBufferingPlaybackObserved) {
             return false;
         }
-        return elapsed < SEEK_BUFFER_MAX_VISIBLE_MS;
+        return true;
     }
 
     void setTip(String msg, boolean loading, boolean err) {
@@ -1728,14 +1749,21 @@ public class PlayActivity extends BaseActivity {
     }
 
     void errorWithRetry(String err, boolean finish) {
-        if (!finish && tryDolbyVisionFallback()) {
+        AbstractPlayer mediaPlayer = mVideoView == null ? null : mVideoView.getMediaPlayer();
+        String playbackError = mediaPlayer == null ? null : mediaPlayer.getPlaybackErrorMessage();
+        boolean keepPlaybackPage = !TextUtils.isEmpty(playbackError);
+        if (!keepPlaybackPage && !finish && tryDolbyVisionFallback()) {
             return;
         }
-        String resolvedError = resolvePlaybackErrorMessage(err);
+        String resolvedError = keepPlaybackPage ? playbackError : resolvePlaybackErrorMessage(err);
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (finish) {
+                if (keepPlaybackPage) {
+                    cancelPlayTimeout();
+                    finishSeekBufferingOverlay();
+                }
+                if (finish && !keepPlaybackPage) {
                     setTip(resolvedError, false, true);
                     Toast.makeText(mContext, resolvedError, Toast.LENGTH_SHORT).show();
                     finish();
@@ -1789,6 +1817,10 @@ public class PlayActivity extends BaseActivity {
         currentPlaybackHeaders = null;
         clearCurrentPlaybackProbe();
         currentPlaybackRequiresHdrOutput = false;
+        if (mController != null) {
+            mController.setHdrMode(false);
+            mController.setHdrUiDimmed(false);
+        }
         currentPlaybackUsesNativeJava64DolbyVision = false;
         applySubtitleToneForCurrentPlayback();
         HdrOutputManager.releaseHdr(this, "activity-unsupported-avc-high10");
@@ -2516,10 +2548,22 @@ public class PlayActivity extends BaseActivity {
 
     void startPlayTimeout(String playbackUrl, long timeoutMs, String reason) {
         cancelPlayTimeout();
+        if (isBufferingTimeoutReason(reason)) {
+            LOG.i("echo-startPlayTimeout disabled reason=" + reason + " url=" + playbackUrl);
+            return;
+        }
         LOG.i("echo-startPlayTimeout:" + timeoutMs + " reason=" + reason + " url=" + playbackUrl);
         Message message = mHandler.obtainMessage(MSG_PLAY_TIMEOUT);
         message.arg1 = currentPlayGeneration();
         mHandler.sendMessageDelayed(message, timeoutMs);
+    }
+
+    private static boolean isBufferingTimeoutReason(String reason) {
+        if (reason == null) {
+            return false;
+        }
+        String lower = reason.toLowerCase(Locale.US);
+        return lower.contains("buffer") || lower.contains("prepare") || lower.contains("progress");
     }
 
     void cancelPlayTimeout() {
@@ -2528,20 +2572,12 @@ public class PlayActivity extends BaseActivity {
 
     private boolean deferPlayTimeoutWhileNativeBuffering() {
         if (mVideoView == null
-                || mVideoView.getCurrentPlayState() != VideoView.STATE_BUFFERING
-                || activeBufferingEpisodeStartAtMs <= 0L) {
+                || mVideoView.getCurrentPlayState() != VideoView.STATE_BUFFERING) {
             return false;
         }
         long elapsedMs = Math.max(0L, System.currentTimeMillis() - activeBufferingEpisodeStartAtMs);
-        if (!PlaybackBufferProgressPolicy.shouldDeferTimeoutForActiveBuffering(
-                elapsedMs, ACTIVE_BUFFERING_LIVENESS_CEILING_MS)) {
-            return false;
-        }
-        long remainingMs = ACTIVE_BUFFERING_LIVENESS_CEILING_MS - elapsedMs;
-        long nextCheckMs = Math.max(1_000L, Math.min(BUFFER_STALL_TIMEOUT_MS, remainingMs));
-        LOG.i("echo-playTimeout defer native-buffering elapsed=" + elapsedMs
-                + " next=" + nextCheckMs);
-        startPlayTimeout(currentPlaybackUrl, nextCheckMs, "buffer-native-liveness");
+        LOG.i("echo-playTimeout defer native-buffering elapsed=" + elapsedMs + " unlimited=true");
+        startPlayTimeout(currentPlaybackUrl, BUFFER_STALL_TIMEOUT_MS, "buffer-native-liveness");
         return true;
     }
 
@@ -2553,18 +2589,10 @@ public class PlayActivity extends BaseActivity {
         }
         int percent = mVideoView.getBufferedPercentage();
         long elapsedMs = Math.max(0L, System.currentTimeMillis() - loadingEpisodeStartAtMs);
-        if (!PlaybackBufferProgressPolicy.shouldDeferTimeoutForUnknownProgress(
-                mVideoView.getCurrentPlayState(),
-                percent,
-                elapsedMs,
-                UNKNOWN_PROGRESS_LIVENESS_CEILING_MS)) {
-            return false;
-        }
-        long remainingMs = UNKNOWN_PROGRESS_LIVENESS_CEILING_MS - elapsedMs;
-        long nextCheckMs = Math.max(1_000L, Math.min(BUFFER_STALL_TIMEOUT_MS, remainingMs));
-        LOG.i("echo-playTimeout defer unknown-progress elapsed=" + elapsedMs
-                + " next=" + nextCheckMs);
-        startPlayTimeout(currentPlaybackUrl, nextCheckMs, "buffer-unknown-progress-liveness");
+        LOG.i("echo-playTimeout defer loading elapsed=" + elapsedMs
+                + " percent=" + percent + " unlimited=true");
+        startPlayTimeout(currentPlaybackUrl, BUFFER_STALL_TIMEOUT_MS,
+                "buffer-unknown-progress-liveness");
         return true;
     }
 
@@ -2754,7 +2782,10 @@ public class PlayActivity extends BaseActivity {
         }
         boolean preferInternalSubtitle = shouldPreferInternalSubtitleByDefault();
         if (userSelectedExternalSubtitle) {
-            applyExternalSubtitle(subtitlePathCache);
+            // The cached path represents an explicit user choice. Preserve that marker while
+            // restoring it; the default overload clears the marker and lets internal scanning
+            // take control again on the next callback.
+            applyExternalSubtitle(subtitlePathCache, true);
             markSubtitleInitSettled(generation, "user-external");
         } else {
             if (!preferInternalSubtitle && playSubtitle != null && playSubtitle.length() > 0) {
@@ -2823,6 +2854,9 @@ public class PlayActivity extends BaseActivity {
         sourceViewModel.playResult.observe(this, new Observer<JSONObject>() {
             @Override
             public void onChanged(JSONObject info) {
+                if (playbackTerminated) {
+                    return;
+                }
                 webPlayUrl = null;
                 if (info != null) {
                     try {
@@ -2929,18 +2963,58 @@ public class PlayActivity extends BaseActivity {
         }
         if (intent != null && intent.getExtras() != null) {
             Bundle bundle = intent.getExtras();
-//            mVodInfo = (VodInfo) bundle.getSerializable("VodInfo");
-            mVodInfo = App.getInstance().getVodInfo();
+            playbackHandoffKey = bundle.getString("playbackHandoffKey");
+            PlaybackHandoff.Payload handoff = PlaybackHandoff.read(playbackHandoffKey);
+            // This Activity runs in :player.  App.vodInfo belongs to the caller's
+            // process and is therefore not a valid cross-process handoff.
+            Object serializedVod = bundle.getSerializable("VodInfo");
+            mVodInfo = handoff != null && handoff.vodInfo != null ? handoff.vodInfo
+                    : serializedVod instanceof VodInfo
+                    ? (VodInfo) serializedVod : App.getInstance().getVodInfo();
+            if (handoff != null && handoff.sourceBean != null) {
+                ApiConfig.get().registerSource(handoff.sourceBean);
+            }
+            preResolvedPlayResult = handoff == null ? null : handoff.resolvedPlayResult;
+            Object serializedSource = bundle.getSerializable("SourceBean");
+            if (serializedSource instanceof SourceBean) {
+                ApiConfig.get().registerSource((SourceBean) serializedSource);
+            }
             sourceKey = bundle.getString("sourceKey");
             sourceKey = firstNonEmpty(sourceKey, mVodInfo == null ? null : mVodInfo.sourceKey);
-            if (mVodInfo != null && !TextUtils.isEmpty(sourceKey)) {
-                mVodInfo.sourceKey = sourceKey;
+            if (!isPlayableVodInfo(mVodInfo, sourceKey)) {
+                LOG.e("echo-player-init-invalid-vod source=" + sourceKey
+                        + " vod=" + (mVodInfo == null ? "null" : mVodInfo.id));
+                Toast.makeText(this, "播放信息无效，请返回详情页重试", Toast.LENGTH_SHORT).show();
+                finish();
+                return;
             }
+            mVodInfo.sourceKey = sourceKey;
             sourceBean = ApiConfig.get().getSource(sourceKey);
+            if (sourceBean == null) {
+                LOG.e("echo-player-init-missing-source source=" + sourceKey);
+                Toast.makeText(this, "播放源不可用，请重新加载配置", Toast.LENGTH_SHORT).show();
+                finish();
+                return;
+            }
+            App.getInstance().setVodInfo(mVodInfo);
+            LOG.i("echo-player-init-vod source=" + sourceKey + " id=" + mVodInfo.id
+                    + " flag=" + mVodInfo.playFlag + " index=" + mVodInfo.playIndex);
             initPlayerCfg();
             triedLineFlags.clear();
             play(false);
         }
+    }
+
+    private boolean isPlayableVodInfo(VodInfo info, String key) {
+        if (info == null || TextUtils.isEmpty(key) || TextUtils.isEmpty(info.playFlag)
+                || info.seriesMap == null) {
+            return false;
+        }
+        List<VodInfo.VodSeries> episodes = info.seriesMap.get(info.playFlag);
+        return episodes != null && !episodes.isEmpty()
+                && info.playIndex >= 0 && info.playIndex < episodes.size()
+                && episodes.get(info.playIndex) != null
+                && !TextUtils.isEmpty(episodes.get(info.playIndex).url);
     }
 
     private void initWebDavPlayback(Intent intent, String videoUrl) {
@@ -3021,12 +3095,107 @@ public class PlayActivity extends BaseActivity {
         if (dismissParseOverlayIfNeeded()) {
             return;
         }
-        if (mController.onBackPressed()) {
+        if (mController != null && mController.onBackPressed()) {
             persistPlaybackProgress();
             return;
         }
-        persistPlaybackProgress();
         super.onBackPressed();
+    }
+
+    @Override
+    public void finish() {
+        try {
+            stopPlaybackForExit("activity-finish");
+        } finally {
+            super.finish();
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        stopPlaybackForExit("activity-new-intent");
+        String nextHandoffKey = intent == null ? null : intent.getStringExtra("playbackHandoffKey");
+        if (!TextUtils.equals(playbackHandoffKey, nextHandoffKey)) {
+            PlaybackHandoff.delete(playbackHandoffKey);
+        }
+        playbackHandoffKey = null;
+        preResolvedPlayResult = null;
+        webDavPlayback = false;
+        webDavDirectoryUrl = null;
+        mVodInfo = null;
+        sourceKey = null;
+        sourceBean = null;
+        setIntent(intent);
+        playbackTerminated = false;
+        if (mVideoView != null && mController != null) {
+            initData();
+        }
+    }
+
+    /** Stop immediately on terminal exit; onDestroy may be delayed by another Activity. */
+    private void stopPlaybackForExit(String reason) {
+        if (playbackTerminated) {
+            return;
+        }
+        playbackTerminated = true;
+        playGeneration.incrementAndGet();
+        activePlayGeneration = 0;
+        activeParseGeneration = 0;
+        activeM3u8Generation = 0;
+        playbackRequestSeq.incrementAndGet();
+        subtitleInitSeq.incrementAndGet();
+        subtitleInitPendingForPlaybackReady = false;
+        subtitleInitScheduledForGeneration = false;
+        try {
+            if (sourceViewModel != null) {
+                sourceViewModel.cancelPlayRequests();
+            }
+            stopBufferingProgressMonitor();
+            if (mHandler != null) {
+                mHandler.removeCallbacksAndMessages(null);
+                stopParse();
+            }
+        } catch (Throwable error) {
+            LOG.e("echo-playback-exit cancel failed: " + error.getClass().getSimpleName());
+        }
+        try {
+            persistPlaybackProgress();
+        } catch (Throwable error) {
+            LOG.e("echo-playback-exit persist failed: " + error.getClass().getSimpleName());
+        } finally {
+            // A persistence failure cannot short-circuit the actual resource teardown.
+            keepHdrWindowDuringPlayerSwitch = false;
+            try {
+                forceReleaseCurrentPlayer(reason);
+            } catch (Throwable error) {
+                LOG.e("echo-playback-exit release failed: " + error.getClass().getSimpleName());
+            }
+        }
+        activePlayRequestKey = "";
+        activeProgressKey = "";
+        try {
+            if (mController != null) {
+                if (mController.mSubtitleView != null) {
+                    // A hidden subtitle worker otherwise keeps polling the released player.
+                    // destroy() can be followed by setSubtitlePath() on a reused Activity.
+                    mController.mSubtitleView.destroy();
+                    mController.mSubtitleView.bindToMediaPlayer(null);
+                }
+                clearBitmapSubtitleView();
+                mController.stopOther();
+            }
+        } catch (Throwable error) {
+            LOG.e("echo-playback-exit controller failed: " + error.getClass().getSimpleName());
+        }
+        try {
+            stopLoadWebView(true);
+        } catch (Throwable error) {
+            LOG.e("echo-playback-exit webview failed: " + error.getClass().getSimpleName());
+        }
+        currentPlaybackRequiresHdrOutput = false;
+        currentPlaybackUsesNativeJava64DolbyVision = false;
+        HdrOutputManager.releaseHdr(this, reason);
     }
 
     @Override
@@ -3049,11 +3218,11 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean shouldRouteTouchToController(@Nullable MotionEvent event) {
-        return isJava64TouchPhone()
+        return (isJava64TouchPhone() || webDavPlayback)
                 && event != null
                 && mVideoView != null
                 && mController != null
-                && mVideoView.isFullScreen();
+                && (mVideoView.isFullScreen() || webDavPlayback);
     }
 
     @Override
@@ -3122,10 +3291,19 @@ public class PlayActivity extends BaseActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (playbackTerminated) {
+            return;
+        }
         suppressPauseForFullScreenTransition = false;
         if (mVideoView != null && PlayerHelper.isInternalPlayerType(mVodPlayerCfg == null ? -1 : mVodPlayerCfg.optInt("pl", -1))) {
             mVideoView.resume();
             syncEmbeddedControllerMode();
+            // Android may reset the window color mode while the activity is paused or its
+            // decor is reattached. Re-apply HDR before the first resumed frame so HDR10,
+            // HDR10+, HLG and Dolby Vision do not briefly (or permanently) fall back to SDR.
+            if (currentPlaybackRequiresHdrOutput) {
+                syncHdrWindowForCurrentPlayback("activity-resume");
+            }
         }
     }
 
@@ -3133,6 +3311,10 @@ public class PlayActivity extends BaseActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        if (isFinishing()) {
+            stopPlaybackForExit("activity-pause-finishing");
+            return;
+        }
         if (mVideoView != null && PlayerHelper.isInternalPlayerType(mVodPlayerCfg == null ? -1 : mVodPlayerCfg.optInt("pl", -1))) {
             if (suppressPauseForFullScreenTransition && mVideoView.isFullScreen()) {
                 LOG.i("echo-skipPauseForFullScreen activity");
@@ -3145,7 +3327,7 @@ public class PlayActivity extends BaseActivity {
     }
 
     private boolean shouldRouteKeyToController() {
-        return mVideoView != null && isControllerInputFullScreen();
+        return mVideoView != null && (webDavPlayback || isControllerInputFullScreen());
     }
 
     private boolean isJava64TouchPhone() {
@@ -3155,6 +3337,9 @@ public class PlayActivity extends BaseActivity {
     private boolean isControllerInputFullScreen() {
         if (mVideoView == null) {
             return false;
+        }
+        if (webDavPlayback) {
+            return true;
         }
         if (isJava64TouchPhone()) {
             return mVideoView.isFullScreen();
@@ -3182,9 +3367,12 @@ public class PlayActivity extends BaseActivity {
 
     private void syncEmbeddedControllerMode() {
         if (mController != null) {
-            boolean fullScreenInput = isJava64TouchPhone()
+            boolean fullScreenInput = webDavPlayback || isJava64TouchPhone()
                     ? (mVideoView != null && mVideoView.isFullScreen())
                     : isControllerInputFullScreen();
+            if (webDavPlayback) {
+                fullScreenInput = true;
+            }
             mController.setForceFullScreenInputMode(fullScreenInput);
             if (fullScreenInput) {
                 mController.setEmbeddedPreviewMode(false);
@@ -3243,53 +3431,45 @@ public class PlayActivity extends BaseActivity {
 
     @Override
     protected void onDestroy() {
-        super.onDestroy();
-        playbackRequestSeq.incrementAndGet();
-        stopBufferingProgressMonitor();
-        cancelPlayTimeout();
+        stopPlaybackForExit("activity-destroy");
         if (mVideoView != null) {
             if (App.isJava64Build() && !isTvDevice()) {
                 mVideoView.removeOnLayoutChangeListener(fullScreenStateSyncLayoutListener);
             }
-            persistPlaybackProgress();
-            forceReleaseCurrentPlayer("activity-destroy");
             mVideoView = null;
         }
-        currentPlaybackRequiresHdrOutput = false;
-        currentPlaybackUsesNativeJava64DolbyVision = false;
-        applySubtitleToneForCurrentPlayback();
-        HdrOutputManager.releaseHdr(this, "activity-destroy");
-        stopLoadWebView(true);
-        stopParse();
-        mController.stopOther();
+        // Keep the handoff through a normal Activity recreation; a terminal finish
+        // is the point at which the one-shot file can be removed.
+        if (isFinishing()) {
+            PlaybackHandoff.delete(playbackHandoffKey);
+        }
+        super.onDestroy();
     }
 
     private VodInfo mVodInfo;
+    private String playbackHandoffKey;
+    private String preResolvedPlayResult;
     private JSONObject mVodPlayerCfg;
     private String sourceKey;
     private SourceBean sourceBean;
     private boolean webDavPlayback;
     private String webDavDirectoryUrl;
+    private volatile boolean playbackTerminated;
 
     private void playNext(boolean isProgress) {
         triedLineFlags.clear();
-        boolean hasNext = true;
-        if (mVodInfo == null || mVodInfo.seriesMap.get(mVodInfo.playFlag) == null) {
-            hasNext = false;
-        } else {
-            hasNext = mVodInfo.playIndex + 1 < mVodInfo.seriesMap.get(mVodInfo.playFlag).size();
-        }
-        if (!hasNext) {
-            if(isProgress && mVodInfo!=null){
-                mVodInfo.playIndex=0;
-                Toast.makeText(this, "已经是最后一集了!,即将跳到第一集继续播放", Toast.LENGTH_SHORT).show();
-            }else {
+        List<VodInfo.VodSeries> currentSeries = mVodInfo == null || mVodInfo.seriesMap == null
+                ? null : mVodInfo.seriesMap.get(mVodInfo.playFlag);
+        if (currentSeries == null || mVodInfo.playIndex + 1 >= currentSeries.size()) {
+            // Natural completion of a single file or the last item must remain paused at the
+            // completed state. Wrapping to index zero unexpectedly restarted the first episode
+            // and also made a one-item directory loop forever.
+            if (!isProgress) {
                 Toast.makeText(this, "已经是最后一集了!", Toast.LENGTH_SHORT).show();
-                return;
             }
-        }else {
-            mVodInfo.playIndex++;
+            return;
         }
+        mVodInfo.playIndex++;
         play(false);
     }
 
@@ -3419,6 +3599,15 @@ public class PlayActivity extends BaseActivity {
     }
 
     public void play(boolean reset) {
+        if (playbackTerminated) {
+            return;
+        }
+        if (!isPlayableVodInfo(mVodInfo, sourceKey)) {
+            LOG.e("echo-play-invalid-state source=" + sourceKey
+                    + " vod=" + (mVodInfo == null ? "null" : mVodInfo.id));
+            handleMissingPlayableUrl("invalid-vod-state", "播放信息无效");
+            return;
+        }
         if (reset) {
             dolbyVisionFallbackTried = false;
         }
@@ -3477,6 +3666,26 @@ public class PlayActivity extends BaseActivity {
             }catch (JSONException e) {
                 e.printStackTrace();
             }
+        }
+        // A parent-process Spider may have completed QR/login resolution. Consume that
+        // result before any direct-url/Thunder fast path so authorization headers and the
+        // resolved URL cannot be bypassed by the original episode URL.
+        if (!TextUtils.isEmpty(preResolvedPlayResult)) {
+            try {
+                JSONObject resolved = new JSONObject(preResolvedPlayResult);
+                resolved.put("proKey", progressKey);
+                resolved.put("subtKey", subtitleCacheKey);
+                resolved.put("reqKey", activePlayRequestKey);
+                resolved.put("flag", mVodInfo.playFlag);
+                preResolvedPlayResult = null;
+                sourceViewModel.playResult.postValue(resolved);
+                LOG.i("echo-player-use-pre-resolved-result");
+            } catch (Throwable error) {
+                LOG.e("echo-player-pre-resolved-invalid: " + error.getClass().getSimpleName());
+                preResolvedPlayResult = null;
+                handleMissingPlayableUrl("invalid-pre-resolved-result", "播放授权结果无效");
+            }
+            return;
         }
         if(Jianpian.isJpUrl(vs.url)){//荐片地址特殊判断
             String jp_url= vs.url;

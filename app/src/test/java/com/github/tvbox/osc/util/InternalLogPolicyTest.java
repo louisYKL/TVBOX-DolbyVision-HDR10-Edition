@@ -8,6 +8,14 @@ import static org.junit.Assert.assertTrue;
 
 public class InternalLogPolicyTest {
     @Test
+    public void normalEventsNeverWritePersistentLogs() {
+        assertTrue(InternalLogPolicy.shouldRecordLevel("E"));
+        assertFalse(InternalLogPolicy.shouldRecordLevel("I"));
+        assertFalse(InternalLogPolicy.shouldRecordLevel("D"));
+        assertFalse(InternalLogPolicy.shouldRecordLevel(null));
+    }
+
+    @Test
     public void totalDiagnosticStorageNeverExceeds512Kilobytes() {
         assertEquals(2, InternalLogPolicy.POLICY_VERSION);
         assertEquals(512L * 1024L, InternalLogPolicy.MAX_TOTAL_BYTES);

@@ -15,6 +15,8 @@ import androidx.annotation.NonNull;
 import com.github.tvbox.osc.R;
 import com.github.tvbox.osc.event.RefreshEvent;
 import com.github.tvbox.osc.server.ControlManager;
+import com.github.tvbox.osc.server.RemoteInputDrafts;
+import com.github.tvbox.osc.server.RemoteInputRequest;
 import com.github.tvbox.osc.ui.adapter.ApiHistoryDialogAdapter;
 import com.github.tvbox.osc.ui.tv.QRCodeGen;
 import com.github.tvbox.osc.util.HawkConfig;
@@ -26,6 +28,7 @@ import com.orhanobut.hawk.Hawk;
 
 import org.greenrobot.eventbus.Subscribe;
 import org.greenrobot.eventbus.ThreadMode;
+import org.greenrobot.eventbus.EventBus;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
@@ -47,7 +50,11 @@ public class ApiDialog extends BaseDialog {
 
     @Subscribe(threadMode = ThreadMode.MAIN)
     public void refresh(RefreshEvent event) {
-        if (event.type == RefreshEvent.TYPE_API_URL_CHANGE) {
+        if (event.type == RefreshEvent.TYPE_REMOTE_INPUT_FIELD) {
+            if (isShowing()) {
+                fillRemoteDrafts();
+            }
+        } else if (event.type == RefreshEvent.TYPE_API_URL_CHANGE) {
             String value = (String) event.obj;
             if (value != null) {
                 inputApi.setText(value);
@@ -57,6 +64,40 @@ public class ApiDialog extends BaseDialog {
             if (value != null) {
                 inputApiLive.setText(value);
             }
+        }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (!EventBus.getDefault().isRegistered(this)) {
+            EventBus.getDefault().register(this);
+        }
+        fillRemoteDrafts();
+    }
+
+    @Override
+    protected void onStop() {
+        if (EventBus.getDefault().isRegistered(this)) {
+            EventBus.getDefault().unregister(this);
+        }
+        super.onStop();
+    }
+
+    private void fillRemoteDrafts() {
+        fillRemoteDraft(RemoteInputRequest.CONFIG, inputApi);
+        fillRemoteDraft(RemoteInputRequest.LIVE, inputApiLive);
+    }
+
+    private void fillRemoteDraft(String target, EditText input) {
+        if (input == null) {
+            return;
+        }
+        RemoteInputDrafts.PendingInput pending = RemoteInputDrafts.get().take(target);
+        if (pending != null) {
+            input.setText(pending.request.value);
+            input.setSelection(input.length());
+            pending.markFilled();
         }
     }
 

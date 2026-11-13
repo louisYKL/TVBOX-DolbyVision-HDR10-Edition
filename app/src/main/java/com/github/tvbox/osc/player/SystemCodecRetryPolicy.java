@@ -29,4 +29,22 @@ final class SystemCodecRetryPolicy {
         }
         return currentRetryCount + 1;
     }
+
+    /**
+     * Keeps a saved resume/seek target when a source fails before ExoPlayer exposes a
+     * meaningful current position. A zero current position during that window is not proof
+     * that playback started at byte/time zero.
+     */
+    static long resolveRetryResumePosition(long currentPositionMs,
+                                           boolean seekPending,
+                                           long pendingSeekPositionMs,
+                                           long initialResumePositionMs) {
+        if (seekPending) {
+            return Math.max(0L, pendingSeekPositionMs);
+        }
+        if (currentPositionMs > 0L) {
+            return currentPositionMs;
+        }
+        return Math.max(0L, initialResumePositionMs);
+    }
 }

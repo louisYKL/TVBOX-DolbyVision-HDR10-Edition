@@ -50,6 +50,7 @@ import com.github.tvbox.osc.util.FastClickCheckUtil;
 import com.github.tvbox.osc.util.HawkConfig;
 import com.github.tvbox.osc.util.LOG;
 import com.github.tvbox.osc.util.SearchHelper;
+import com.github.tvbox.osc.util.PlaybackHandoff;
 import com.github.tvbox.osc.util.SubtitleHelper;
 import com.github.tvbox.osc.viewmodel.SourceViewModel;
 import com.lzy.okgo.OkGo;
@@ -95,6 +96,7 @@ public class DetailActivity extends BaseActivity {
     private View llPlayerPlace;
     private View mediaColumn;
     private PlayFragment playFragment = null;
+    private boolean detailPlaybackStopped;
     private ImageView ivThumb;
     private TextView tvName;
     private TextView tvYear;
@@ -145,6 +147,16 @@ public class DetailActivity extends BaseActivity {
     boolean showPreview = Hawk.get(HawkConfig.SHOW_PREVIEW, true); // true 开启 false 关闭
     private int pendingFlagPosition = -1;
     private boolean preferPreviewFocus = true;
+    private boolean fullPlayerResolvePending = false;
+    private String fullPlayerResolveRequestKey = "";
+    private String fullPlayerResolveProgressKey = "";
+    private String fullPlayerResolveSourceKey = "";
+    private String fullPlayerResolveVodId = "";
+    private String fullPlayerResolvePlayFlag = "";
+    private int fullPlayerResolvePlayIndex = -1;
+    private String fullPlayerResolveSeriesUrl = "";
+    private int fullPlayerResolveSerial = 0;
+    private ExecutorService playbackResolveExecutor;
 
     private LinearSmoothScroller smoothScroller;
 
@@ -412,7 +424,7 @@ public class DetailActivity extends BaseActivity {
             @Override
             public void onItemClick(BaseQuickAdapter adapter, View view, int position) {
                 FastClickCheckUtil.check(view);
-                if (vodInfo != null && vodInfo.seriesMap.get(vodInfo.playFlag).size() > 0) {
+                if (hasValidSelection()) {
                     boolean reload = false;
                     boolean isAllowFull = false;
                     for (int j = 0; j < vodInfo.seriesMap.get(vodInfo.playFlag).size(); j++) {
@@ -455,7 +467,9 @@ public class DetailActivity extends BaseActivity {
             public void onItemSelected(TvRecyclerView parent, View itemView, int position) {
                 TextView txtView = itemView.findViewById(R.id.tvSeriesGroup);
                 txtView.setTextColor(mContext.getResources().getColor(R.color.apple_tv_chip_text_active));
-                if (vodInfo != null && vodInfo.seriesMap.get(vodInfo.playFlag).size() > 0) {
+                if (vodInfo != null && vodInfo.seriesMap != null
+                        && vodInfo.seriesMap.get(vodInfo.playFlag) != null
+                        && !vodInfo.seriesMap.get(vodInfo.playFlag).isEmpty()) {
                     int targetPos = position * GroupCount;
 //                    mGridView.smoothScrollToPosition(targetPos);
                     customSeriesScrollPos(targetPos);
@@ -588,14 +602,45 @@ public class DetailActivity extends BaseActivity {
     private List<Runnable> pauseRunnable = null;
 
     private void playCurrentSelection(boolean usePreviewPlayer, boolean openPlayerActivity) {
-        if (vodInfo != null && vodInfo.seriesMap.get(vodInfo.playFlag).size() > 0) {
+        if (detailPlaybackStopped || isFinishing()) {
+            return;
+        }
+        if (fullPlayerResolvePending) {
+            // A new episode/source selection supersedes any QR/playerContent request still
+            // waiting for approval. Its callback must never launch the old episode.
+            fullPlayerResolvePending = false;
+            fullPlayerResolveSerial++;
+            if (sourceViewModel != null) {
+                sourceViewModel.cancelPlayRequests();
+            }
+        }
+        List<VodInfo.VodSeries> selectedEpisodes = vodInfo == null || vodInfo.seriesMap == null
+                ? null : vodInfo.seriesMap.get(vodInfo.playFlag);
+        if (vodInfo != null && selectedEpisodes != null && !selectedEpisodes.isEmpty()
+                && vodInfo.playIndex >= 0 && vodInfo.playIndex < selectedEpisodes.size()
+                && selectedEpisodes.get(vodInfo.playIndex) != null
+                && !TextUtils.isEmpty(selectedEpisodes.get(vodInfo.playIndex).url)) {
             preFlag = vodInfo.playFlag;
             setCurrentPlayingSeries(vodInfo.seriesMap.get(vodInfo.playFlag).get(vodInfo.playIndex));
             Bundle bundle = new Bundle();
             String activeSourceKey = TextUtils.isEmpty(sourceKey) ? firstsourceKey : sourceKey;
             vodInfo.sourceKey = activeSourceKey;
-            insertVod(activeSourceKey, vodInfo);
-            bundle.putString("sourceKey", sourceKey);
+            try {
+                insertVod(activeSourceKey, vodInfo);
+            } catch (Throwable error) {
+                // A history write cannot prevent a selected episode/source from loading.
+                LOG.e("echo-detail-history-save failed: " + error.getClass().getSimpleName());
+            }
+            // PlayActivity runs in the dedicated :player process.  App.vodInfo is
+            // process-local, so relying on that singleton loses the selected title
+            // as soon as the full-screen player is launched.  Pass the immutable
+            // playback snapshot explicitly and use the key we actually selected.
+            bundle.putString("sourceKey", activeSourceKey);
+            if (usePreviewPlayer && !openPlayerActivity) {
+                // Same-process preview can safely use the object fallback if the cache write fails.
+                bundle.putSerializable("VodInfo", vodInfo);
+                bundle.putSerializable("SourceBean", ApiConfig.get().getSource(activeSourceKey));
+            }
             App.getInstance().setVodInfo(vodInfo);
             if (usePreviewPlayer && playFragment != null && !openPlayerActivity) {
                 if (previewVodInfo == null) {
@@ -620,9 +665,156 @@ public class DetailActivity extends BaseActivity {
                 }
                 playFragment.setData(bundle);
             } else {
-                jumpActivity(PlayActivity.class, bundle);
+                beginFullPlayerResolve(activeSourceKey, vodInfo,
+                        selectedEpisodes.get(vodInfo.playIndex));
             }
         }
+    }
+
+    /** Resolve Spider/QR-backed playerContent while this UI is still alive. */
+    private void beginFullPlayerResolve(String activeSource, VodInfo selectedVod,
+                                        VodInfo.VodSeries selectedSeries) {
+        if (sourceViewModel == null || selectedVod == null || selectedSeries == null
+                || TextUtils.isEmpty(selectedSeries.url)) {
+            Toast.makeText(this, "播放信息无效，请重试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        fullPlayerResolveSerial++;
+        fullPlayerResolvePending = true;
+        fullPlayerResolveSourceKey = activeSource;
+        fullPlayerResolveVodId = selectedVod.id;
+        fullPlayerResolvePlayFlag = selectedVod.playFlag;
+        fullPlayerResolvePlayIndex = selectedVod.playIndex;
+        fullPlayerResolveSeriesUrl = selectedSeries.url;
+        fullPlayerResolveRequestKey = activeSource + "|" + selectedVod.id + "|"
+                + selectedVod.playFlag + "|" + selectedVod.playIndex + "|"
+                + selectedSeries.name + "|" + selectedSeries.url;
+        fullPlayerResolveProgressKey = activeSource + "|" + selectedVod.id + "|"
+                + selectedVod.playFlag + "|" + selectedVod.playIndex;
+        String subtitleKey = activeSource + "-" + selectedVod.id + "-"
+                + selectedVod.playFlag + "-" + selectedVod.playIndex + "-"
+                + selectedSeries.name + "-subt";
+        LOG.i("echo-detail-resolve-full-player source=" + activeSource
+                + " flag=" + selectedVod.playFlag + " index=" + selectedVod.playIndex);
+        sourceViewModel.getPlay(activeSource, selectedVod.playFlag, fullPlayerResolveProgressKey,
+                selectedSeries.url, subtitleKey, fullPlayerResolveRequestKey);
+        Toast.makeText(this, "正在准备播放", Toast.LENGTH_SHORT).show();
+    }
+
+    private void handleFullPlayerResolveResult(JSONObject info) {
+        if (!fullPlayerResolvePending) {
+            return;
+        }
+        if (info == null) {
+            fullPlayerResolvePending = false;
+            Toast.makeText(this, "授权或播放地址获取失败，请取消后重试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String requestKey = info.optString("reqKey", "");
+        String progressKey = info.optString("proKey", "");
+        if (!TextUtils.equals(requestKey, fullPlayerResolveRequestKey)
+                || !TextUtils.equals(progressKey, fullPlayerResolveProgressKey)) {
+            LOG.i("echo-detail-resolve-drop-stale");
+            return;
+        }
+        String url = info.optString("url", "").trim();
+        String error = info.optString("errMsg", info.optString("error", ""));
+        if (TextUtils.isEmpty(url) || !info.optBoolean("playable", false)
+                || !TextUtils.isEmpty(error)) {
+            fullPlayerResolvePending = false;
+            Toast.makeText(this, "授权或播放地址获取失败，请取消后重试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (vodInfo == null || !TextUtils.equals(vodInfo.id, fullPlayerResolveVodId)
+                || !TextUtils.equals(vodInfo.playFlag, fullPlayerResolvePlayFlag)
+                || vodInfo.playIndex != fullPlayerResolvePlayIndex
+                || !TextUtils.equals(resolveCurrentSourceKey(), fullPlayerResolveSourceKey)
+                || vodInfo.seriesMap == null
+                || vodInfo.seriesMap.get(vodInfo.playFlag) == null
+                || vodInfo.playIndex < 0
+                || vodInfo.playIndex >= vodInfo.seriesMap.get(vodInfo.playFlag).size()
+                || !TextUtils.equals(vodInfo.seriesMap.get(vodInfo.playFlag)
+                .get(vodInfo.playIndex).url, fullPlayerResolveSeriesUrl)) {
+            fullPlayerResolvePending = false;
+            LOG.i("echo-detail-resolve-drop-selection-changed");
+            return;
+        }
+        final int serial = fullPlayerResolveSerial;
+        // The handoff serializer runs off the UI thread. The selection identity is
+        // rechecked before launch, so a mutable detail object cannot start a stale item.
+        final VodInfo handoffVod = vodInfo;
+        final String handoffSource = fullPlayerResolveSourceKey;
+        final SourceBean handoffSourceBean = ApiConfig.get().getSource(handoffSource);
+        final String resolvedJson = info.toString();
+        if (handoffSourceBean == null) {
+            fullPlayerResolvePending = false;
+            Toast.makeText(this, "播放数据准备失败，请重试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (playbackResolveExecutor != null) {
+            playbackResolveExecutor.shutdownNow();
+        }
+        final ExecutorService resolveExecutor = Executors.newSingleThreadExecutor();
+        playbackResolveExecutor = resolveExecutor;
+        resolveExecutor.execute(() -> {
+            String handoffKey = PlaybackHandoff.write(handoffVod, handoffSourceBean, resolvedJson);
+            runOnUiThread(() -> {
+                // A stale serializer callback must only close its own executor. A newer
+                // request may already have replaced the field while this background write
+                // was finishing; closing the field here strands that newer request.
+                resolveExecutor.shutdown();
+                if (playbackResolveExecutor == resolveExecutor) {
+                    playbackResolveExecutor = null;
+                }
+                if (serial != fullPlayerResolveSerial || !fullPlayerResolvePending
+                        || !isResolveSelectionCurrent()
+                        || isFinishing() || (android.os.Build.VERSION.SDK_INT >= 17 && isDestroyed())) {
+                    PlaybackHandoff.delete(handoffKey);
+                    return;
+                }
+                if (TextUtils.isEmpty(handoffKey)) {
+                    fullPlayerResolvePending = false;
+                    Toast.makeText(this, "播放数据准备失败，请重试", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Bundle bundle = new Bundle();
+                bundle.putString("sourceKey", handoffSource);
+                bundle.putString("playbackHandoffKey", handoffKey);
+                App.getInstance().setVodInfo(handoffVod);
+                fullPlayerResolvePending = false;
+                LOG.i("echo-detail-resolve-success launch-player");
+                jumpActivity(PlayActivity.class, bundle);
+            });
+        });
+    }
+
+    private boolean isResolveSelectionCurrent() {
+        if (vodInfo == null || !TextUtils.equals(vodInfo.id, fullPlayerResolveVodId)
+                || !TextUtils.equals(vodInfo.playFlag, fullPlayerResolvePlayFlag)
+                || vodInfo.playIndex != fullPlayerResolvePlayIndex
+                || !TextUtils.equals(resolveCurrentSourceKey(), fullPlayerResolveSourceKey)
+                || vodInfo.seriesMap == null) {
+            return false;
+        }
+        List<VodInfo.VodSeries> episodes = vodInfo.seriesMap.get(vodInfo.playFlag);
+        return episodes != null && vodInfo.playIndex >= 0 && vodInfo.playIndex < episodes.size()
+                && episodes.get(vodInfo.playIndex) != null
+                && TextUtils.equals(episodes.get(vodInfo.playIndex).url, fullPlayerResolveSeriesUrl);
+    }
+
+    private boolean hasValidSelection() {
+        if (vodInfo == null || vodInfo.seriesMap == null || TextUtils.isEmpty(vodInfo.playFlag)) {
+            return false;
+        }
+        List<VodInfo.VodSeries> episodes = vodInfo.seriesMap.get(vodInfo.playFlag);
+        return episodes != null && !episodes.isEmpty()
+                && vodInfo.playIndex >= 0 && vodInfo.playIndex < episodes.size()
+                && episodes.get(vodInfo.playIndex) != null
+                && !TextUtils.isEmpty(episodes.get(vodInfo.playIndex).url);
+    }
+
+    private String resolveCurrentSourceKey() {
+        return TextUtils.isEmpty(sourceKey) ? firstsourceKey : sourceKey;
     }
 
     private void openFullPlayer() {
@@ -888,6 +1080,12 @@ public class DetailActivity extends BaseActivity {
                     llPlayerFragmentContainerBlock.setVisibility(View.GONE);
                     updatePreviewBlockFocusability(false);
                 }
+            }
+        });
+        sourceViewModel.playResult.observe(this, new Observer<JSONObject>() {
+            @Override
+            public void onChanged(JSONObject info) {
+                handleFullPlayerResolveResult(info);
             }
         });
     }
@@ -1302,10 +1500,47 @@ public class DetailActivity extends BaseActivity {
     }
 
     @Override
-    protected void onDestroy() {
-        if (showPreview && playFragment != null) {
-            playFragment.persistEmbeddedProgress();
+    public void finish() {
+        try {
+            stopDetailPlayback();
+        } finally {
+            super.finish();
         }
+    }
+
+    private void stopDetailPlayback() {
+        if (detailPlaybackStopped) {
+            return;
+        }
+        detailPlaybackStopped = true;
+        fullPlayerResolvePending = false;
+        fullPlayerResolveSerial++;
+        try {
+            if (sourceViewModel != null) {
+                sourceViewModel.cancelPlayRequests();
+            }
+            if (playbackResolveExecutor != null) {
+                playbackResolveExecutor.shutdownNow();
+                playbackResolveExecutor = null;
+            }
+        } catch (Throwable error) {
+            LOG.e("echo-detail-exit cancel failed: " + error.getClass().getSimpleName());
+        } finally {
+            if (playFragment != null) {
+                // Stop before the Activity transition; Fragment destruction can be delayed,
+                // and its outstanding parser callback must not restart the hidden old video.
+                try {
+                    playFragment.stopEmbeddedPlayback();
+                } catch (Throwable error) {
+                    LOG.e("echo-detail-exit release failed: " + error.getClass().getSimpleName());
+                }
+            }
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        stopDetailPlayback();
         super.onDestroy();
         try {
             if (searchExecutorService != null) {
@@ -1334,9 +1569,6 @@ public class DetailActivity extends BaseActivity {
             schedulePreviewBlockSync();
             requestPreviewFocus();
             return;
-        }
-        if (showPreview && playFragment != null) {
-            playFragment.persistEmbeddedProgress();
         }
         if(showPreview && playFragment!=null)playFragment.setPlayTitle(false);
         super.onBackPressed();

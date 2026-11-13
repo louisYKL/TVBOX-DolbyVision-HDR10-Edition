@@ -18,8 +18,9 @@ final class RangeWindowPolicy {
     }
 
     static boolean shouldYieldPrefetchToForeground(boolean prefetchActive) {
-        // A cache miss is decoder-critical. Yield even when it falls inside the background
-        // range so the source never opens two overlapping HTTP transfers at once.
+        // A cache miss is decoder-critical. Yield the single network lane to the foreground;
+        // the fill task is restarted after the foreground window is stored. Reads that hit the
+        // current window never enter this path, so normal playback keeps its forward runway.
         return prefetchActive;
     }
 

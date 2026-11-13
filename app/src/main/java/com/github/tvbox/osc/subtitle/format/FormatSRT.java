@@ -47,7 +47,6 @@ public class FormatSRT implements TimedTextFileFormat {
 
         TimedTextObject tto = new TimedTextObject();
         Subtitle caption = new Subtitle();
-        int captionNumber = 1;
         boolean allGood;
 
         //first lets load the file
@@ -66,24 +65,24 @@ public class FormatSRT implements TimedTextFileFormat {
                 //if its a blank line, ignore it, otherwise...
                 if (!line.isEmpty()) {
                     allGood = false;
-                    //the first thing should be an increasing number
+                    // Cue numbers identify entries; they need not start at one or be contiguous.
                     try {
-                        int num = Integer.parseInt(line);
-                        if (num != captionNumber)
-                            throw new Exception();
-                        else {
-                            captionNumber++;
-                            allGood = true;
-                        }
+                        Integer.parseInt(line);
+                        allGood = true;
                     } catch (Exception e) {
-                        tto.warnings += captionNumber + " expected at line " + lineCounter;
+                        tto.warnings += "caption number expected at line " + lineCounter;
                         tto.warnings += "\n skipping to next line\n\n";
                     }
                     if (allGood) {
                         //we go to next line, here the begin and end time should be found
                         try {
                             lineCounter++;
-                            line = br.readLine().trim();
+                            line = br.readLine();
+                            if (line == null) {
+                                tto.warnings += "missing caption time at end of file\n\n";
+                                break;
+                            }
+                            line = line.trim();
                             String start = line.substring(0, 12);
                             String end = line.substring(line.length() - 12, line.length());
                             Time time = new Time("hh:mm:ss,ms", start);
@@ -98,14 +97,15 @@ public class FormatSRT implements TimedTextFileFormat {
                     if (allGood) {
                         //we go to next line where the caption text starts
                         lineCounter++;
-                        line = br.readLine().trim();
-                        String text = "";
-                        while (!line.isEmpty()) {
-                            text += line + "<br />";
-                            line = br.readLine().trim();
+                        line = br.readLine();
+                        StringBuilder text = new StringBuilder();
+                        while (line != null && !line.trim().isEmpty()) {
+                            text.append(line.trim()).append("<br />");
+                            line = br.readLine();
                             lineCounter++;
                         }
-                        caption.content = text;
+                        // EOF is a valid cue terminator, just like a blank separator line.
+                        caption.content = text.toString();
                         int key = caption.start.mseconds;
                         //in case the key is already there, we increase it by a millisecond, since no duplicates are allowed
                         while (tto.captions.containsKey(key)) key++;
@@ -115,8 +115,8 @@ public class FormatSRT implements TimedTextFileFormat {
                         tto.captions.put(key, caption);
                     }
                     //we go to next blank
-                    while (!line.isEmpty()) {
-                        line = br.readLine().trim();
+                    while (line != null && !line.trim().isEmpty()) {
+                        line = br.readLine();
                         lineCounter++;
                     }
                     caption = new Subtitle();
@@ -124,8 +124,6 @@ public class FormatSRT implements TimedTextFileFormat {
                 line = br.readLine();
             }
 
-        } catch (NullPointerException e) {
-            tto.warnings += "unexpected end of file, maybe last caption is not complete.\n\n";
         } finally {
             //we close the reader
             is.close();

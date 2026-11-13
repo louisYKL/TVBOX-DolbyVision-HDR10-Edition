@@ -2,32 +2,33 @@
 
 # TV BOX Dolby Vision / HDR10 Support Edition
 
-> A TV-first TVBox branch focused on device hardware decoding, HDR activation, capability-aware Dolby Vision routing, and living-room friendly interaction.
+> A TVBox branch for Android TV, phones, and tablets, focused on hardware decoding, HDR, subtitles, and bounded streaming caches.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.4.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.2.9.4.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.0"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.0-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
-  <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20DV%20fallback-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
+  <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.2.9.4.1">Download 0.2.9.4.1</a> ·
-  <a href="README.md">简体中文</a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.0">Download 0.3.0</a> ·
+  <a href="README.md">简体中文</a> ·
+  <a href="0.3.0/RELEASE_NOTES.md">Release notes</a>
 </p>
 
 </div>
 
-## In one line
-
-This branch is built for real living-room playback: every video uses the current device's Android `MediaCodec` hardware path, audio prefers platform decoding and ends as stereo PCM, and HDR, subtitles, sustained buffering, and remote interaction stay in one pipeline.
-
 ## Downloads
 
-| File | Target devices | Notes |
+All three variants share playback code and buffering policy, with separate ABI builds. Published packages retain the existing signing certificate; updating the same variant preserves settings and playback history.
+
+| Package | ABI | Devices |
 | --- | --- | --- |
-| `TVBox_v0.2.9.4.1_java32.apk` | Mainstream 32-bit Android TVs / smart screens | Primary TV build, installable over 0.2.9.4 and earlier builds |
-| `TVBox_v0.2.9.4.1_java64.apk` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build, installable over 0.2.9.4 and earlier builds |
-| `TVBox_v0.2.9.4.1_hisense32.apk` | Hisense 32-bit TVs | Vendor-specific build, installable over 0.2.9.4 and earlier builds |
+| [TVBox_v0.3.0_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
+| [TVBox_v0.3.0_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
+| [TVBox_v0.3.0_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.0/TVBox_v0.3.0_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
+
+Version: `0.3.0`; `versionCode`: `30000`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
 
 ## Preview
 
@@ -36,232 +37,71 @@ This branch is built for real living-room playback: every video uses the current
   <img src="2.webp" alt="TVBOX preview 2" width="48%">
 </p>
 
-## What this project is
+## Changes in 0.3.0
 
-This is not a “just make it play somehow” TVBox fork.
+- Address Java heap exhaustion confirmed in device logs by budgeting cached data, in-flight downloads, and playback resources together. Source changes and player exit release the old session immediately and prevent stale callbacks from restarting it.
+- VOD uses `24 MiB` Range chunks and caches contiguous data toward the end of the video. Startup targets `96 MiB`; the configured raw-cache ceiling is `192 MiB`, further constrained by process heap headroom. Index probes and reads at unrelated offsets do not count as contiguous data ahead of playback.
+- Startup, resume, seeking, and genuine rebuffering calculate progress from usable data. Valid downloaded data is retained rather than repeatedly changing sources, clearing the cache, or downloading it again while waiting. Live retains a separate streaming-buffer policy.
+- Playback avoids repeated full-page blur captures. Format probing scans bytes directly to reduce large temporary strings and allocations. The in-memory poster cache is bounded to `4–16 MiB` according to the device budget.
+- The port 9978 page has five independent fields: subscription URL, live URL, WebDAV URL, username, and password. Browser confirmation fills the corresponding application input; saving and activation require confirmation inside the app.
+- Browse local or WebDAV directories for external subtitles from the playback screen, including child folders and the parent directory. Manual selection does not require matching filenames. HDR styling applies only to unstyled text; styled text and bitmap subtitles retain their source design.
 
-The branch is built around real TV use cases: device hardware video decoding, capability-aware HDR routing, reliable stereo PCM audio, subtitle handling, and remote-control friendly fullscreen interaction.
+See the [release notes](0.3.0/RELEASE_NOTES.md) for implementation and verification scope. A cache absorbs temporary network fluctuations; sustained download speeds below the video bitrate can still require waiting for data.
 
-The core principle is simple:
+## Playback, HDR, and audio
 
-- Every video stays on the platform `MediaCodec` path and only hardware video decoders are eligible.
-- Platform audio decoders run first; FFmpeg is used only when Android exposes no decoder for the audio format.
-- Detect HDR10, HDR10+, and Dolby Vision from the actual video stream, not from titles or filenames.
+- Video uses hardware Android `MediaCodec` decoders exposed by the device. An app setting cannot add unsupported decoding capabilities.
+- HDR classification combines video-track information, PQ/HLG, HDR metadata, and Dolby Vision/HDR10+ markers rather than relying on a filename, bit depth, or wide gamut alone. With playback controls visible, the badge shows the identified video resolution and HDR/SDR state.
+- Devices with the necessary decoding and display capabilities retain native Dolby Vision. Other devices use a compatible HDR10/HLG base layer when the source provides one. The app requests the appropriate output mode; actual output also depends on firmware, codec, display, and the format profile.
+- HDR display brightness remains device-controlled. Unstyled HDR text uses light-gray glyphs and a black outline; ASS/SSA, styled text, and PGS/VobSub bitmap subtitles retain their source presentation. SDR keeps the original subtitle style.
+- Audio prefers platform decoders with FFmpeg fallback where needed, retaining stereo PCM output and Android audio routing. These memory changes do not lower audio quality to conceal buffering issues.
+- On touch devices, a single tap shows or hides the controls, and a double tap toggles playback. Transport buttons and TV remotes also control playback.
 
-## What this branch focuses on
+## WebDAV and external subtitles
 
-- Use the current device's hardware video decoders for SDR, HDR10, and HDR10+ playback.
-- Keep the complete Dolby Vision stream on devices that expose both hardware DV decoding and DV output capability.
-- Use the HDR10/HLG base layer only when end-to-end native Dolby Vision is unavailable.
-- Prefer platform decoding for Atmos, AC-3, E-AC-3/JOC, DTS, and TrueHD, then downmix all output to stereo PCM.
-- Keep subtitles, fullscreen controls, and remote focus behavior consistent for TV use.
-- Split the project into clearer deliverables for long-term maintenance.
+Save a WebDAV URL, username, and password in Settings, then browse and play remote files from the Home screen's Local entry. An AList URL must include the actual port and WebDAV path, for example `http://device-address:5244/dav/`.
 
-## 0.2.9.4.1 Variants
+Same-name sibling subtitles can load automatically. The external-subtitle dialog also browses other local or WebDAV folders. Supported formats are SRT, ASS/SSA, VTT, TTML, SCC, and STL, with an `8 MiB` read limit. Selecting an external subtitle switches to that subtitle instead of rendering internal and external subtitles together; the selection can be restored on later playback.
 
-| Variant | ABI | Target devices | Notes |
-| --- | --- | --- | --- |
-| `java32` | `armeabi-v7a` | Mainstream 32-bit Android TVs / smart screens | Current primary TV build |
-| `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Current 64-bit build |
-| `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Current dedicated Hisense build |
+Local browsing is limited to directories Android permits the app to read. Use the storage-permission entry in Settings when access is needed; the browser does not bypass system permissions.
 
-## What 0.2.9.4.1 focused on
+## Port 9978 input page
 
-- Browse internal and mounted storage with Android's system document picker. Manually selected SRT, ASS/SSA, SCC, STL, TTML, and VTT subtitles no longer need to match the video's filename.
-- Bound sample queues and rolling Range windows to reduce memory pressure for high-bitrate large files on 32-bit, low-heap devices. Video remains Range-streamed and is never allocated according to total file size.
-- Configure WebDAV/AList in Settings and save the server address and credentials. The Home screen's Local entry browses remote folders and plays videos directly; same-name sibling subtitles load automatically, and manual subtitle selection browses the current remote folder.
-- Fixed port 9978 confirmation so subscription URLs reach the correct setting, both address fields refresh, and saved subscription/live sources reload when returning Home.
-- Retain the HDR subtitle, port 9978 management service, and settings-dialog fixes from `0.2.9.4`.
+The management server starts with the main application process. Open `http://device-IP:9978/api` from a browser on the same network. If the port is occupied, use the actual address shown in the app.
 
-## What 0.2.9.4 changed
+1. Enter one subscription URL, live URL, WebDAV URL, username, or password in the web page.
+2. Confirm that individual field. Its open application input updates immediately; otherwise the value waits in memory until the matching settings dialog opens.
+3. Confirm inside the application's settings dialog to save and apply the change. Browser confirmation and Enter do not confirm the app dialog, restart the app, or start playback.
 
-- Apply the HDR gray tone only to plain text cues without source styling. Subtitle colors, fonts, size, position, markup and bitmap subtitle pixels remain source-defined.
-- Start the port 9978 management server with the application process and keep it alive across home activity recreation; report port conflicts and try subsequent ports.
-- Serve the management page at `/api`. Browser confirmation saves addresses without restarting the app, and Enter no longer submits an address field.
-- Close setting selection dialogs after confirming either a new option or the current selection.
-- Guard subtitle rendering on the playback page; failed style parsing falls back to the original cue instead of taking down the detail/playback screen.
+The five fields do not overwrite each other. Empty values can clear a field. Unsaved browser inputs do not survive an application restart.
 
-## 0.2.9.3.8 Historical Release
+## Process and memory boundaries
 
-- Touch-bar, remote, and gesture seek commits enter the same real buffering monitor used at startup, keeping buffered percentage and current transfer speed visible until the player reports buffering end.
-- HDR text subtitles use a light-grey `RGB 224` glyph tone with a black outline; PGS/VobSub bitmap subtitles keep the device bitmap path. SDR subtitles retain source-provided colors.
+Standalone fullscreen playback and live activities use the `:player` process. The 32-bit TV detail page retains an embedded preview, whose player runs in the detail activity's main process and does not have a separate heap.
 
-- HDR subtitles use neutral grey `RGB 192` glyphs with a pure black outline. If HDR is detected after playback starts, the selected text track moves to the app overlay so Android's native renderer cannot display it as bright white.
-- SDR subtitles keep their file-defined colors and styles.
+Raw Range data, demuxed sample queues, subtitles, images, and UI all consume resources. Cached payloads, metadata, and in-flight blocks across all data sources in one process share the `192 MiB` raw-data ceiling; old readers still count until they exit. Normal background prefetch leaves `96 MiB` of Java heap headroom. Completing the minimum `96 MiB` contiguous runway and essential foreground reads leaves at least `48 MiB`. If actual memory cannot support the minimum runway, a retryable memory message stays on the playback page for user action. A larger video does not cause allocation of the entire file. Internal logs record errors only, rotate automatically, and are bounded to `512 KiB` in total.
 
-- Clear stale seek-range percentages and keep one buffering percentage/speed overlay until the new range ends or a real first frame is rendered.
-- Measure poster footers at runtime and adapt mobile/tablet subtitle sizing to the short edge and density.
+## Local build
 
-## What 0.2.9.3.1 focused on
+Build tools, dependencies, and caches use the repository's `_runtime` directory. Prepare the local Android SDK, JDK 11, and existing signing material, then run from the repository root:
 
-- HDR text subtitles now use the app overlay with neutral RGB 232 and a black outline. PGS/VobSub bitmap tracks keep their bitmap path instead of falling through to Android's bright-white native text renderer.
-
-## What 0.2.9.3 focused on
-
-- HDR preflight now covers all three variants, identifying HDR10, HDR10+, HLG, static metadata, Dolby Vision, and vendor HEVC Main10/BT.2020 tracks with an unspecified transfer before playback. Saved-progress playback requests HDR before resume.
-- Text and bitmap subtitles use one neutral RGB 232 tone for Dolby Vision, HDR10, HDR10+, and HLG; SDR subtitles keep their configured color.
-- The upper-right badge shows `HDR` or `SDR` only while the bottom playback menu is visible, and disappears with the menu or fullscreen exit.
-- Fixed clipped upper-right action buttons on phone and small-screen detail pages.
-
-## What 0.2.9.2 focused on
-
-- Runtime HDR detection uses PQ/HLG, static HDR information, and explicit HDR10+/Dolby Vision markers. HEVC Main10 bit depth or BT.2020 gamut alone no longer causes a false HDR classification.
-- The Android system HDR window mode is requested when an HDR video track is detected; display brightness remains device-controlled, with HDR-specific subtitle and playback UI treatment retained.
-- Touch devices use a double tap on the video surface as the only direct play/pause gesture; a single tap on the video surface only reveals or hides the bottom transport bar.
-- When the bottom transport bar is visible, its leftmost control is a normal play/pause button like the other controls. Tapping that button toggles playback; tapping the video surface never toggles playback. Android TV remote behavior is unchanged.
-- Seeking shows the target time, buffer percentage, and network speed in one overlay, avoiding duplicate or overlapping loading indicators.
-- Fixed missing action buttons on phone and small-screen detail pages, and highlighted the last-played episode.
-- Button foreground/background contrast is consistent across the app: dark text on light buttons, light text on dark buttons, including normal, focused, and disabled states.
-
-## 0.2.7 Variants
-
-| Variant | ABI | Target devices | Notes |
-| --- | --- | --- | --- |
-| `java32` | `armeabi-v7a` | Mainstream 32-bit Android TVs / smart screens | Primary TV build |
-| `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Current 64-bit build |
-| `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Current dedicated Hisense build |
-
-## What 0.2.7 focused on
-
-- Fixed an intermittent non-zero Range response from local `6677/proxy/play` sources that returned a contaminated body consisting of a PNG signature followed by the video's EBML header. The data source now rejects the entire response and retries the original Range instead of feeding an image prefix to the Matroska extractor, which caused 0% buffering, black video, and playback timeouts.
-- Kept the single foreground system-codec Range lane, the `8 MiB` first/foreground window, the bounded `16 MiB` window, and sustained large-file caching; malformed responses cannot regress normal startup, resume, or repeated scrubbing.
-- Bounded source retries and active-buffer handling so malformed responses cannot loop forever while recoverable transient network errors still retry.
-- All three variants retain device hardware video decoding, stereo PCM audio, HDR subtitle handling, Java64 touch/gesture/focus behavior, and the independent Hisense package/ABI. They install over `0.2.6`.
-
-## 0.2.6 Variants
-
-| Variant | ABI | Target devices | Notes |
-| --- | --- | --- | --- |
-| `java32` | `armeabi-v7a` | Mainstream 32-bit Android TVs / smart screens | Primary TV build |
-| `java64` | `arm64-v8a` | 64-bit Android phones / tablets / boxes | Dedicated 64-bit build |
-| `hisense` | `armeabi-v7a` | Hisense 32-bit TVs | Dedicated Hisense build |
-
-## What 0.2.6 focused on
-
-- The system-codec path uses one foreground Range loading lane with an `8 MiB` first/foreground window and a bounded `16 MiB` maximum, so real I/O begins immediately without a competing background reader.
-- The confirmed eight-byte malformed Range response from `6677/proxy/play` is accepted narrowly. Normal short, empty, offset, and `416` responses remain strict retries and cannot become false cache windows.
-- Resume, repeated forward/backward scrubbing, and data-source recreation retain verified length information, avoiding transient `416`, false 0% progress, and stale-read timeouts without reducing sustained large-file caching.
-- Embedded and fullscreen prepare/rebuffer/seek states show real percentage and speed, then clear stale loading text, spinners, and seek icons once playback is stable.
-- HDR bitmap subtitles render as opaque grey with a black outline; SDR remains white. Default-on subtitles, fullscreen control, Java64 touch/gesture/focus behavior, and the independent Hisense package/ABI remain intact.
-- All builds use `0.2.6` (`versionCode 2060`) and the existing signing certificate for in-place updates from `0.2.5` and earlier.
-
-## Highlights
-
-### 1. Device hardware decoding
-
-- Every video format stays on Android `MediaCodec`, with software-only video decoders excluded.
-- Native HDR switching, MEMC, and vendor image processing remain in the device path.
-
-### 2. Dolby Vision routing
-
-- The app probes the stream and queries device capability before playback.
-- A complete DV stream reaches the native decoder only when both hardware DV decoding and DV output are available.
-- Other devices strip DV RPU/EL and restore HDR metadata only for the HDR10/HLG base-layer path; ordinary HEVC/HDR streams are untouched.
-
-### 3. Audio capability routing
-
-- Platform hardware audio decoders are ordered before platform software decoders and the FFmpeg extension.
-- All decoded audio reaches one stereo PCM `AudioTrack`, preventing silence on optical/ARC outputs that cannot decode multichannel bitstreams.
-
-### 4. Subtitles and audio
-
-- Supports internal subtitles, source subtitles, external subtitles, and local subtitles.
-- Automatically prefers Simplified Chinese / Traditional Chinese when available.
-- Audio stays at full-scale stereo PCM and Android routes it to the active TV speaker, HDMI/ARC, or external digital output.
-
-### 5. TV-first interaction
-
-- The UI and control flow are tuned for remote navigation, fullscreen control layers, seek behavior, and predictable back handling.
-- The visual direction keeps a dark base with liquid-glass style components and a tvOS-inspired UI foundation.
-
-## Why this branch exists
-
-Many TVBox forks put most of the work into source integration, but the playback chain itself is often treated as an afterthought:
-
-- HDR detection is guessed from titles.
-- MKV / WebM is forced into the native player even when vendor firmware cannot handle it.
-- Audio passthrough, subtitles, fullscreen controls, and remote focus fight each other.
-- 32-bit TV, 64-bit Android, and vendor-specific device differences are all mixed into one maintenance path.
-
-This repository is meant to make the playback stack and TV experience more deliberate, not just more crowded.
-
-## Playback architecture
-
-```text
-Stream probe
-  -> identify HDR10 / HDR10+ / Dolby Vision
-  -> query device video and audio decoder capability
-  -> select a device hardware MediaCodec for video
-  -> select a platform audio decoder, with FFmpeg only as fallback
-  -> output stereo PCM and apply HDR, subtitle, and fullscreen policy
+```powershell
+.\build-local.ps1 -Tasks ':app:assembleNormalRelease'
+.\build-local.ps1 -Tasks ':app:assembleJava64Release'
+.\build-local.ps1 -Tasks ':app:assembleHisenseRelease'
 ```
 
-## Repository layout
+The script selects project-local SDK, Gradle, Android user, and temporary directories. Before publishing, verify each package's version, ABI, historical signing certificate, and SHA-256. The basic GitHub Actions workflow builds debug packages and does not replace release-signature verification.
 
 ```text
-app/        Main Android application
-player/     Player abstraction and native playback logic
+app/        Application, UI, HDR, subtitles, WebDAV, and management server
+player/     Player abstraction, native playback, and Range cache
 quickjs/    JS engine module
 pyramid/    Python extension module
 ```
 
-## Local build
+## Community and notes
 
-The repository is arranged so build dependencies and caches can stay inside the project runtime directory.
-
-- Android SDK: `_runtime\android-sdk`
-- JDK: `_runtime\jdk\temurin11`
-- Gradle Home: `_runtime\gradle-home`
-
-PowerShell:
-
-```powershell
-$env:JAVA_HOME='E:\TV\TVBOX-DolbyVision-HDR10-Edition\_runtime\jdk\temurin11'
-$env:GRADLE_USER_HOME='E:\TV\TVBOX-DolbyVision-HDR10-Edition\_runtime\gradle-home'
-
-.\gradlew.bat :app:assembleNormalDebug
-.\gradlew.bat :app:assembleJava64Debug
-.\gradlew.bat :app:assembleHisenseDebug
-```
-
-## GitHub Actions
-
-The repository includes a basic Android build workflow for:
-
-- `TVBox_v0.2.9.3.3_java32.apk`
-- `TVBox_v0.2.9.3.3_java64.apk`
-- `TVBox_v0.2.9.3.3_hisense32.apk`
-
-## Community
-
-- [Contributing Guide](CONTRIBUTING.md)
-- [Support](SUPPORT.md)
-- [Security Policy](SECURITY.md)
-- [Changelog](CHANGELOG.md)
-
-## Who this is for
-
-- Anyone who wants to preserve native hardware decoding and HDR activation on Android TV or smart-screen devices.
-- Anyone who needs separate delivery tracks for 32-bit TV, 64-bit Android, and vendor-specific builds.
-- Anyone who wants to treat the TV playback stack as a product surface, not just a transport layer for content sources.
-
-## Notes
-
-- This project does not bundle any media catalog, live playlist, or subscription source.
-- Only use content sources, subtitles, and subscriptions that you are legally allowed to use.
-- `tvOS`, `iOS`, `Apple TV`, `Dolby Vision`, `HDR10`, and `HDR10+` are trademarks of their respective owners.
-
-## Roadmap
-
-- `0.1`: unify the 32-bit TV build, 64-bit Android build, and Hisense 32-bit build.
-- `0.1.1`: continue closing HDR / DV probe issues, playback routing edge cases, progress persistence, and source-switch state isolation.
-- `0.1.3`: tighten the 64-bit system-player render/touch path and repack the three Android release variants.
-- `0.1.9.1`: publish the three source trees and APKs through one GitHub Release.
-- `0.2.0`: fix 32-bit system-player black-screen-with-audio, playback-failure, and player-error risks while preserving in-place updates from `0.1.9.1`.
-- `0.2.1`: fix Wen Cai HLS black-screen-with-audio / fake-first-frame / false-error cases, unify the `SurfaceView` hardware-decode path, and fail unsupported `H.264 High10` streams explicitly.
-- `0.2.2`: rebuild prebuffering and seek coordination, restore stable audio/subtitle/progress behavior, add buffering percentage, fullscreen subtitle controls, and the detail-page filename, then sync all three variants.
-- `0.2.3`: fix the root cause of playback/seek/scrub freezing into "播放超时" by adding a finite per-read inactivity timeout to every proxy streaming client (local direct stream, HLS/live `ts` relay, foreign `go=stream` passthrough, and m3u8 fetch), and treat active native buffering itself as a liveness signal so healthy playback is no longer killed while its byte-count percentage plateaus.
-- `0.2.4`: fix Java64 live black-screen-with-audio and the Surface lifecycle conflict during player release; keep ordinary non-Dolby-Vision VOD on the native system decoder for main 32-bit and Hisense; give saved-progress startup and repeated timeline movement a bounded native-buffer allowance to avoid false timeouts.
-- `0.2.5`: unify capability-aware routing across all variants: device hardware video decode only, complete native DV on capable devices, HDR base-layer fallback only elsewhere, platform-first audio decoding to stereo PCM, and synchronized buffering/seek/performance fixes.
-- `0.2.6`: move the system-codec path to one foreground Range lane while retaining the large-file cache window, narrowly fix the eight-byte `6677/proxy/play` Range anomaly, and synchronize resume/scrub, buffering progress/speed, HDR bitmap subtitles, and loading-overlay cleanup across all variants.
-- Next: keep closing playback, subtitle, HDR, and audio behavior from device logs.
+- [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
+- This project bundles no media catalog, live playlist, or subscription source. Use content you are authorized to access.
+- `tvOS`, `iOS`, `Apple TV`, `Dolby Vision`, `HDR10`, and `HDR10+` belong to their respective owners.

@@ -6,6 +6,7 @@ import android.app.Activity;
 import android.net.Uri;
 import android.text.TextUtils;
 import android.util.Base64;
+import android.util.Log;
 
 import com.github.catvod.crawler.JarLoader;
 import com.github.catvod.crawler.JsLoader;
@@ -123,6 +124,10 @@ public class ApiConfig {
         gson = new Gson();
         Hawk.put(HawkConfig.LIVE_GROUP_LIST,new JsonArray());
         loadDefaultConfig();
+        // The player runs in :player and owns a separate ApiConfig singleton. Build the
+        // settings model there as well so LivePlayActivity remains usable when no remote
+        // configuration or live source has been loaded yet.
+        initLiveSettings();
     }
 
     public static ApiConfig get() {
@@ -321,6 +326,7 @@ public class ApiConfig {
             }
         }
         String configUrl=configUrl(apiUrl);
+        LOG.i("config-request host=" + configHost(configUrl) + " cache=" + useCache);
         // 使用内部存储，将当前配置地址写入到应用的私有目录中
         File configUrlFile = apiCacheFile("config_url");
         FileUtils.saveCache(configUrlFile,configUrl);
@@ -338,22 +344,31 @@ public class ApiConfig {
                             FileUtils.saveCache(cache,json);
                             callback.success();
                         } catch (Throwable th) {
-                            th.printStackTrace();
-                            callback.error("解析配置失败");
+                            String contentType = response.headers() == null ? "unknown"
+                                    : String.valueOf(response.headers().get("Content-Type"));
+                            String diagnostic = "parse host=" + configHost(configUrl)
+                                    + " status=" + response.code()
+                                    + " contentType=" + contentType
+                                    + " error=" + th.getClass().getSimpleName();
+                            LOG.e("config-" + diagnostic);
+                            Log.e("TVBox-Config", "config-" + diagnostic);
+                            if (!loadCachedMainConfig(apiUrl, readableCache, callback)) {
+                                callback.error("解析配置失败");
+                            }
                         }
                     }
 
                     @Override
                     public void onError(Response<String> response) {
                         super.onError(response);
-                        if (readableCache.exists()) {
-                            try {
-                                parseJson(apiUrl, readableCache);
-                                callback.success();
-                                return;
-                            } catch (Throwable th) {
-                                th.printStackTrace();
-                            }
+                        String diagnostic = "fetch-failed host=" + configHost(configUrl)
+                                + " status=" + response.code()
+                                + " error=" + (response.getException() == null ? "unknown"
+                                : response.getException().getClass().getSimpleName());
+                        LOG.e("config-" + diagnostic);
+                        Log.e("TVBox-Config", "config-" + diagnostic);
+                        if (loadCachedMainConfig(apiUrl, readableCache, callback)) {
+                            return;
                         }
                         callback.error("拉取配置失败\n" + (response.getException() != null ? response.getException().getMessage() : ""));
                     }
@@ -374,6 +389,34 @@ public class ApiConfig {
                         return result;
                     }
                 });
+    }
+
+    private boolean loadCachedMainConfig(String apiUrl, File readableCache,
+                                         LoadConfigCallback callback) {
+        if (readableCache == null || !readableCache.exists()) {
+            return false;
+        }
+        try {
+            parseJson(apiUrl, readableCache);
+            LOG.i("config-cache-fallback success");
+            callback.success();
+            return true;
+        } catch (Throwable th) {
+            String diagnostic = "config-cache-fallback failed error="
+                    + th.getClass().getSimpleName();
+            LOG.e(diagnostic);
+            Log.e("TVBox-Config", diagnostic);
+            return false;
+        }
+    }
+
+    private static String configHost(String configUrl) {
+        try {
+            String host = Uri.parse(configUrl).getHost();
+            return TextUtils.isEmpty(host) ? "local-or-invalid" : host;
+        } catch (Throwable ignored) {
+            return "local-or-invalid";
+        }
     }
 
     public void loadJar(boolean useCache, String spider, LoadConfigCallback callback) {
@@ -1122,6 +1165,18 @@ public class ApiConfig {
         if (!sourceBeanList.containsKey(key))
             return null;
         return sourceBeanList.get(key);
+    }
+
+    /**
+     * Register a source handed over by the UI process.  The full-screen player
+     * has its own ApiConfig singleton, so a source loaded from a remote config
+     * is otherwise invisible there and getPlay() would dereference null.
+     */
+    public void registerSource(SourceBean sourceBean) {
+        if (sourceBean == null || TextUtils.isEmpty(sourceBean.getKey())) {
+            return;
+        }
+        sourceBeanList.put(sourceBean.getKey(), sourceBean);
     }
 
     public void setSourceBean(SourceBean sourceBean) {

@@ -1,5 +1,7 @@
 package com.github.tvbox.osc.server;
 
+import com.google.gson.JsonObject;
+
 import java.util.Map;
 
 import fi.iki.elonen.NanoHTTPD;
@@ -37,6 +39,22 @@ public class InputRequestProcess implements RequestProcess {
                     String action = params.get("do");
 
                     switch (action) {
+                        case "inputField": {
+                            RemoteInputRequest request = RemoteInputRequest.from(params);
+                            if (request == null) {
+                                return fieldResponse(NanoHTTPD.Response.Status.BAD_REQUEST, false,
+                                        "", "invalid", "请输入有效的字段和值");
+                            }
+                            if (mDataReceiver == null) {
+                                return fieldResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, false,
+                                        request.target, "unavailable", "软件输入服务暂不可用");
+                            }
+                            boolean filled = mDataReceiver.onInputFieldReceived(request);
+                            return fieldResponse(NanoHTTPD.Response.Status.OK, true, request.target,
+                                    filled ? "filled" : "queued",
+                                    filled ? "已填入对应输入框，请在软件中手动确认保存"
+                                            : "已发送，打开对应设置框填入后请手动确认保存");
+                        }
                         case "search": {
                             if (mDataReceiver == null) {
                                 return RemoteServer.createPlainTextResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "input receiver unavailable");
@@ -70,5 +88,18 @@ public class InputRequestProcess implements RequestProcess {
             default:
                 return RemoteServer.createPlainTextResponse(NanoHTTPD.Response.Status.NOT_FOUND, "Error 404, file not found.");
         }
+    }
+
+    private static NanoHTTPD.Response fieldResponse(NanoHTTPD.Response.IStatus status,
+                                                    boolean success, String target,
+                                                    String state, String message) {
+        JsonObject result = new JsonObject();
+        result.addProperty("success", success);
+        result.addProperty("target", target);
+        result.addProperty("state", state);
+        result.addProperty("updated", "filled".equals(state));
+        result.addProperty("saved", false);
+        result.addProperty("message", message);
+        return RemoteServer.createJSONResponse(status, result.toString());
     }
 }

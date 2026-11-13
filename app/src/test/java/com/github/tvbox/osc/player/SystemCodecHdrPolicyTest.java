@@ -27,10 +27,33 @@ public class SystemCodecHdrPolicyTest {
     }
 
     @Test
-    public void main10Bt2020WithUnknownTransferPromotesHdr() {
+    public void explicitSdrRequiresAnExplicitNonAmbiguousSdrTransfer() {
+        Format sdr = new Format.Builder()
+                .setSampleMimeType("video/avc")
+                .setColorInfo(new ColorInfo(
+                        C.COLOR_SPACE_BT709, C.COLOR_RANGE_LIMITED, C.COLOR_TRANSFER_SDR, null))
+                .build();
+        Format ambiguousMain10 = new Format.Builder()
+                .setSampleMimeType("video/hevc")
+                .setCodecs("hvc1.2.4.L153.B0")
+                .setColorInfo(new ColorInfo(
+                        C.COLOR_SPACE_BT2020, C.COLOR_RANGE_LIMITED, C.COLOR_TRANSFER_SDR, null))
+                .build();
+        Format unknown = new Format.Builder()
+                .setSampleMimeType("video/hevc")
+                .setCodecs("hvc1.2.4.L153.B0")
+                .build();
+
+        assertTrue(SystemCodecHdrPolicy.isExplicitSdr(sdr));
+        assertFalse(SystemCodecHdrPolicy.isExplicitSdr(ambiguousMain10));
+        assertFalse(SystemCodecHdrPolicy.isExplicitSdr(unknown));
+    }
+
+    @Test
+    public void main10Bt2020WithUnknownTransferDoesNotGuessDynamicRange() {
         ColorInfo colorInfo = new ColorInfo(
                 C.COLOR_SPACE_BT2020, C.COLOR_RANGE_LIMITED, -1, null);
-        assertTrue(SystemCodecHdrPolicy.isHdr(
+        assertFalse(SystemCodecHdrPolicy.isHdr(
                 "video/hevc", "hvc1.2.4.L153.B0", colorInfo, ""));
     }
 
@@ -59,6 +82,8 @@ public class SystemCodecHdrPolicyTest {
                 "video/hevc", "hvc1.2.4.L153.B0", null, "SMPTE 2094-40 HDR10+"));
         assertTrue(SystemCodecHdrPolicy.isHdr(
                 "video/hevc", "hvc1.1.6.L120.B0", null, "ARIB-STD-B67"));
+        assertTrue(SystemCodecHdrPolicy.isHdr(
+                "video/hevc", "", null, "CUVA HDR Vivid"));
     }
 
     @Test
@@ -92,4 +117,5 @@ public class SystemCodecHdrPolicyTest {
                 .build();
         assertTrue(SystemCodecHdrPolicy.isHdr(format));
     }
+
 }

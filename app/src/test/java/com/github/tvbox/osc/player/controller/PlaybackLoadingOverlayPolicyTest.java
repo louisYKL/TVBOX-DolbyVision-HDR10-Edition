@@ -9,12 +9,11 @@ import static org.junit.Assert.assertTrue;
 
 public class PlaybackLoadingOverlayPolicyTest {
     @Test
-    public void loadingSpeedOnlyAppearsWhilePreparingOrBuffering() {
-        assertTrue(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
+    public void controllerDoesNotRenderDuplicateLoadingSpeed() {
+        assertFalse(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
                 VideoView.STATE_PREPARING, false, false));
-        assertTrue(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
+        assertFalse(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
                 VideoView.STATE_BUFFERING, false, false));
-
         assertFalse(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
                 VideoView.STATE_PLAYING, false, false));
         assertFalse(PlaybackLoadingOverlayPolicy.shouldShowNetworkSpeed(
@@ -43,7 +42,7 @@ public class PlaybackLoadingOverlayPolicyTest {
                 VideoView.STATE_BUFFERING, false, true));
         assertFalse(PlaybackLoadingOverlayPolicy.shouldShowControllerLoading(
                 VideoView.STATE_BUFFERING, true));
-        assertTrue(PlaybackLoadingOverlayPolicy.shouldShowControllerLoading(
+        assertFalse(PlaybackLoadingOverlayPolicy.shouldShowControllerLoading(
                 VideoView.STATE_BUFFERING, false));
     }
 
