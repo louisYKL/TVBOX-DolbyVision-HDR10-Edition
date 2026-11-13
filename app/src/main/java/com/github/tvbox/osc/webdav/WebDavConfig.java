@@ -16,6 +16,8 @@ import okhttp3.HttpUrl;
 
 public final class WebDavConfig {
     public static final int DEFAULT_PORT = 5244;
+    /** The standard TLS port is used when an HTTPS WebDAV address omits a port. */
+    public static final int DEFAULT_HTTPS_PORT = 443;
     private static final String MIRROR_PREFS = "webdav_config";
     private static final String MIRROR_URL = "url";
     private static final String MIRROR_USERNAME = "username";
@@ -95,7 +97,9 @@ public final class WebDavConfig {
     }
 
     public static String normalizeAddress(String input) {
-        if (TextUtils.isEmpty(input)) {
+        // Keep address normalization JVM-testable and independent of Android framework
+        // stubs; this method is also used before any Activity is available.
+        if (input == null || input.trim().isEmpty()) {
             return null;
         }
         String address = input.trim();
@@ -110,7 +114,11 @@ public final class WebDavConfig {
             URI uri = new URI(address);
             HttpUrl.Builder builder = parsed.newBuilder();
             if (uri.getPort() < 0) {
-                builder.port(DEFAULT_PORT);
+                // AList commonly exposes plain WebDAV on 5244, while HTTPS endpoints
+                // normally use the standard TLS port.  Applying 5244 to HTTPS makes a
+                // valid https://host or https://IP address connect to the wrong service.
+                builder.port("https".equalsIgnoreCase(parsed.scheme())
+                        ? DEFAULT_HTTPS_PORT : DEFAULT_PORT);
             }
             String path = parsed.encodedPath();
             if ("/".equals(path)) {

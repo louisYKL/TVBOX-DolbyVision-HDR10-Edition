@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2
+
+### 中文
+
+- WebDAV 支持 HTTPS 域名、HTTPS IPv4 和 HTTPS IPv6 地址。HTTPS 未写端口时使用 `443`，HTTP/AList 仍使用 `5244`；显式端口保持不变。
+- WebDAV 目录、视频和外挂字幕下载均保留 HTTPS 与认证信息，继续使用系统证书校验，不信任自签名证书。
+- 三端版本统一为 `0.3.2` / `versionCode 30002`，沿用正式签名并支持覆盖安装。
+
+### English
+
+- WebDAV now supports HTTPS hostnames, IPv4 addresses, and IPv6 addresses. HTTPS without an explicit port uses `443`; HTTP/AList retains `5244`, and explicit ports are preserved.
+- WebDAV listings, video playback, and external subtitle downloads retain HTTPS and authorization while using normal system certificate validation. Self-signed certificates are not trusted.
+- All three variants use `0.3.2` / `versionCode 30002` with the existing release certificate for in-place updates.
+
 ## 0.3.1
 
 ### 中文

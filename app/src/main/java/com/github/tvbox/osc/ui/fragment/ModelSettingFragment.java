@@ -773,7 +773,7 @@ public class ModelSettingFragment extends BaseLazyFragment {
 
         final EditText address = new EditText(mActivity);
         address.setSingleLine(true);
-        address.setHint("192.168.1.10 或完整 WebDAV 地址");
+        address.setHint("IP、域名或完整 WebDAV 地址（支持 http/https）");
         address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         address.setText(saved.baseUrl);
         address.setTextColor(android.graphics.Color.BLACK);
@@ -803,7 +803,7 @@ public class ModelSettingFragment extends BaseLazyFragment {
 
         AlertDialog dialog = new AlertDialog.Builder(mActivity)
                 .setTitle("WebDAV 设置")
-                .setMessage("填写 AList 的 WebDAV 地址。只输入 IP 时使用默认端口 5244 和 /dav 路径。")
+                .setMessage("填写 AList 的 WebDAV 地址。支持 http/https；HTTPS 未写端口使用 443，HTTP 未写端口使用 5244，并自动补齐 /dav 路径。")
                 .setView(form)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("保存", null)

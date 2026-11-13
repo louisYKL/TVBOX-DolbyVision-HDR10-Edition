@@ -5,15 +5,15 @@
 > 面向 Android TV、手机和平板的 TVBox 分支，重点维护设备硬解、HDR、字幕和有界流式缓存。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.2"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.2-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.1">下载 0.3.1</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.2">下载 0.3.2</a> ·
   <a href="README.en.md">English</a> ·
-  <a href="0.3.1/RELEASE_NOTES.md">本次更新说明</a>
+  <a href="0.3.2/RELEASE_NOTES.md">本次更新说明</a>
 </p>
 
 </div>
@@ -24,11 +24,11 @@
 
 | 安装包 | ABI | 适用设备 |
 | --- | --- | --- |
-| [TVBox_v0.3.1_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_java32.apk) | `armeabi-v7a` | 32 位 Android TV、智慧屏与盒子 |
-| [TVBox_v0.3.1_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_java64.apk) | `arm64-v8a` | 64 位手机、平板与盒子 |
-| [TVBox_v0.3.1_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_hisense32.apk) | `armeabi-v7a` | 海信 32 位电视 |
+| [TVBox_v0.3.2_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_java32.apk) | `armeabi-v7a` | 32 位 Android TV、智慧屏与盒子 |
+| [TVBox_v0.3.2_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_java64.apk) | `arm64-v8a` | 64 位手机、平板与盒子 |
+| [TVBox_v0.3.2_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_hisense32.apk) | `armeabi-v7a` | 海信 32 位电视 |
 
-版本号为 `0.3.1`，`versionCode` 为 `30001`。发布目录同时提供校验文件；历史更新保留在 [CHANGELOG](CHANGELOG.md)。
+版本号为 `0.3.2`，`versionCode` 为 `30002`。发布目录同时提供校验文件；历史更新保留在 [CHANGELOG](CHANGELOG.md)。
 
 ## 界面预览
 
@@ -36,6 +36,14 @@
   <img src="1.jpg" alt="TVBOX preview 1" width="48%">
   <img src="2.webp" alt="TVBOX preview 2" width="48%">
 </p>
+
+## 0.3.2 更新重点
+
+- WebDAV 地址同时支持 HTTPS 域名、HTTPS IPv4 和 HTTPS IPv6。省略端口时 HTTPS 使用标准 `443`，HTTP/AList 仍使用 `5244`；显式端口始终原样保留。
+- WebDAV 目录浏览、视频播放和外挂字幕下载统一沿用 HTTPS URL 与 Basic Authorization。TLS 证书仍由 Android/OkHttp 正常校验，不信任自签名或无效证书。
+- 三端统一为 `0.3.2`、`versionCode 30002`，沿用现有正式签名，支持同变体覆盖安装。
+
+实现细节与验证范围见 [0.3.2 更新说明](0.3.2/RELEASE_NOTES.md)。
 
 ## 0.3.1 更新重点
 
@@ -59,7 +67,7 @@
 
 ## WebDAV 与外挂字幕
 
-在设置中保存 WebDAV 地址、账号和密码，随后从首页“本地”入口浏览远程目录并播放。AList 地址需包含实际端口与 WebDAV 路径，例如 `http://设备地址:5244/dav/`。
+在设置中保存 WebDAV 地址、账号和密码，随后从首页“本地”入口浏览远程目录并播放。AList HTTP 地址可使用 `http://设备地址:5244/dav/`；HTTPS 域名或 IP 可使用 `https://服务器地址/dav/`（未写端口时默认 `443`）。
 
 同目录同名字幕可自动加载；播放中的外挂字幕选择窗也可浏览其他本地或 WebDAV 文件夹。支持 SRT、ASS/SSA、VTT、TTML、SCC 和 STL，读取上限为 `8 MiB`。选择外挂字幕后切换到该字幕，避免内置字幕与外挂字幕同时渲染；选择记录可用于再次播放。
 

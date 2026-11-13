@@ -1,0 +1,14 @@
+[
+  {
+    "path": "player\\build\\test-results\\testDebugUnitTest",
+    "tests": 164,
+    "failures": 0,
+    "errors": 0
+  },
+  {
+    "path": "_build-v0.3.2\\app\\test-results\\testNormalDebugUnitTest",
+    "tests": 214,
+    "failures": 0,
+    "errors": 0
+  }
+]

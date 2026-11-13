@@ -1,0 +1,35 @@
+[
+  {
+    "Version": "0.3.2",
+    "VersionCode": 30002,
+    "Variant": "java32",
+    "Abi": "armeabi-v7a",
+    "Apk": "E:\\tvbox\\TVBoxOS-main\\_build-v0.3.2\\app\\outputs\\apk\\normal\\release\\TVBox_v0.3.2_java32.apk",
+    "Bytes": 17059593,
+    "Sha256": "1d47968fb9171ce6235b697d3794ee3495c907ed9a354fc955dea72db5faf417",
+    "SigningCertificateSha256": "7c05de517bc51e22f782b2369704c74d459aa15d4e0074f1f2c3491cc76d6bbc",
+    "Debuggable": false
+  },
+  {
+    "Version": "0.3.2",
+    "VersionCode": 30002,
+    "Variant": "java64",
+    "Abi": "arm64-v8a",
+    "Apk": "E:\\tvbox\\TVBoxOS-main\\_build-v0.3.2\\app\\outputs\\apk\\java64\\release\\TVBox_v0.3.2_java64.apk",
+    "Bytes": 17632061,
+    "Sha256": "83069a22e75152ee20a6283a3532c333d7ef4dfc43da5eead7a79e1cb768616c",
+    "SigningCertificateSha256": "7c05de517bc51e22f782b2369704c74d459aa15d4e0074f1f2c3491cc76d6bbc",
+    "Debuggable": false
+  },
+  {
+    "Version": "0.3.2",
+    "VersionCode": 30002,
+    "Variant": "hisense32",
+    "Abi": "armeabi-v7a",
+    "Apk": "E:\\tvbox\\TVBoxOS-main\\_build-v0.3.2\\app\\outputs\\apk\\hisense\\release\\TVBox_v0.3.2_hisense32.apk",
+    "Bytes": 17059757,
+    "Sha256": "4c4a7533865742a4648cb1ee1c874e1adf21c8a45c9f3b05f68537f6f7345ae1",
+    "SigningCertificateSha256": "7c05de517bc51e22f782b2369704c74d459aa15d4e0074f1f2c3491cc76d6bbc",
+    "Debuggable": false
+  }
+]

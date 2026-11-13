@@ -5,15 +5,15 @@
 > A TVBox branch for Android TV, phones, and tablets, focused on hardware decoding, HDR, subtitles, and bounded streaming caches.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.1"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.1-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.2"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.2-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.1">Download 0.3.1</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.2">Download 0.3.2</a> ·
   <a href="README.md">简体中文</a> ·
-  <a href="0.3.1/RELEASE_NOTES.md">Release notes</a>
+  <a href="0.3.2/RELEASE_NOTES.md">Release notes</a>
 </p>
 
 </div>
@@ -24,11 +24,11 @@ All three variants share playback code and buffering policy, with separate ABI b
 
 | Package | ABI | Devices |
 | --- | --- | --- |
-| [TVBox_v0.3.1_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
-| [TVBox_v0.3.1_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
-| [TVBox_v0.3.1_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.1/TVBox_v0.3.1_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
+| [TVBox_v0.3.2_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
+| [TVBox_v0.3.2_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
+| [TVBox_v0.3.2_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
 
-Version: `0.3.1`; `versionCode`: `30001`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
+Version: `0.3.2`; `versionCode`: `30002`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
 
 ## Preview
 
@@ -36,6 +36,14 @@ Version: `0.3.1`; `versionCode`: `30001`. Checksums accompany the release. Previ
   <img src="1.jpg" alt="TVBOX preview 1" width="48%">
   <img src="2.webp" alt="TVBOX preview 2" width="48%">
 </p>
+
+## Changes in 0.3.2
+
+- WebDAV accepts HTTPS hostnames, HTTPS IPv4 addresses, and HTTPS IPv6 addresses. When the port is omitted, HTTPS uses standard port `443`; HTTP/AList keeps the existing `5244` default, while explicit ports are preserved.
+- Directory browsing, video playback, and external subtitle downloads keep the HTTPS URL and Basic Authorization. Android/OkHttp certificate validation remains enabled; self-signed or invalid certificates are not trusted.
+- All three variants use `0.3.2` (`versionCode 30002`) and the existing release certificate for in-place updates.
+
+See the [release notes](0.3.2/RELEASE_NOTES.md) for implementation and verification scope.
 
 ## Changes in 0.3.1
 
@@ -59,7 +67,7 @@ See the [release notes](0.3.1/RELEASE_NOTES.md) for implementation and verificat
 
 ## WebDAV and external subtitles
 
-Save a WebDAV URL, username, and password in Settings, then browse and play remote files from the Home screen's Local entry. An AList URL must include the actual port and WebDAV path, for example `http://device-address:5244/dav/`.
+Save a WebDAV URL, username, and password in Settings, then browse and play remote files from the Home screen's Local entry. An AList HTTP URL can use `http://device-address:5244/dav/`; an HTTPS hostname or IP can use `https://server-address/dav/` (default port `443` when omitted).
 
 Same-name sibling subtitles can load automatically. The external-subtitle dialog also browses other local or WebDAV folders. Supported formats are SRT, ASS/SSA, VTT, TTML, SCC, and STL, with an `8 MiB` read limit. Selecting an external subtitle switches to that subtitle instead of rendering internal and external subtitles together; the selection can be restored on later playback.
 

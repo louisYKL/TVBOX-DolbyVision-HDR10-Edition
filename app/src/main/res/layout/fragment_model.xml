@@ -183,7 +183,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="@dimen/vs_4"
-                    android:text="配置 AList WebDAV 地址、账号和密码，默认端口 5244。"
+                    android:text="配置 AList WebDAV 地址、账号和密码；支持 HTTP/HTTPS（默认端口分别为 5244/443）。"
                     android:textColor="@color/apple_tv_text_secondary"
                     android:textSize="@dimen/ts_16" />
 
