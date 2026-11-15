@@ -29,9 +29,9 @@ public class HttpRangePayloadReadTest {
 
         assertEquals(requested, payload.length);
         assertEquals(requested, payload.capacityBytes);
-        assertEquals(384, payload.segments.length);
+        assertEquals(96, payload.segments.length);
         assertTrue("the HTTP read must never allocate a complete 24 MiB array",
-                stream.largestTarget <= 64 * 1024);
+                stream.largestTarget <= 256 * 1024);
         for (int offset : new int[]{0, 65_530, 1_048_570, requested - 67}) {
             byte[] copy = new byte[67];
             payload.copyTo(offset, copy, 0, copy.length);
@@ -74,7 +74,7 @@ public class HttpRangePayloadReadTest {
                     HttpRangeMediaDataSource.readUpTo(stream, requested, null);
             assertEquals(length, payload.length);
             assertEquals(length, payload.capacityBytes);
-            assertTrue(stream.largestTarget <= 64 * 1024);
+            assertTrue(stream.largestTarget <= 256 * 1024);
             byte[] last = new byte[1];
             payload.copyTo(length - 1, last, 0, 1);
             assertEquals((byte) (length - 1), last[0]);
@@ -83,10 +83,10 @@ public class HttpRangePayloadReadTest {
 
     @Test
     public void transportFailureAfterSeveralSegmentsDoesNotPublishAPrefix() throws Exception {
-        PatternInputStream stream = new PatternInputStream(2 * 64 * 1024) {
+        PatternInputStream stream = new PatternInputStream(2 * 256 * 1024) {
             @Override
             public int read(byte[] target, int offset, int length) throws IOException {
-                if (position >= 2 * 64 * 1024) {
+                if (position >= 2 * 256 * 1024) {
                     throw new IOException("broken body after two segments");
                 }
                 return super.read(target, offset, length);

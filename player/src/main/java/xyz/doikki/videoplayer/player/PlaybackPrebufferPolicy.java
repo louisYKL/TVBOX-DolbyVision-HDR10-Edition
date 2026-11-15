@@ -2,7 +2,10 @@ package xyz.doikki.videoplayer.player;
 
 public final class PlaybackPrebufferPolicy {
     private static final long MB = 1024L * 1024L;
-    static final long MAX_RANGE_CACHE_BYTES = 192L * MB;
+    // High-heap 64-bit processes can retain more contiguous Range windows without
+    // increasing the per-window size or the number of network lanes. Low-heap/32-bit
+    // devices remain capped at the previously validated 192 MiB.
+    static final long MAX_RANGE_CACHE_BYTES = 384L * MB;
 
     private PlaybackPrebufferPolicy() {
     }
@@ -78,16 +81,32 @@ public final class PlaybackPrebufferPolicy {
     }
 
     public static long resolveCacheLimitBytes(long maxHeapBytes, boolean is32BitProcess) {
-        // All APKs share a 192 MiB configured ceiling. Keep at least 128 MiB outside
-        // the raw cache for sample queues, parser state, UI and allocation headroom.
-        // An unavailable heap measurement keeps the conservative five-window limit.
+        // Keep the established conservative limit when Android cannot report a heap size.
         if (maxHeapBytes <= 0L) {
             return 120L * MB;
         }
+        // A 32-bit process must never infer a larger budget from an anomalous heap report.
+        long tierCap = is32BitProcess ? 192L * MB : tierCacheCapBytes(maxHeapBytes);
         long windowBytes = 24L * MB;
         long availableBytes = maxHeapBytes - 128L * MB;
         long completeWindowsBytes = availableBytes / windowBytes * windowBytes;
-        return Math.max(120L * MB, Math.min(MAX_RANGE_CACHE_BYTES, completeWindowsBytes));
+        return Math.max(120L * MB, Math.min(tierCap, completeWindowsBytes));
+    }
+
+    static long resolveHeapHeadroomBytes(long maxHeapBytes, boolean is32BitProcess) {
+        // Larger 64-bit processes reserve an additional 32 MiB for decoder/sample queues,
+        // parser state and UI while still exposing their extra heap to the Range cache.
+        return !is32BitProcess && maxHeapBytes > 640L * MB ? 128L * MB : 96L * MB;
+    }
+
+    private static long tierCacheCapBytes(long maxHeapBytes) {
+        if (maxHeapBytes >= 1024L * MB) {
+            return MAX_RANGE_CACHE_BYTES;
+        }
+        if (maxHeapBytes > 640L * MB) {
+            return 288L * MB;
+        }
+        return 192L * MB;
     }
 
     public static long resolveStartBufferBytes(long maxHeapBytes) {

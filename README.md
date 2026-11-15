@@ -5,15 +5,15 @@
 > 面向 Android TV、手机和平板的 TVBox 分支，重点维护设备硬解、HDR、字幕和有界流式缓存。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.2"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.2-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.3"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.3-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.2">下载 0.3.2</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.3">下载 0.3.3</a> ·
   <a href="README.en.md">English</a> ·
-  <a href="0.3.2/RELEASE_NOTES.md">本次更新说明</a>
+  <a href="0.3.3/RELEASE_NOTES.md">本次更新说明</a>
 </p>
 
 </div>
@@ -24,11 +24,20 @@
 
 | 安装包 | ABI | 适用设备 |
 | --- | --- | --- |
-| [TVBox_v0.3.2_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_java32.apk) | `armeabi-v7a` | 32 位 Android TV、智慧屏与盒子 |
-| [TVBox_v0.3.2_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_java64.apk) | `arm64-v8a` | 64 位手机、平板与盒子 |
-| [TVBox_v0.3.2_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_hisense32.apk) | `armeabi-v7a` | 海信 32 位电视 |
+| [TVBox_v0.3.3_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_java32.apk) | `armeabi-v7a` | 32 位 Android TV、智慧屏与盒子 |
+| [TVBox_v0.3.3_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_java64.apk) | `arm64-v8a` | 64 位手机、平板与盒子 |
+| [TVBox_v0.3.3_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_hisense32.apk) | `armeabi-v7a` | 海信 32 位电视 |
 
-版本号为 `0.3.2`，`versionCode` 为 `30002`。发布目录同时提供校验文件；历史更新保留在 [CHANGELOG](CHANGELOG.md)。
+版本号为 `0.3.3`，`versionCode` 为 `30003`。发布目录同时提供校验文件；历史更新保留在 [CHANGELOG](CHANGELOG.md)。
+
+## 0.3.3 更新重点
+
+- 64 位高堆设备按可用 Java 堆分层使用 192/288/384 MiB 原始 Range 缓存，仍保持 24 MiB 网络块和单个相邻预取通道，减少重复下载并提高连续播放的缓存余量。
+- 32 位和低堆设备继续使用 192 MiB 上限、单预取通道、256 KiB 分片和单探测线程，避免增加缓存后再次触发 GC/OOM。
+- 高堆 64 位进程级缓存预算与设备堆分层保持一致，并为解码器、解析器、字幕和界面保留 128 MiB 余量；32 位/低堆设备继续使用更保守的 96 MiB 余量。
+- Range 诊断日志增加每个窗口的有效字节、耗时、实时速度和重试状态，便于区分源站/代理低速与设备调度问题。
+
+实现细节与验证范围见 [0.3.3 更新说明](0.3.3/RELEASE_NOTES.md)。
 
 ## 界面预览
 
@@ -87,7 +96,7 @@
 
 独立全屏播放页和直播页使用 `:player` 进程。32 位电视的详情页保留内嵌预览，该播放器仍在详情页所属的主进程中，不能把它算作另一个独立堆。
 
-Range 原始数据、解封装后的样本队列、字幕、图片与界面都会占用资源。同一进程中所有数据源的已缓存数据、元数据和在途块共享 `192 MiB` 原始数据上限；尚未退出的旧读取任务仍计入预算。普通后台预取预留 `96 MiB` Java 堆空间，补齐 `96 MiB` 最小连续缓冲和必要前台读取时至少保留 `48 MiB`。若实际内存连最小缓冲也无法容纳，播放页显示可重试的内存不足提示，保留页面供用户操作。增大视频文件体积不会按比例申请整个文件的内存。应用内部日志只记录错误，总量限制为 `512 KiB` 并自动轮转。
+Range 原始数据、解封装后的样本队列、字幕、图片与界面都会占用资源。同一播放器进程中的已缓存数据、元数据和在途块共享按堆大小确定的上限：32 位与低堆设备最高 `192 MiB`；高堆 64 位设备为 `192/288/384 MiB`。后台预取同时保留堆余量，低堆通常为 `96 MiB`、高堆为 `128 MiB`；补齐最小连续缓冲时按更紧的播放余量准入。若实际内存无法容纳所需窗口，播放页显示可重试的内存不足提示，保留页面供用户操作。增大视频文件体积不会按比例申请整个文件的内存。应用内部日志只记录错误，总量限制为 `512 KiB` 并自动轮转。
 
 ## 本地构建
 

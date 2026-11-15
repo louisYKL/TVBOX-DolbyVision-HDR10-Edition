@@ -5,15 +5,15 @@
 > A TVBox branch for Android TV, phones, and tablets, focused on hardware decoding, HDR, subtitles, and bounded streaming caches.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.2"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.2-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.3"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.3-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.2">Download 0.3.2</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.3">Download 0.3.3</a> ·
   <a href="README.md">简体中文</a> ·
-  <a href="0.3.2/RELEASE_NOTES.md">Release notes</a>
+  <a href="0.3.3/RELEASE_NOTES.md">Release notes</a>
 </p>
 
 </div>
@@ -24,11 +24,11 @@ All three variants share playback code and buffering policy, with separate ABI b
 
 | Package | ABI | Devices |
 | --- | --- | --- |
-| [TVBox_v0.3.2_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
-| [TVBox_v0.3.2_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
-| [TVBox_v0.3.2_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.2/TVBox_v0.3.2_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
+| [TVBox_v0.3.3_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
+| [TVBox_v0.3.3_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
+| [TVBox_v0.3.3_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
 
-Version: `0.3.2`; `versionCode`: `30002`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
+Version: `0.3.3`; `versionCode`: `30003`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
 
 ## Preview
 
@@ -36,6 +36,16 @@ Version: `0.3.2`; `versionCode`: `30002`. Checksums accompany the release. Previ
   <img src="1.jpg" alt="TVBOX preview 1" width="48%">
   <img src="2.webp" alt="TVBOX preview 2" width="48%">
 </p>
+
+## Changes in 0.3.3
+
+- High-heap 64-bit devices use a bounded raw Range cache tiered by the available Java heap: `192 MiB` up to `640 MiB`, `288 MiB` above `640 MiB`, and `384 MiB` at or above `1 GiB`. The network window remains `24 MiB` and live/HLS keeps its separate streaming policy.
+- 32-bit and low-heap devices retain a `192 MiB` ceiling, one prefetch lane, and bounded probing. Sibling prefetch is disabled on those devices to reduce GC contention and OOM risk.
+- High-heap 64-bit process budgets follow the same tiers while reserving `128 MiB` for decoders, demuxers, subtitles, and UI work; 32-bit and low-heap devices retain the more conservative `96 MiB` headroom. A larger source file never causes the whole file to be allocated.
+- Range payloads use `256 KiB` slices to reduce object count and garbage-collection pressure. HTTP/1.1 connection reuse remains enabled for the `6677` Range path.
+- Error-only Range diagnostics record effective bytes, elapsed time, bytes per second, prefetch, and bounded retry outcomes so source stalls can be separated from local scheduling pressure.
+
+See the [0.3.3 release notes](0.3.3/RELEASE_NOTES.md) for implementation and validation scope.
 
 ## Changes in 0.3.2
 
@@ -87,7 +97,7 @@ The five fields do not overwrite each other. Empty values can clear a field. Uns
 
 Standalone fullscreen playback and live activities use the `:player` process. The 32-bit TV detail page retains an embedded preview, whose player runs in the detail activity's main process and does not have a separate heap.
 
-Raw Range data, demuxed sample queues, subtitles, images, and UI all consume resources. Cached payloads, metadata, and in-flight blocks across all data sources in one process share the `192 MiB` raw-data ceiling; old readers still count until they exit. Normal background prefetch leaves `96 MiB` of Java heap headroom. Completing the minimum `96 MiB` contiguous runway and essential foreground reads leaves at least `48 MiB`. If actual memory cannot support the minimum runway, a retryable memory message stays on the playback page for user action. A larger video does not cause allocation of the entire file. Internal logs record errors only, rotate automatically, and are bounded to `512 KiB` in total.
+Raw Range data, demuxed sample queues, subtitles, images, and UI all consume resources. Cached payloads, metadata, and in-flight blocks in a player process share a heap-based ceiling: up to `192 MiB` on 32-bit and low-heap devices, and `192/288/384 MiB` on high-heap 64-bit devices. Background prefetch also preserves heap headroom, usually `96 MiB` on low-heap devices and `128 MiB` on high-heap devices; minimum-runway admission uses a tighter playback reserve. If actual memory cannot support the required window, a retryable memory message stays on the playback page. A larger video does not cause allocation of the entire file. Internal logs record errors only, rotate automatically, and are bounded to `512 KiB` in total.
 
 ## Local build
 

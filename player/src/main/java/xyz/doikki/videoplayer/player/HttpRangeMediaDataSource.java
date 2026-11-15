@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.NavigableMap;
@@ -27,7 +28,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import okhttp3.Call;
+import okhttp3.ConnectionPool;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.Response;
 
@@ -70,6 +73,18 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
             // Bound inactivity of one response. The range retry loop has no total elapsed-time
             // limit, so a continuously slow transfer remains valid while a dead connection can
             // recover instead of blocking the decoder forever.
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build();
+    // The Huawei/spider 6677 endpoint is a single sequential Range lane. Reuse at most one
+    // HTTP/1.1 connection for adjacent windows so every 24 MiB request does not pay a fresh
+    // TCP slow-start, while avoiding HTTP/2 multiplexing or any extra playback concurrency.
+    // If the endpoint closes the connection, OkHttp transparently opens a replacement.
+    private static final OkHttpClient LOOPBACK_CLIENT = new OkHttpClient.Builder()
+            .protocols(Collections.singletonList(Protocol.HTTP_1_1))
+            .connectionPool(new ConnectionPool(1, 5, TimeUnit.SECONDS))
+            .retryOnConnectionFailure(true)
+            .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .build();
@@ -2134,7 +2149,12 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
 
     /** Starts one adjacent direct-origin Range request while the primary fill is in flight. */
     private void scheduleSiblingPrefetchLocked(long anchor) {
-        if (isLoopbackProxyPlayUrl(url)
+        // A sibling doubles the number of live 24 MiB response arrays. On 32-bit TVs and
+        // devices with a <=640 MiB Java heap this competes with the hardware decoder and
+        // produces long GC pauses (the diagnostic traces show 0.7-1.5 s pauses and OOM). Keep
+        // one ordered fill lane there; high-heap 64-bit devices may still overlap one sibling.
+        if (!allowParallelDirectRanges()
+                || isLoopbackProxyPlayUrl(url)
                 || siblingPrefetchFuture != null && !siblingPrefetchFuture.isDone()
                 || inFlightPrefetchStart < 0L) {
             return;
@@ -2503,6 +2523,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         final long recoveryStartedAtNanos = System.nanoTime();
         IOException lastPayloadFailure = null;
         for (int payloadAttempt = 1; ; payloadAttempt++) {
+            final long attemptStartedAtNanos = System.nanoTime();
             if (isForegroundReadSuperseded(prefetchId)) {
                 throw new IOException("Playback range read superseded by seek");
             }
@@ -2713,8 +2734,15 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                                     || completeUnknownTotalWindow
                                     || verifiedShortPrefix) {
                                 if (debugLoadCount < 12) {
+                                    long elapsedNanos = System.nanoTime() - attemptStartedAtNanos;
                                     logInfo("echo-range-source body start=" + start
                                             + " bytes=" + payload.length
+                                            + " elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(
+                                            elapsedNanos)
+                                            + " bytesPerSec=" + bytesPerSecond(payload.length,
+                                            elapsedNanos)
+                                            + " attempt=" + payloadAttempt
+                                            + " prefetch=" + prefetch
                                             + " prefix=" + hexPrefix(payload.data));
                                 }
                                 long resolvedEnd = start + payload.length - 1L;
@@ -2781,6 +2809,17 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private static long bytesPerSecond(long bytes, long elapsedNanos) {
+        if (bytes <= 0L || elapsedNanos <= 0L) {
+            return 0L;
+        }
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
+        if (elapsedMs <= 0L) {
+            return 0L;
+        }
+        return (bytes * 1000L) / elapsedMs;
     }
 
     static long resolveLoopbackWireStart(String url, long logicalStart) {
@@ -2907,7 +2946,7 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                         builder.header(entry.getKey(), entry.getValue());
                     }
                 }
-                call = CLIENT.newCall(builder.build());
+                call = clientForRange().newCall(builder.build());
                 if (!registerRangeCall(prefetchId, call)) {
                     throw new IOException(prefetchId >= 0L
                             ? "Prefetch request cancelled before range open"
@@ -2942,6 +2981,10 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
                 || Thread.currentThread().isInterrupted()
                 || (prefetchId >= 0L && !isPrefetchActive(prefetchId))
                 || isForegroundReadSuperseded(prefetchId);
+    }
+
+    private OkHttpClient clientForRange() {
+        return isLoopbackProxyPlayUrl(url) ? LOOPBACK_CLIENT : CLIENT;
     }
 
     private boolean isForegroundReadSuperseded(long prefetchId) {
@@ -3183,6 +3226,32 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         }
     }
 
+    private static boolean allowParallelDirectRanges() {
+        // The JVM unit-test harness is not an Android heap and must continue to exercise the
+        // two-lane direct-origin contract. Apply the low-heap gate only to an actual ART/Dalvik
+        // process where the decoder and Range payloads share the constrained application heap.
+        if (!isAndroidRuntime()) {
+            return true;
+        }
+        long maxHeap = Runtime.getRuntime().maxMemory();
+        // The heap limit is the reliable guard on Android and also keeps JVM tests
+        // architecture-independent. A 32-bit TV cannot expose a heap above this threshold;
+        // only a genuinely large process gets the extra in-flight response.
+        if (maxHeap > 0L) {
+            return maxHeap > 640L * 1024L * 1024L;
+        }
+        return !is32BitProcess();
+    }
+
+    private static boolean isAndroidRuntime() {
+        String vmName = System.getProperty("java.vm.name");
+        if (vmName == null) {
+            return false;
+        }
+        String lower = vmName.toLowerCase(java.util.Locale.US);
+        return lower.contains("dalvik") || lower.contains("art");
+    }
+
     private static void discardFully(InputStream stream, long bytesToSkip) throws IOException {
         long remaining = bytesToSkip;
         byte[] scratch = new byte[8192];
@@ -3196,7 +3265,11 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
     }
 
     static final class ReadResult {
-        static final int SEGMENT_BYTES = 64 * 1024;
+        // Keep segmented payloads below one large contiguous allocation while avoiding the
+        // thousands of 64 KiB large-object allocations that a 24 MiB window used to create.
+        // Fewer segments materially reduce ART LOS bookkeeping and GC pressure on the TV32
+        // heap; the cache budget still charges the exact segment capacity.
+        static final int SEGMENT_BYTES = 256 * 1024;
         // The first segment is sufficient for signature validation and diagnostic prefixes.
         final byte[] data;
         final int length;

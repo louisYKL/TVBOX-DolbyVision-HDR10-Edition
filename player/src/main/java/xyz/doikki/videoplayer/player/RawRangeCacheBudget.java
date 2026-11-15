@@ -3,8 +3,12 @@ package xyz.doikki.videoplayer.player;
 /** Process-wide ownership of raw HTTP payloads, including responses still being downloaded. */
 final class RawRangeCacheBudget {
     private static final long MIB = 1024L * 1024L;
+    private static final long PROCESS_MAX_HEAP = Runtime.getRuntime().maxMemory();
+    private static final boolean PROCESS_IS_32_BIT = detect32BitProcess();
     static final RawRangeCacheBudget PROCESS = new RawRangeCacheBudget(
-            192L * MIB, 96L * MIB, new HeapState() {
+            PlaybackPrebufferPolicy.resolveCacheLimitBytes(PROCESS_MAX_HEAP, PROCESS_IS_32_BIT),
+            PlaybackPrebufferPolicy.resolveHeapHeadroomBytes(PROCESS_MAX_HEAP, PROCESS_IS_32_BIT),
+            new HeapState() {
                 @Override public long maxBytes() {
                     return Runtime.getRuntime().maxMemory();
                 }
@@ -13,6 +17,18 @@ final class RawRangeCacheBudget {
                     return runtime.totalMemory() - runtime.freeMemory();
                 }
             });
+
+    private static boolean detect32BitProcess() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                return !android.os.Process.is64Bit();
+            }
+            String abi = android.os.Build.CPU_ABI == null ? "" : android.os.Build.CPU_ABI;
+            return !abi.contains("64");
+        } catch (Throwable ignored) {
+            return true;
+        }
+    }
 
     interface HeapState {
         long maxBytes();

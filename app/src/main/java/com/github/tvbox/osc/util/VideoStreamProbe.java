@@ -66,7 +66,12 @@ public final class VideoStreamProbe {
     private static final int HLS_AVC_PROFILE_UNSUPPORTED_HIGH10 = 110;
     private static final int MAX_VIDEO_SAMPLE_PROBE_COUNT = 6;
     private static final long MAIN_THREAD_LOCAL_PROXY_PROBE_TIMEOUT_MS = 2500L;
-    private static final ExecutorService PROBE_EXECUTOR = Executors.newFixedThreadPool(2);
+    // A 32-bit TV shares one small Java heap with the player, decoder callbacks and
+    // subtitle work. Running two extractor/byte probes in parallel can retain multiple
+    // multi-megabyte response buffers and trigger long GC pauses before playback starts.
+    // Keep one probe worker on constrained processes; 64-bit devices retain bounded overlap.
+    private static final ExecutorService PROBE_EXECUTOR =
+            Executors.newFixedThreadPool(resolveProbeThreadCount());
     private static final OkHttpClient CLIENT = new OkHttpClient.Builder()
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
@@ -748,7 +753,7 @@ public final class VideoStreamProbe {
             }
             Result fallback = probeTimeoutFallbackOffMain(url, headers,
                     prefix + ":timeout-byte",
-                    isLocalProxyVideoUrl(url) ? LOCAL_PROXY_PROBE_BYTES : PROBE_BYTES,
+                    resolveTimeoutFallbackProbeBytes(url),
                     isLocalProxyVideoUrl(url) ? false : true);
             if (fallback != null && fallback.probed) {
                 return copyResult(fallback, fallback.probed,
@@ -757,6 +762,29 @@ public final class VideoStreamProbe {
             }
             return Result.unknown(prefix + ":probe-timeout");
         }
+    }
+
+    private static int resolveProbeThreadCount() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !android.os.Process.is64Bit()) {
+                return 1;
+            }
+        } catch (Throwable ignored) {
+            return 1;
+        }
+        long maxHeap = Runtime.getRuntime().maxMemory();
+        return maxHeap > 0L && maxHeap <= 640L * 1024L * 1024L ? 1 : 2;
+    }
+
+    private static int resolveTimeoutFallbackProbeBytes(String url) {
+        if (!isLocalProxyVideoUrl(url)) {
+            return PROBE_BYTES;
+        }
+        // The fallback runs after an extractor timeout. It only needs a bounded marker
+        // prefix to keep playback moving; a second 8 MiB response here causes large-object
+        // GC on 32-bit TVs and competes with the actual Range playback session.
+        return resolveProbeThreadCount() == 1
+                ? TV32_LOCAL_PROXY_STARTUP_PROBE_BYTES : LOCAL_PROXY_PROBE_BYTES;
     }
 
     private static Result probeContainerBytes(String url, Map<String, String> headers, String prefix) {

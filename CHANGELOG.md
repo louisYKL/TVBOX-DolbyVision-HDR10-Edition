@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.3
+
+### 中文
+
+- 64 位高堆设备按 Java 堆分层使用 `192/288/384 MiB` 原始 Range 缓存：`<=640 MiB` 为 `192 MiB`，高于 `640 MiB` 为 `288 MiB`，达到 `1 GiB` 为 `384 MiB`。网络块仍为 `24 MiB`，直播/HLS 继续使用独立流式缓存策略。
+- 32 位和低堆设备继续使用 `192 MiB` 上限、单预取通道和有界探测；关闭相邻并发预取，减少 GC 竞争和 OOM 风险。
+- 高堆 64 位进程级缓存预算与分层同步，并为解码器、解封装器、字幕和界面保留 `128 MiB`；32 位/低堆设备继续保留更保守的 `96 MiB` 余量，大文件不会被整体分配到内存。
+- Range payload 分片改为 `256 KiB`，减少对象数量和 GC 压力；6677 Range 路径继续复用 HTTP/1.1 连接。
+- 错误日志增加每个 Range 窗口的有效字节、耗时、bytes/s、预取和有界重试信息，用于区分源站低速与设备调度压力；不记录正常播放噪声。
+- 三端统一为 `0.3.3` / `versionCode 30003`，沿用正式签名，签名 SHA-256 为 `7c05de517bc51e22f782b2369704c74d459aa15d4e0074f1f2c3491cc76d6bbc`。
+
+### English
+
+- Tier the raw Range cache on high-heap 64-bit devices at `192/288/384 MiB`: `192 MiB` at or below `640 MiB`, `288 MiB` above `640 MiB`, and `384 MiB` at or above `1 GiB`. Network windows remain `24 MiB`; live/HLS keeps its separate streaming cache policy.
+- Keep 32-bit and low-heap devices at a `192 MiB` ceiling with one prefetch lane and bounded probing. Disable sibling prefetch there to reduce GC contention and OOM risk.
+- Align high-heap 64-bit process budgets with the cache tiers while reserving `128 MiB` for decoders, demuxers, subtitles, and UI; 32-bit/low-heap devices retain a conservative `96 MiB` headroom. A large source is never allocated in full.
+- Use `256 KiB` Range payload slices to reduce object count and GC pressure; retain HTTP/1.1 connection reuse for the `6677` Range path.
+- Add error-only Range diagnostics for effective bytes, elapsed time, bytes per second, prefetch, and bounded retries so source stalls can be separated from local scheduling pressure.
+- Unify all three variants under `0.3.3` / `versionCode 30003` with the existing release certificate, SHA-256 `7c05de517bc51e22f782b2369704c74d459aa15d4e0074f1f2c3491cc76d6bbc`.
+
 ## 0.3.2
 
 ### 中文

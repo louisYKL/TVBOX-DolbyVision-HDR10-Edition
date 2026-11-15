@@ -137,15 +137,20 @@ public class PlaybackPrebufferPolicyTest {
 
     @Test
     public void cacheBudgetIsBoundedByProcessMemoryAndArchitecture() {
+        assertEquals(120L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(0L, true));
+        assertEquals(120L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(-1L, false));
         for (boolean is32Bit : new boolean[]{true, false}) {
-            assertEquals(120L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(0L, is32Bit));
-            assertEquals(120L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(-1L, is32Bit));
             assertEquals(120L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(192L * MB, is32Bit));
             assertEquals(120L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(256L * MB, is32Bit));
             assertEquals(192L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(384L * MB, is32Bit));
             assertEquals(192L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(512L * MB, is32Bit));
-            assertEquals(192L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(Long.MAX_VALUE, is32Bit));
         }
+        assertEquals(192L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(Long.MAX_VALUE, true));
+        assertEquals(288L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(768L * MB, false));
+        assertEquals(384L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(1024L * MB, false));
+        assertEquals(384L * MB, PlaybackPrebufferPolicy.resolveCacheLimitBytes(Long.MAX_VALUE, false));
+        assertEquals(96L * MB, PlaybackPrebufferPolicy.resolveHeapHeadroomBytes(512L * MB, true));
+        assertEquals(128L * MB, PlaybackPrebufferPolicy.resolveHeapHeadroomBytes(768L * MB, false));
     }
 
     @Test
