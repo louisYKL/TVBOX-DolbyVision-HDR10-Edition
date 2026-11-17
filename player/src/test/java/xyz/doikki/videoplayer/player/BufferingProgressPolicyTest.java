@@ -98,6 +98,27 @@ public class BufferingProgressPolicyTest {
     }
 
     @Test
+    public void shortKnownFileUsesRemainingTailAsProgressTarget() {
+        long mb = 1024L * 1024L;
+        assertEquals(70L * mb,
+                BufferingProgressPolicy.resolveRangeProgressTargetBytes(
+                        96L * mb, 70L * mb, 0L));
+        assertEquals(100,
+                BufferingProgressPolicy.resolveRangePrebufferDisplayedPercent(
+                        true, 70L * mb, BufferingProgressPolicy.resolveRangeProgressTargetBytes(
+                                96L * mb, 70L * mb, 0L), 0));
+        assertEquals(96L * mb,
+                BufferingProgressPolicy.resolveRangeProgressTargetBytes(
+                        96L * mb, 100L * mb, 0L));
+        assertEquals(10L * mb,
+                BufferingProgressPolicy.resolveRangeProgressTargetBytes(
+                        96L * mb, 100L * mb, 90L * mb));
+        assertEquals(96L * mb,
+                BufferingProgressPolicy.resolveRangeProgressTargetBytes(
+                        96L * mb, 70L * mb, -1L));
+    }
+
+    @Test
     public void committed48MiBRunwayMatchesThePlaybackStartThreshold() {
         long mb = 1024L * 1024L;
         long target = 48L * mb - 128L;

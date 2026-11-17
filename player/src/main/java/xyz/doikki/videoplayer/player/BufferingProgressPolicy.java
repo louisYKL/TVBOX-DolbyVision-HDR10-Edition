@@ -59,6 +59,24 @@ final class BufferingProgressPolicy {
     }
 
     /**
+     * A short file may be allowed to start after its complete remaining tail is buffered.
+     * Use that tail as the progress denominator so the loading surface reaches 100% instead
+     * of stopping at (tail / 96 MiB) while playback has already correctly started.
+     */
+    static long resolveRangeProgressTargetBytes(long configuredTargetBytes,
+                                                long knownTotalBytes,
+                                                long anchorBytes) {
+        if (configuredTargetBytes <= 0L || knownTotalBytes <= 0L || anchorBytes < 0L) {
+            return configuredTargetBytes;
+        }
+        long safeAnchor = Math.min(anchorBytes, knownTotalBytes);
+        long remaining = knownTotalBytes - safeAnchor;
+        return remaining > 0L
+                ? Math.min(configuredTargetBytes, remaining)
+                : configuredTargetBytes;
+    }
+
+    /**
      * The progress overlay may include the received prefix of an in-flight response, but that
      * prefix is not usable by the decoder until the response is committed to the rolling cache.
      * Keep the overlay at 99% until the committed startup gate is satisfied; otherwise the UI

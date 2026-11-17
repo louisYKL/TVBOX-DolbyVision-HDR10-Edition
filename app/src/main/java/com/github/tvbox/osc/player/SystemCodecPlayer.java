@@ -811,9 +811,17 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             if (bufferReady) {
                 rangeCacheAheadBytes = Math.max(rangeCacheAheadBytes, bufferProgressTargetBytes);
             }
-            boolean ready = bufferReady && (current.getPlaybackState() == Player.STATE_READY
-                    || current.getPlaybackState() == Player.STATE_ENDED);
+            // The byte gate is the progress contract for this route. ExoPlayer may still
+            // report BUFFERING while it hands the verified runway to the decoder; exposing
+            // that raw interval made a completed gate look like 71-72% immediately before
+            // playback. The UI reaches 100% when the gate is proven, then the state callback
+            // removes the overlay once the first frame is rendered.
+            boolean ready = bufferReady;
             long sourceTarget = loopbackRangeFactory.getPlaybackStartBufferTargetBytes();
+            sourceTarget = SystemCodecBufferPolicy.resolveProgressTargetBytes(
+                    sourceTarget,
+                    loopbackRangeFactory.getKnownTotalSize(),
+                    loopbackRangeFactory.getPlaybackAnchorPosition());
             long progressTarget = sourceTarget > 0L
                     ? Math.min(bufferProgressTargetBytes, sourceTarget) : bufferProgressTargetBytes;
             int rangePercent = SystemCodecBufferPolicy.bufferingProgressPercent(

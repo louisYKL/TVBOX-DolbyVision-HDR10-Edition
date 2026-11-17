@@ -5,15 +5,15 @@
 > 面向 Android TV、手机和平板的 TVBox 分支，重点维护设备硬解、HDR、字幕和有界流式缓存。
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.5"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.5-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.6"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.6-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.5">下载 0.3.5</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.6">下载 0.3.6</a> ·
   <a href="README.en.md">English</a> ·
-  <a href="0.3.5/RELEASE_NOTES.md">本次更新说明</a>
+  <a href="0.3.6/RELEASE_NOTES.md">本次更新说明</a>
 </p>
 
 </div>
@@ -24,11 +24,19 @@
 
 | 安装包 | ABI | 适用设备 |
 | --- | --- | --- |
-| [TVBox_v0.3.5_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_java32.apk) | `armeabi-v7a` | 32 位 Android TV、智慧屏与盒子 |
-| [TVBox_v0.3.5_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_java64.apk) | `arm64-v8a` | 64 位手机、平板与盒子 |
-| [TVBox_v0.3.5_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_hisense32.apk) | `armeabi-v7a` | 海信 32 位电视 |
+| [TVBox_v0.3.6_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.6/TVBox_v0.3.6_java32.apk) | `armeabi-v7a` | 32 位 Android TV、智慧屏与盒子 |
+| [TVBox_v0.3.6_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.6/TVBox_v0.3.6_java64.apk) | `arm64-v8a` | 64 位手机、平板与盒子 |
+| [TVBox_v0.3.6_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.6/TVBox_v0.3.6_hisense32.apk) | `armeabi-v7a` | 海信 32 位电视 |
 
-版本号为 `0.3.5`，`versionCode` 为 `30005`。发布目录同时提供校验文件；历史更新保留在 [CHANGELOG](CHANGELOG.md)。
+版本号为 `0.3.6`，`versionCode` 为 `30006`。发布目录同时提供校验文件；历史更新保留在 [CHANGELOG](CHANGELOG.md)。
+
+## 0.3.6 更新重点
+
+- 修复点播与 WebDAV 缓冲进度在真实缓存已经完成后仍停留在 `99%` 或 `100%` 不播放的问题。只有连续已提交数据满足启播门槛才完成进度，完成后立即清理加载提示。
+- 修复从播放位置恢复、向前/向后 Seek 时的进度基准，短文件或尾部播放按当前位置之后的剩余数据计算，不再用固定缓存目标造成错误百分比。
+- 修复 Seek overlay 的旧 UI 回调竞态；新的播放代次会使旧的 `100%`/速度提示失效，避免加载框覆盖已恢复的画面。
+
+实现细节与验证范围见 [0.3.6 更新说明](0.3.6/RELEASE_NOTES.md)。
 
 ## 0.3.5 更新重点
 

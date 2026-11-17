@@ -171,6 +171,8 @@ public class PlayActivity extends BaseActivity {
     private final AtomicInteger playbackRequestSeq = new AtomicInteger(0);
     private final AtomicInteger playGeneration = new AtomicInteger(0);
     private final AtomicInteger subtitleInitSeq = new AtomicInteger(0);
+    /** Invalidates queued buffering labels when a seek or playback episode completes. */
+    private final AtomicInteger bufferingOverlayGeneration = new AtomicInteger(0);
     private volatile int activePlayGeneration = 0;
     private volatile int activeParseGeneration = 0;
     private volatile int activeM3u8Generation = 0;
@@ -664,7 +666,8 @@ public class PlayActivity extends BaseActivity {
                     if (holdSeekOverlay) {
                         showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                                 VideoView.STATE_BUFFERING,
-                                PlaybackBufferProgressPolicy.displayPercent(
+                                PlaybackBufferProgressPolicy.seekOverlayPercent(
+                                        seekBufferingPlaybackObserved,
                                         mVideoView.getBufferedPercentage()),
                                 PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
                         if (mHandler != null) {
@@ -695,7 +698,8 @@ public class PlayActivity extends BaseActivity {
                     } else {
                         showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                                 VideoView.STATE_BUFFERING,
-                                PlaybackBufferProgressPolicy.displayPercent(
+                                PlaybackBufferProgressPolicy.seekOverlayPercent(
+                                        seekBufferingPlaybackObserved,
                                         mVideoView.getBufferedPercentage()),
                                 PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
                     }
@@ -716,7 +720,8 @@ public class PlayActivity extends BaseActivity {
                         } else {
                             showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                                     VideoView.STATE_BUFFERING,
-                                    PlaybackBufferProgressPolicy.displayPercent(
+                                    PlaybackBufferProgressPolicy.seekOverlayPercent(
+                                            seekBufferingPlaybackObserved,
                                             mVideoView.getBufferedPercentage()),
                                     PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
                         }
@@ -1527,6 +1532,7 @@ public class PlayActivity extends BaseActivity {
         if (mVideoView == null || mHandler == null) {
             return;
         }
+        bufferingOverlayGeneration.incrementAndGet();
         seekBufferingPending = true;
         seekBufferingPlaybackObserved = false;
         seekBufferingStartedAtMs = System.currentTimeMillis();
@@ -1535,12 +1541,14 @@ public class PlayActivity extends BaseActivity {
         startBufferingProgressMonitor(VideoView.STATE_BUFFERING);
         showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                 VideoView.STATE_BUFFERING,
-                PlaybackBufferProgressPolicy.displayPercent(mVideoView.getBufferedPercentage()),
+                PlaybackBufferProgressPolicy.seekOverlayPercent(
+                        seekBufferingPlaybackObserved, mVideoView.getBufferedPercentage()),
                 PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
         mHandler.removeCallbacks(seekBufferingFinishRunnable);
     }
 
     private void finishSeekBufferingOverlay() {
+        bufferingOverlayGeneration.incrementAndGet();
         seekBufferingPending = false;
         seekBufferingPlaybackObserved = false;
         seekBufferingStartedAtMs = 0L;
@@ -1549,6 +1557,9 @@ public class PlayActivity extends BaseActivity {
             mHandler.removeCallbacks(seekBufferingFinishRunnable);
         }
         stopBufferingProgressMonitor();
+        // Finishing the seek episode owns the loading surface. Without this explicit hide, the
+        // last 100% label could remain above the resumed frame until a later pause/play event.
+        hideTipSafe();
     }
 
     private boolean startBufferingProgressMonitor(int playState) {
@@ -1607,7 +1618,8 @@ public class PlayActivity extends BaseActivity {
         }
         int playState = nativeLoading ? mVideoView.getCurrentPlayState() : VideoView.STATE_BUFFERING;
         int rawPercent = mVideoView.getBufferedPercentage();
-        int percent = PlaybackBufferProgressPolicy.displayPercent(rawPercent);
+        int percent = PlaybackBufferProgressPolicy.seekOverlayPercent(
+                seekBufferingPlaybackObserved, rawPercent);
         int watchdogPercent = PlaybackBufferProgressPolicy.clampPercent(rawPercent);
         if (PlaybackBufferProgressPolicy.hasForwardProgress(lastBufferingPercent, watchdogPercent)) {
             LOG.i("echo-buffer-progress activity percent=" + percent
@@ -1708,10 +1720,12 @@ public class PlayActivity extends BaseActivity {
 
     void setTip(String msg, boolean loading, boolean err) {
         final int generation = currentPlayGeneration();
+        final int overlayGeneration = bufferingOverlayGeneration.incrementAndGet();
         runOnUiThread(new Runnable() {//影魔 解决解析偶发闪退
             @Override
             public void run() {
-                if (generation != currentPlayGeneration()) {
+                if (generation != currentPlayGeneration()
+                        || overlayGeneration != bufferingOverlayGeneration.get()) {
                     return;
                 }
                 if (loading && playbackRenderedFirstFrame) {
@@ -1734,10 +1748,12 @@ public class PlayActivity extends BaseActivity {
 
     void showBufferingTip(String msg) {
         final int generation = currentPlayGeneration();
+        final int overlayGeneration = bufferingOverlayGeneration.incrementAndGet();
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (generation != currentPlayGeneration()) {
+                if (generation != currentPlayGeneration()
+                        || overlayGeneration != bufferingOverlayGeneration.get()) {
                     return;
                 }
                 mPlayLoadTip.setText(msg);
@@ -1749,10 +1765,13 @@ public class PlayActivity extends BaseActivity {
     }
 
     void hideTipSafe() {
+        final int overlayGeneration = bufferingOverlayGeneration.incrementAndGet();
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                hideTip();
+                if (overlayGeneration == bufferingOverlayGeneration.get()) {
+                    hideTip();
+                }
             }
         });
     }

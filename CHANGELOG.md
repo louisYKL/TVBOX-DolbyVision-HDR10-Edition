@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.6
+
+### 中文
+
+- 修复点播与 WebDAV 缓冲进度在连续缓存已满足启播条件后仍停留在 `99%`/`100%` 不播放的问题；进度完成后清理加载提示并放行播放。
+- 修复恢复播放和向前/向后 Seek 的进度基准，短文件与尾部播放按当前位置之后的剩余字节计算，避免固定缓存目标造成错误百分比。
+- 修复 Seek overlay 的旧 UI 回调竞态；新的播放代次会使旧的 `100%`、速度和加载提示失效，避免加载框覆盖已恢复画面。
+- 三端统一为 `0.3.6` / `versionCode 30006`，沿用正式签名并支持同变体覆盖安装。
+
+### English
+
+- Fix VOD and WebDAV buffering that remained at `99%` or `100%` instead of starting after the committed contiguous runway satisfied the startup gate. The loading overlay is cleared when the episode completes.
+- Correct the progress denominator for resume and forward/backward seeks. Short files and tail playback use the bytes remaining after the playback anchor instead of a fixed cache target.
+- Fix stale Seek overlay callbacks. A new playback generation invalidates queued `100%`, speed, and loading updates so an old overlay cannot cover the resumed frame.
+- Unify all three variants under `0.3.6` / `versionCode 30006` with the existing release certificate for in-place updates.
+
 ## 0.3.5
 
 ### 中文

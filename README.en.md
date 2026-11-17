@@ -5,15 +5,15 @@
 > A TVBox branch for Android TV, phones, and tablets, focused on hardware decoding, HDR, subtitles, and bounded streaming caches.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.5"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.5-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.6"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.6-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.5">Download 0.3.5</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.6">Download 0.3.6</a> ·
   <a href="README.md">简体中文</a> ·
-  <a href="0.3.5/RELEASE_NOTES.md">Release notes</a>
+  <a href="0.3.6/RELEASE_NOTES.md">Release notes</a>
 </p>
 
 </div>
@@ -24,11 +24,19 @@ All three variants share playback code and buffering policy, with separate ABI b
 
 | Package | ABI | Devices |
 | --- | --- | --- |
-| [TVBox_v0.3.5_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
-| [TVBox_v0.3.5_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
-| [TVBox_v0.3.5_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
+| [TVBox_v0.3.6_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.6/TVBox_v0.3.6_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
+| [TVBox_v0.3.6_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.6/TVBox_v0.3.6_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
+| [TVBox_v0.3.6_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.6/TVBox_v0.3.6_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
 
-Version: `0.3.5`; `versionCode`: `30005`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
+Version: `0.3.6`; `versionCode`: `30006`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
+
+## Changes in 0.3.6
+
+- Fix VOD and WebDAV buffering that stayed at `99%` or `100%` after the committed contiguous runway was ready. The progress episode completes only after the startup gate is satisfied, then the loading overlay is removed.
+- Correct progress denominators for resume and forward/backward seeks. Short files and tail playback use the remaining bytes after the playback anchor instead of a fixed cache target.
+- Fix stale Seek overlay callbacks. A new playback generation invalidates queued `100%`/speed updates so an old loading surface cannot cover the resumed frame.
+
+See the [0.3.6 release notes](0.3.6/RELEASE_NOTES.md) for implementation and validation scope.
 
 ## Changes in 0.3.5
 

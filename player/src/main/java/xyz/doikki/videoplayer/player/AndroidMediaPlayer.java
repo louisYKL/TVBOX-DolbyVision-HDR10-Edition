@@ -707,6 +707,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             if (targetBytes <= 0L) {
                 targetBytes = DIRECT_URI_PROGRESS_TARGET_BYTES;
             }
+            targetBytes = BufferingProgressPolicy.resolveRangeProgressTargetBytes(
+                    targetBytes,
+                    getKnownTotalSize(),
+                    getPlaybackAnchorPositionSnapshot());
             // Display contiguous bytes as they arrive. The separate startup gate continues
             // to use committed windows, so a progress update cannot start the native player.
             long aheadBytes = BufferingProgressPolicy.capUncommittedRangeProgress(
@@ -909,6 +913,16 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             return ((HttpRangeMediaDataSource) mCurrentMediaDataSource).getKnownTotalSizeSnapshot();
         }
         return -1L;
+    }
+
+    private long getPlaybackAnchorPositionSnapshot() {
+        if (mCurrentMediaDataSource instanceof HttpRangeMediaDataSource) {
+            return ((HttpRangeMediaDataSource) mCurrentMediaDataSource)
+                    .getPlaybackAnchorPositionSnapshot();
+        }
+        // Proxy file descriptors expose the remaining entity length but not a separate
+        // logical anchor. Their playback source is rooted at zero for this progress view.
+        return 0L;
     }
 
     private void cancelStartupBufferGate() {
@@ -1269,6 +1283,10 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             mNativeBuffering = false;
             finishPlaybackPrebuffer();
             finishDirectUriProgress();
+            // Complete the visible episode after clearing its transfer window. Vendor
+            // MediaPlayer frequently leaves mBufferedPercent at the last 71-72% sample even
+            // though a frame is now on screen.
+            mDirectUriProgressPercent = 100;
             dispatchBufferingEndIfIdle(0, "render-start");
             if (mIsPreparing) {
                 mPlayerEventListener.onInfo(what, extra);
@@ -2436,6 +2454,13 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
      * the percentage and network-speed indicator.</p>
      */
     public boolean isBufferingForUi() {
+        // A vendor seek may leave the old buffering flag latched after native playback has
+        // already resumed. Treat the real playing state as authoritative unless a new native
+        // buffering episode or seek is still active; otherwise the seek overlay can never
+        // settle and remains over the picture until a manual pause/play cycle.
+        if (isNativePlayerPlaying(mMediaPlayer) && !mNativeBuffering && !isSeekInFlight()) {
+            return false;
+        }
         return mIsBuffering || mNativeBuffering || mBufferingInfoVisible || isSeekInFlight();
     }
 

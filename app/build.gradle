@@ -1,6 +1,6 @@
 apply plugin: 'com.android.application'
 
-buildDir = rootProject.file('_build-v0.3.5/app')
+buildDir = rootProject.file('_build-v0.3.6/app')
 
 android {
     compileSdkVersion 34
@@ -17,8 +17,8 @@ android {
     defaultConfig {
         applicationId 'com.github.tvbox.osc'
         targetSdkVersion 34
-        versionCode 30005
-        versionName '0.3.5'
+        versionCode 30006
+        versionName '0.3.6'
         multiDexEnabled true
         //设置room的Schema的位置
         javaCompileOptions {

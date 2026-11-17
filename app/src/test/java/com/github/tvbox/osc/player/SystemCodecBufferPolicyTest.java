@@ -32,6 +32,16 @@ public class SystemCodecBufferPolicyTest {
     }
 
     @Test
+    public void shortKnownFileUsesRemainingTailForProgress() {
+        assertEquals(70L * MB, SystemCodecBufferPolicy.resolveProgressTargetBytes(
+                96L * MB, 70L * MB, 0L));
+        assertEquals(10L * MB, SystemCodecBufferPolicy.resolveProgressTargetBytes(
+                96L * MB, 100L * MB, 90L * MB));
+        assertEquals(96L * MB, SystemCodecBufferPolicy.resolveProgressTargetBytes(
+                96L * MB, 200L * MB, 0L));
+    }
+
+    @Test
     public void playbackThresholdsKeepAValidLargePrebuffer() {
         assertEquals(4_000, SystemCodecBufferPolicy.PLAYBACK_BUFFER_MS);
         assertEquals(5_000, SystemCodecBufferPolicy.REBUFFER_MS);

@@ -186,6 +186,8 @@ public class PlayFragment extends BaseLazyFragment {
     private boolean bufferingProgressMonitorActive;
     private int bufferingProgressGeneration;
     private int bufferingProgressPlayState = VideoView.STATE_IDLE;
+    /** Invalidates UI-thread loading updates that were queued before a seek/playback settled. */
+    private final AtomicInteger bufferingOverlayGeneration = new AtomicInteger(0);
     private int lastBufferingPercent = -1;
     private long lastBufferTimeoutRefreshAtMs;
     private long activeBufferingEpisodeStartAtMs = 0L;
@@ -762,7 +764,8 @@ public class PlayFragment extends BaseLazyFragment {
                     if (holdSeekOverlay) {
                         showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                                 VideoView.STATE_BUFFERING,
-                                PlaybackBufferProgressPolicy.displayPercent(
+                                PlaybackBufferProgressPolicy.seekOverlayPercent(
+                                        seekBufferingPlaybackObserved,
                                         mVideoView.getBufferedPercentage()),
                                 PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
                         if (mHandler != null) {
@@ -800,7 +803,8 @@ public class PlayFragment extends BaseLazyFragment {
                     } else {
                         showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                                 VideoView.STATE_BUFFERING,
-                                PlaybackBufferProgressPolicy.displayPercent(
+                                PlaybackBufferProgressPolicy.seekOverlayPercent(
+                                        seekBufferingPlaybackObserved,
                                         mVideoView.getBufferedPercentage()),
                                 PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
                     }
@@ -1494,6 +1498,7 @@ public class PlayFragment extends BaseLazyFragment {
         if (mVideoView == null || mHandler == null) {
             return;
         }
+        bufferingOverlayGeneration.incrementAndGet();
         seekBufferingPending = true;
         seekBufferingPlaybackObserved = false;
         seekBufferingStartedAtMs = System.currentTimeMillis();
@@ -1502,12 +1507,15 @@ public class PlayFragment extends BaseLazyFragment {
         startBufferingProgressMonitor(VideoView.STATE_BUFFERING);
         showBufferingTip(PlaybackLoadingOverlayPolicy.formatLoadingStatus(
                 VideoView.STATE_BUFFERING,
-                PlaybackBufferProgressPolicy.displayPercent(mVideoView.getBufferedPercentage()),
+                PlaybackBufferProgressPolicy.seekOverlayPercent(
+                        seekBufferingPlaybackObserved,
+                        mVideoView.getBufferedPercentage()),
                 PlayerHelper.getDisplaySpeed(mVideoView.getTcpSpeed(), true)));
         mHandler.removeCallbacks(seekBufferingFinishRunnable);
     }
 
     private void finishSeekBufferingOverlay() {
+        bufferingOverlayGeneration.incrementAndGet();
         seekBufferingPending = false;
         seekBufferingPlaybackObserved = false;
         seekBufferingStartedAtMs = 0L;
@@ -1516,6 +1524,10 @@ public class PlayFragment extends BaseLazyFragment {
             mHandler.removeCallbacks(seekBufferingFinishRunnable);
         }
         stopBufferingProgressMonitor();
+        // Finishing the seek episode also owns hiding its centered loading surface. In the
+        // playing callback the overlay can be held briefly for visual stability, so no later
+        // state transition is guaranteed to hide it for us.
+        hideTipSafe();
     }
 
     private boolean startBufferingProgressMonitor(int playState) {
@@ -1574,7 +1586,8 @@ public class PlayFragment extends BaseLazyFragment {
         }
         int playState = nativeLoading ? mVideoView.getCurrentPlayState() : VideoView.STATE_BUFFERING;
         int rawPercent = mVideoView.getBufferedPercentage();
-        int percent = PlaybackBufferProgressPolicy.displayPercent(rawPercent);
+        int percent = PlaybackBufferProgressPolicy.seekOverlayPercent(
+                seekBufferingPlaybackObserved, rawPercent);
         int watchdogPercent = PlaybackBufferProgressPolicy.clampPercent(rawPercent);
         if (PlaybackBufferProgressPolicy.hasForwardProgress(lastBufferingPercent, watchdogPercent)) {
             LOG.i("echo-buffer-progress percent=" + percent
@@ -1679,10 +1692,12 @@ public class PlayFragment extends BaseLazyFragment {
     void setTip(String msg, boolean loading, boolean err) {
         if (!isAdded()) return;
         final int generation = currentPlayGeneration();
+        final int overlayGeneration = bufferingOverlayGeneration.incrementAndGet();
         requireActivity().runOnUiThread(new Runnable() { //影魔
             @Override
             public void run() {
-                if (generation != currentPlayGeneration()) {
+                if (generation != currentPlayGeneration()
+                        || overlayGeneration != bufferingOverlayGeneration.get()) {
                     return;
                 }
                 if (loading && playbackRenderedFirstFrame) {
@@ -1704,10 +1719,12 @@ public class PlayFragment extends BaseLazyFragment {
     void showBufferingTip(String msg) {
         if (!isAdded()) return;
         final int generation = currentPlayGeneration();
+        final int overlayGeneration = bufferingOverlayGeneration.incrementAndGet();
         requireActivity().runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (generation != currentPlayGeneration()) {
+                if (generation != currentPlayGeneration()
+                        || overlayGeneration != bufferingOverlayGeneration.get()) {
                     return;
                 }
                 mPlayLoadTip.setText(msg);
@@ -1728,7 +1745,15 @@ public class PlayFragment extends BaseLazyFragment {
         if (!isAdded()) {
             return;
         }
-        requireActivity().runOnUiThread(this::hideTip);
+        // Invalidate any already queued showBufferingTip() callback. Without this, a seek's
+        // final 100% label can run after playback has resumed and remain over the video until
+        // the user manually pauses and plays again.
+        final int overlayGeneration = bufferingOverlayGeneration.incrementAndGet();
+        requireActivity().runOnUiThread(() -> {
+            if (overlayGeneration == bufferingOverlayGeneration.get()) {
+                hideTip();
+            }
+        });
     }
 
     private void hideStartupTipWhenPlaybackStarts(final int generation, final int attempt) {

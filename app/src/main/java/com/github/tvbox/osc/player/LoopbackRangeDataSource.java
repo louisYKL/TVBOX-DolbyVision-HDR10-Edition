@@ -159,6 +159,11 @@ final class LoopbackRangeDataSource extends BaseDataSource {
             return source == null ? 0L : source.getPlaybackStartBufferTargetBytes();
         }
 
+        long getPlaybackAnchorPosition() {
+            HttpRangeMediaDataSource source = playbackSession.getSource();
+            return source == null ? -1L : source.getPlaybackAnchorPositionSnapshot();
+        }
+
         IOException getPlaybackCacheError() {
             HttpRangeMediaDataSource source = playbackSession.getSource();
             return source == null ? null : source.getPlaybackCacheError();

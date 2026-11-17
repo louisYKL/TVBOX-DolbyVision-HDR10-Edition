@@ -70,6 +70,13 @@ public class PlaybackBufferProgressPolicyTest {
     }
 
     @Test
+    public void observedSeekPlaybackCompletesVisibleProgressDespiteStaleNativePercent() {
+        assertEquals(100, PlaybackBufferProgressPolicy.seekOverlayPercent(true, 72));
+        assertEquals(72, PlaybackBufferProgressPolicy.seekOverlayPercent(false, 72));
+        assertEquals(-1, PlaybackBufferProgressPolicy.seekOverlayPercent(false, -1));
+    }
+
+    @Test
     public void unknownProgressKeepsStartupWatchdogAliveOnlyWithinBound() {
         assertTrue(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForUnknownProgress(
                 VideoView.STATE_PREPARING, -1, 5_000L, 5_000L, 30_000L, 120_000L));

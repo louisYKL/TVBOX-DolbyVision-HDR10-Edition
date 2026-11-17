@@ -38,6 +38,20 @@ final class SystemCodecBufferPolicy {
         return MIN_BUFFER_BYTES;
     }
 
+    /** Use a known short file's remaining tail as the progress denominator. */
+    static long resolveProgressTargetBytes(long configuredTargetBytes,
+                                           long knownTotalBytes,
+                                           long anchorBytes) {
+        if (configuredTargetBytes <= 0L || knownTotalBytes <= 0L || anchorBytes < 0L) {
+            return configuredTargetBytes;
+        }
+        long safeAnchor = Math.min(anchorBytes, knownTotalBytes);
+        long remaining = knownTotalBytes - safeAnchor;
+        return remaining > 0L
+                ? Math.min(configuredTargetBytes, remaining)
+                : configuredTargetBytes;
+    }
+
     static boolean hasRequiredBuffer(long newlyAllocatedBytes,
                                      long transferredBytesSinceBufferingStarted,
                                      long requiredBytes) {

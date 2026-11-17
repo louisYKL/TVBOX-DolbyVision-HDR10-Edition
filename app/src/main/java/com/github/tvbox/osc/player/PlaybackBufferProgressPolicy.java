@@ -16,6 +16,12 @@ public final class PlaybackBufferProgressPolicy {
         return percent == -1 ? -1 : clampPercent(percent);
     }
 
+    /** A resumed seek completes its visible runway when playback is observed, even if a
+     * vendor player keeps reporting the percentage from the previous cache window. */
+    public static int seekOverlayPercent(boolean playbackObserved, int currentPercent) {
+        return playbackObserved ? 100 : displayPercent(currentPercent);
+    }
+
     public static boolean isLoadingState(int playState) {
         return playState == VideoView.STATE_PREPARING
                 || playState == VideoView.STATE_BUFFERING;
