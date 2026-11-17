@@ -36,6 +36,8 @@ public class SystemDecoderRoutePolicyTest {
         assertEquals("base-sdr", SystemDecoderRoutePolicy.dolbyVisionBaseMode(8, 2, 6));
         assertEquals("dv-no-compatible-base", SystemDecoderRoutePolicy.dolbyVisionBaseMode(5, 0, 6));
         assertEquals("dv-no-compatible-base", SystemDecoderRoutePolicy.dolbyVisionBaseMode(8, -1, -1));
+        assertEquals("base-hdr", SystemDecoderRoutePolicy.dolbyVisionBaseMode(8, -1, 6));
+        assertEquals("dv-no-compatible-base", SystemDecoderRoutePolicy.dolbyVisionBaseMode(-1, -1, 6));
     }
 
     @Test
@@ -84,6 +86,30 @@ public class SystemDecoderRoutePolicyTest {
                 33, "c2.qti.dv.decoder", false, true));
         assertFalse(SystemDecoderRoutePolicy.isEligibleHdrVideoCodec(
                 33, "c2.android.hevc.decoder", false, false));
+    }
+
+    @Test
+    public void nativeDolbyVisionRequiresExplicitHardwareProofOnModernAndroid() {
+        assertTrue(SystemDecoderRoutePolicy.isEligibleNativeDolbyVisionCodec(
+                33, "c2.qti.dv.decoder", true, false));
+        assertFalse(SystemDecoderRoutePolicy.isEligibleNativeDolbyVisionCodec(
+                33, "c2.qti.dv.decoder", false, false));
+        assertFalse(SystemDecoderRoutePolicy.isEligibleNativeDolbyVisionCodec(
+                33, "OMX.vendor.dolbyvision.decoder", true, true));
+        assertTrue(SystemDecoderRoutePolicy.isEligibleNativeDolbyVisionCodec(
+                28, "OMX.vendor.dolbyvision.decoder", false, false));
+        assertFalse(SystemDecoderRoutePolicy.isEligibleNativeDolbyVisionCodec(
+                28, "OMX.google.dolbyvision.decoder", false, false));
+    }
+
+    @Test
+    public void knownVendorDvBlackScreenDecodersUseTheCompatibleBaseRoute() {
+        assertTrue(SystemDecoderRoutePolicy.shouldAvoidNativeDolbyVision(
+                "OMX.NVT.video.decoder.dolbyvision"));
+        assertTrue(SystemDecoderRoutePolicy.shouldAvoidNativeDolbyVision(
+                "c2.hisilicon.dv.decoder"));
+        assertFalse(SystemDecoderRoutePolicy.shouldAvoidNativeDolbyVision(
+                "c2.qti.dv.decoder"));
     }
 
     @Test

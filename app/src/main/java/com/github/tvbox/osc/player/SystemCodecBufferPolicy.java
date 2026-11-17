@@ -56,10 +56,11 @@ final class SystemCodecBufferPolicy {
         }
         if (targetBytes > 0L) {
             // A byte-backed source has an exact, contiguous payload measurement. Let the
-            // display reach 100% as soon as that payload target is committed; Exo's sample
-            // queue may still be decoding it, so `ready` remains a separate output gate.
+            // display track verified and in-flight contiguous bytes, but reserve 100% for the
+            // point where both the byte runway and Exo's decoded sample queue are ready. An
+            // in-flight Range body is not committed evidence and must never look complete.
             long bytePercent = (Math.max(0L, allocatedBytes) * 100L) / targetBytes;
-            return (int) Math.max(0L, Math.min(100L, bytePercent));
+            return (int) Math.max(0L, Math.min(ready ? 100L : 99L, bytePercent));
         }
         // Live/time-only sources do not have a verified byte target. Preserve their historical
         // convention: 99% means the time threshold is reached but Exo has not reported READY.

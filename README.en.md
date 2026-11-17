@@ -5,15 +5,15 @@
 > A TVBox branch for Android TV, phones, and tablets, focused on hardware decoding, HDR, subtitles, and bounded streaming caches.
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.3"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.3-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.5"><img alt="Release" src="https://img.shields.io/badge/release-v0.3.5-white?style=for-the-badge&labelColor=111111&color=F5F5F5"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20TV%20%2F%20Android-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
   <img alt="HDR" src="https://img.shields.io/badge/HDR-HDR10%20%7C%20HDR10%2B%20%7C%20Dolby%20Vision-white?style=for-the-badge&labelColor=111111&color=F5F5F5">
 </p>
 
 <p>
-  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.3">Download 0.3.3</a> ·
+  <a href="https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/tag/v0.3.5">Download 0.3.5</a> ·
   <a href="README.md">简体中文</a> ·
-  <a href="0.3.3/RELEASE_NOTES.md">Release notes</a>
+  <a href="0.3.5/RELEASE_NOTES.md">Release notes</a>
 </p>
 
 </div>
@@ -24,11 +24,28 @@ All three variants share playback code and buffering policy, with separate ABI b
 
 | Package | ABI | Devices |
 | --- | --- | --- |
-| [TVBox_v0.3.3_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
-| [TVBox_v0.3.3_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
-| [TVBox_v0.3.3_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.3/TVBox_v0.3.3_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
+| [TVBox_v0.3.5_java32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_java32.apk) | `armeabi-v7a` | 32-bit Android TVs, smart screens, and boxes |
+| [TVBox_v0.3.5_java64.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_java64.apk) | `arm64-v8a` | 64-bit phones, tablets, and boxes |
+| [TVBox_v0.3.5_hisense32.apk](https://github.com/louisYKL/TVBOX-DolbyVision-HDR10-Edition/releases/download/v0.3.5/TVBox_v0.3.5_hisense32.apk) | `armeabi-v7a` | Hisense 32-bit TVs |
 
-Version: `0.3.3`; `versionCode`: `30003`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
+Version: `0.3.5`; `versionCode`: `30005`. Checksums accompany the release. Previous changes remain in the [changelog](CHANGELOG.md).
+
+## Changes in 0.3.5
+
+- When a device lacks an end-to-end Dolby Vision decoder route, use the source's verified HDR10, HLG, or SDR compatibility base. Display-panel DV support is no longer treated as proof that the chip can decode DV.
+- Recognize Dolby Vision expressed in ordinary `video/hevc` tracks through codec strings, configuration records, and bounded probe evidence. The track no longer has to advertise `video/dolby-vision`.
+- Strip RPU/EL NAL units from both Annex-B and length-prefixed samples. Validate the complete access unit before compaction and preserve the original bytes when validation fails, so ordinary HEVC is not damaged.
+- Do not reuse weak probe results that lack a profile/level, video track, or compatibility-base evidence. A bounded confirmation probe can then resolve the actual route instead of persisting a false unsupported-DV result or an audio-only black surface.
+
+See the [0.3.5 release notes](0.3.5/RELEASE_NOTES.md) for implementation and validation scope.
+
+## Changes in 0.3.4
+
+- Release stale Range-cache accounting on source switches and player teardown, preventing a new player from being rejected after its surface is ready.
+- Reach 100% and start only after committed contiguous bytes satisfy the startup gate; in-flight bytes cannot leave playback at 100% with zero speed.
+- Recognize the `dvav`/`dva1` AVC Dolby Vision aliases. When a panel supports Dolby Vision but the chip has no DV decoder, use the source's HDR10/HLG/SDR compatible base layer. NVT, HiSilicon, and MStar black-screen declarations no longer take the native DV route.
+
+See the [0.3.4 release notes](0.3.4/RELEASE_NOTES.md) for implementation and validation scope.
 
 ## Preview
 

@@ -44,6 +44,29 @@ public class VideoStreamByteMarkersTest {
     }
 
     @Test
+    public void recognizesDvavAndDva1CodecMarkersAndProfiles() {
+        VideoStreamByteMarkers.Scan scan = VideoStreamByteMarkers.scan(
+                bytes("video/avc dvav.09.06"), "video/avc dvav.09.06".length());
+        assertTrue(scan.has(VideoStreamByteMarkers.DOLBY_VISION));
+        assertEquals(9, scan.dolbyVisionProfile);
+
+        scan = VideoStreamByteMarkers.scan(bytes("video/avc dva1.08.06"),
+                "video/avc dva1.08.06".length());
+        assertTrue(scan.has(VideoStreamByteMarkers.DOLBY_VISION));
+        assertEquals(8, scan.dolbyVisionProfile);
+
+        scan = VideoStreamByteMarkers.scan(bytes("video/hevc dvc1.10.06"),
+                "video/hevc dvc1.10.06".length());
+        assertTrue(scan.has(VideoStreamByteMarkers.DOLBY_VISION));
+        assertEquals(10, scan.dolbyVisionProfile);
+
+        scan = VideoStreamByteMarkers.scan(bytes("video/hevc dvvc.12.06"),
+                "video/hevc dvvc.12.06".length());
+        assertTrue(scan.has(VideoStreamByteMarkers.DOLBY_VISION));
+        assertEquals(12, scan.dolbyVisionProfile);
+    }
+
+    @Test
     public void classifiesEbmlHeaderAndPreservesSdrWhenThereIsNoHdrEvidence() {
         byte[] data = {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3, 0, 0, 0};
         assertTrue(VideoStreamByteMarkers.scan(data, data.length).has(VideoStreamByteMarkers.MATROSKA));

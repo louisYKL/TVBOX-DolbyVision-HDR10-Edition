@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.5
+
+### 中文
+
+- 完善电视端 Dolby Vision 兼容层路由：设备没有端到端 DV 解码能力时，只使用视频自身已验证的 HDR10、HLG 或 SDR 基础层；面板支持 DV 不再被当成芯片支持 DV。
+- 识别普通 `video/hevc` 轨道中的 Dolby Vision codec、配置记录和有界探测证据，覆盖常见 HEVC DV profile/别名，不要求轨道必须声明 `video/dolby-vision`。
+- RPU/EL 清理同时支持 Annex-B 和长度前缀 NAL 样本。清理前验证完整访问单元，解析失败保留原始字节，避免普通 HEVC 被破坏。
+- 缺少 profile/level、视频轨道或兼容层证据的弱探测结果不再写入可复用缓存；后续播放会继续进行有界确认探测，避免错误不支持路由、黑屏或只有声音。
+- 三端统一为 `0.3.5` / `versionCode 30005`，沿用正式签名并支持同变体覆盖安装。
+
+### English
+
+- Improve the TV Dolby Vision compatibility route: when no end-to-end DV decoder is available, use only the source's verified HDR10, HLG, or SDR base layer. A DV-capable panel is no longer treated as proof of chip-level DV decoding.
+- Recognize Dolby Vision codec/configuration evidence in ordinary `video/hevc` tracks, including common HEVC DV profiles and aliases; the track no longer needs to advertise `video/dolby-vision`.
+- Strip RPU/EL NAL units from both Annex-B and length-prefixed samples. Validate a complete access unit before compaction and preserve the original bytes if parsing fails, protecting ordinary HEVC samples.
+- Do not persist weak probe results that lack a profile/level, video track, or compatibility-base evidence. A bounded confirmation probe resolves the actual route instead of retaining a false unsupported-DV decision, black video surface, or audio-only playback.
+- Unify all three variants under `0.3.5` / `versionCode 30005` with the existing release certificate for in-place updates.
+
+## 0.3.4
+
+### 中文
+
+- 修复旧播放器关闭后进程级 Range 缓存账目未及时释放的问题；切换视频、退出详情页或重新打开播放器时，旧源的已提交窗口会立即归还，取消中的网络响应只保留自己的有界预留，避免新视频在有效 Surface 创建后被错误判定为内存不足。
+- 修复在途 Range 数据把缓冲进度提前显示为 `100%` 的问题。只有已提交且连续的缓存达到启播门槛后才显示 `100%` 并放行播放，避免进度到顶、速度归零但播放器仍等待未提交数据。
+- 补齐 `dvav`/`dva1` AVC Dolby Vision codec 标识的 HDR/DV 识别；针对已确认会在 Dolby Vision 兼容设备上黑屏的 NVT/HiSilicon/MStar 原生 DV 解码器，改走实际兼容的 HDR10/HLG/SDR 基础层；真实可用的原生 DV 解码器仍保留原生路径。HDR 输出模式在首帧前按真实轨道和解码格式激活。
+- 三端统一为 `0.3.4` / `versionCode 30004`，继续使用原正式签名，支持同变体覆盖安装。
+
+### English
+
+- Fix stale process-wide Range-cache accounting after a player is closed. Source switches, leaving a detail page, and reopening playback now return committed windows immediately; cancelled network responses retain only their bounded per-source reservations, so a new source is not rejected after a valid surface is ready.
+- Prevent in-flight Range bytes from claiming `100%` buffering. The overlay reaches `100%` and playback is released only after committed contiguous bytes satisfy the startup gate, avoiding a zero-speed, never-starting player.
+- Recognize the `dvav`/`dva1` AVC Dolby Vision codec aliases for HDR/DV routing. Route confirmed black-screen NVT/HiSilicon/MStar Dolby Vision decoder paths through the actual compatible HDR10/HLG/SDR base layer. Devices with a working native DV decoder keep the native route, and HDR output is activated from the real track and decoder format before the first frame.
+- Unify all three variants under `0.3.4` / `versionCode 30004` with the existing release certificate for in-place updates.
+
 ## 0.3.3
 
 ### 中文

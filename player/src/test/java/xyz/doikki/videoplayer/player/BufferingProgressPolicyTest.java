@@ -119,6 +119,20 @@ public class BufferingProgressPolicyTest {
     }
 
     @Test
+    public void uncommittedPrefixCannotClaimCompleteStartup() {
+        long mb = 1024L * 1024L;
+        assertEquals(96L * mb - 1L,
+                BufferingProgressPolicy.capUncommittedRangeProgress(
+                        96L * mb, 72L * mb, 96L * mb));
+        assertEquals(96L * mb,
+                BufferingProgressPolicy.capUncommittedRangeProgress(
+                        96L * mb, 96L * mb, 96L * mb));
+        assertEquals(72L * mb,
+                BufferingProgressPolicy.capUncommittedRangeProgress(
+                        72L * mb, 48L * mb, 96L * mb));
+    }
+
+    @Test
     public void nativeBufferIsTheOnlyReasonToHoldBufferingEnd() {
         assertTrue(BufferingProgressPolicy.shouldHoldBufferingEnd(true));
         assertFalse(BufferingProgressPolicy.shouldHoldBufferingEnd(false));

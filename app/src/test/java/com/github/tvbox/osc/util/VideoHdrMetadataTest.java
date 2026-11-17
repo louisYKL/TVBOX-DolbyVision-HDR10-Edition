@@ -32,6 +32,12 @@ public class VideoHdrMetadataTest {
         assertTrue(VideoStreamProbe.containsHdr10PlusTextMarker("SMPTE 2094-40"));
         assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("video/dolby-vision"));
         assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("dvhe.08.06"));
+        assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("dvav.09.06"));
+        assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("dva1.08.06"));
+        assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("dvc1.10.06"));
+        assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("dvcc.11.06"));
+        assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("dvvc.12.06"));
+        assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("dvv1.08.06"));
         assertTrue(VideoStreamProbe.containsDolbyVisionTextMarker("Dolby Vision profile 7"));
         assertTrue(VideoStreamProbe.containsHdr10TextMarker("CUVA HDR Vivid"));
     }
@@ -120,6 +126,11 @@ public class VideoHdrMetadataTest {
         assertTrue(metadata.dolbyVisionCompatibilityId == 4);
         assertTrue(metadata.dolbyVisionLevel == 6);
         assertTrue(metadata.colorTransfer == 7);
+
+        byte[] dvv = new byte[]{'d','v','v','C', 0, 1, 0x10, 0x30, 0x40, 0, 0};
+        metadata = VideoStreamProbe.readDolbyVisionConfigRecord(dvv, dvv.length);
+        assertTrue(metadata.dolbyVisionProfile == 8);
+        assertTrue(metadata.dolbyVisionCompatibilityId == 4);
     }
 
     @Test
@@ -134,6 +145,9 @@ public class VideoHdrMetadataTest {
         VideoColorMetadata profile82 = VideoStreamProbe.readDolbyVisionConfigRecord(config, config.length);
         assertTrue(profile82.colorTransfer == 3);
         assertFalse(profile82.hasHdr10BaseLayer());
+        VideoColorMetadata profile8PqUnknown = new VideoColorMetadata(6, -1, -1,
+                null, 8, 6, -1);
+        assertTrue(profile8PqUnknown.hasHdr10BaseLayer());
         config[8] = 0x10;
         VideoColorMetadata profile81 = VideoStreamProbe.readDolbyVisionConfigRecord(config, config.length);
         assertTrue(profile81.colorTransfer == 6);
@@ -144,8 +158,17 @@ public class VideoHdrMetadataTest {
     public void codecStringPreservesTheActualDvProfile() {
         assertTrue(VideoStreamProbe.extractDolbyVisionProfile("dvhe.08.06") == 8);
         assertTrue(VideoStreamProbe.extractDolbyVisionProfile("dvh1.05.09") == 5);
+        assertTrue(VideoStreamProbe.extractDolbyVisionProfile("dvav.09.06") == 9);
+        assertTrue(VideoStreamProbe.extractDolbyVisionProfile("dva1.08.06") == 8);
+        assertTrue(VideoStreamProbe.extractDolbyVisionProfile("dvc1.10.06") == 10);
+        assertTrue(VideoStreamProbe.extractDolbyVisionProfile("dvcc.11.06") == 11);
+        assertTrue(VideoStreamProbe.extractDolbyVisionProfile("dvvc.12.06") == 12);
+        assertTrue(VideoStreamProbe.extractDolbyVisionProfile("dvv1.13.06") == 13);
         assertTrue(VideoStreamProbe.readDolbyVisionCodecMetadata("dvh1.05.09").dolbyVisionLevel == 9);
         assertTrue(VideoStreamProbe.readDolbyVisionCodecMetadata("dvhe.08.06").dolbyVisionProfile == 8);
+        assertTrue(VideoStreamProbe.readDolbyVisionCodecMetadata("dvav.09.06").dolbyVisionProfile == 9);
+        assertTrue(VideoStreamProbe.readDolbyVisionCodecMetadata("dvc1.10.06").dolbyVisionProfile == 10);
+        assertTrue(VideoStreamProbe.readDolbyVisionCodecMetadata("dvvc.12.06").dolbyVisionProfile == 12);
         assertTrue(VideoStreamProbe.readDolbyVisionCodecMetadata("dvhe.08.bad").dolbyVisionLevel == -1);
     }
 

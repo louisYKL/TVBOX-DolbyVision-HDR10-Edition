@@ -709,7 +709,8 @@ public class AndroidMediaPlayer extends AbstractPlayer implements MediaPlayer.On
             }
             // Display contiguous bytes as they arrive. The separate startup gate continues
             // to use committed windows, so a progress update cannot start the native player.
-            long aheadBytes = getBufferedAheadBytesForProgress();
+            long aheadBytes = BufferingProgressPolicy.capUncommittedRangeProgress(
+                    getBufferedAheadBytesForProgress(), getBufferedAheadBytes(), targetBytes);
             mDirectUriProgressPercent = BufferingProgressPolicy.resolveRangePrebufferDisplayedPercent(
                     true, aheadBytes, targetBytes, mDirectUriProgressPercent);
             return mDirectUriProgressPercent;

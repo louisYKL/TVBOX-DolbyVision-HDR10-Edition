@@ -58,6 +58,24 @@ final class BufferingProgressPolicy {
         return Math.min(99, (int) percent);
     }
 
+    /**
+     * The progress overlay may include the received prefix of an in-flight response, but that
+     * prefix is not usable by the decoder until the response is committed to the rolling cache.
+     * Keep the overlay at 99% until the committed startup gate is satisfied; otherwise the UI
+     * claims completion while the player is still waiting for the same bytes to be committed.
+     */
+    static long capUncommittedRangeProgress(long progressBytes,
+                                            long committedBytes,
+                                            long targetBytes) {
+        long safeProgress = Math.max(0L, progressBytes);
+        long safeCommitted = Math.max(0L, committedBytes);
+        if (targetBytes > 0L && safeProgress >= targetBytes
+                && safeCommitted < targetBytes) {
+            return Math.max(0L, targetBytes - 1L);
+        }
+        return safeProgress;
+    }
+
     static boolean isRangePrebufferReady(long bufferedBytes, long targetBytes) {
         return targetBytes > 0L && Math.max(0L, bufferedBytes) >= targetBytes;
     }

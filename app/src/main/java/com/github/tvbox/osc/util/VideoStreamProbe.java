@@ -181,7 +181,12 @@ public final class VideoStreamProbe {
             if (fastPreflight == null) {
                 fastPreflight = Result.unknownContainer("tv32-startup-direct:null", true);
             }
-            if (!hasHdrEvidence(fastPreflight)) {
+            // A byte prefix can identify a Dolby Vision marker before Matroska Tracks or the
+            // dvcC/dvvC record has arrived.  Treat that result as weak until the actual video
+            // track supplies a profile/level (or a compatible base).  Passing an unknown DV
+            // profile to the renderer makes it reject the video track while audio continues,
+            // which presents as a black screen with sound on TV32 devices.
+            if (!hasHdrEvidence(fastPreflight) || hasWeakDolbyVisionEvidence(fastPreflight)) {
                 // The bounded prefix probe is fast but may see audio/codec metadata before a
                 // Matroska Tracks block or MP4 moov atom that carries the dynamic range. Confirm
                 // an apparent SDR result through the extractor before the activity requests SDR.
@@ -189,8 +194,21 @@ public final class VideoStreamProbe {
                         "tv32-preflight-confirm");
                 if (confirmed != null && confirmed.probed) {
                     Result merged = mergeLocalProxyProbeResult(url, fastPreflight, confirmed);
-                    if (hasHdrEvidence(merged) || !hasReliableTv32StartupAudioMetadata(fastPreflight)) {
-                        fastPreflight = copyResult(merged, true,
+                    // A generic dovi marker is not proof that the actual track is DV.
+                    // If the extractor sees a normal non-DV video, prefer that concrete
+                    // result instead of carrying the weak marker into the renderer.
+                    if (hasWeakDolbyVisionEvidence(fastPreflight)
+                            && !confirmed.hasDolbyVision) {
+                        fastPreflight = copyResult(confirmed, true,
+                                confirmed.isMatroska || containsMatroskaMarkerInUrl(url),
+                                "tv32-preflight-confirmed-non-dv:" + confirmed.summary);
+                    } else {
+                        fastPreflight = merged;
+                    }
+                    if (hasHdrEvidence(merged)
+                            || hasWeakDolbyVisionEvidence(fastPreflight)
+                            || !hasReliableTv32StartupAudioMetadata(fastPreflight)) {
+                        fastPreflight = copyResult(fastPreflight, true,
                                 merged.isMatroska || containsMatroskaMarkerInUrl(url),
                                 "tv32-preflight-confirmed:" + merged.summary);
                     }
@@ -320,6 +338,24 @@ public final class VideoStreamProbe {
     private static boolean hasHdrEvidence(@Nullable Result result) {
         return result != null
                 && (result.hasDolbyVision || result.hasHdr10 || result.hasHdr10Plus);
+    }
+
+    private static boolean hasWeakDolbyVisionEvidence(@Nullable Result result) {
+        if (result == null || !result.hasDolbyVision) {
+            return false;
+        }
+        VideoColorMetadata metadata = result.colorMetadata;
+        if (metadata == null) {
+            return true;
+        }
+        boolean missingProfile = result.dolbyVisionProfile <= 0
+                || metadata.dolbyVisionProfile <= 0;
+        boolean missingLevel = metadata.dolbyVisionLevel <= 0;
+        boolean ambiguousProfileEight = metadata.dolbyVisionProfile == 8
+                && metadata.dolbyVisionCompatibilityId <= 0;
+        boolean missingVideoTrack = TextUtils.isEmpty(result.primaryVideoMime)
+                && !result.hasAvcVideo && !result.hasHevcVideo;
+        return missingProfile || missingLevel || ambiguousProfileEight || missingVideoTrack;
     }
 
     @Nullable
@@ -702,18 +738,25 @@ public final class VideoStreamProbe {
                     + extractorResult.summary
                     + (byteResult != null && !TextUtils.isEmpty(byteResult.summary)
                     ? "+" + byteResult.summary : "");
+            String primaryVideoMime = !TextUtils.isEmpty(extractorResult.primaryVideoMime)
+                    ? extractorResult.primaryVideoMime
+                    : byteResult == null ? null : byteResult.primaryVideoMime;
+            String primaryAudioMime = !TextUtils.isEmpty(extractorResult.primaryAudioMime)
+                    ? extractorResult.primaryAudioMime
+                    : byteResult == null ? null : byteResult.primaryAudioMime;
             return new Result(true, hasDolbyVision, hdr10, hdr10Plus, isMatroska,
                     dvProfile, hdr10BaseLayer,
-                    extractorResult.primaryVideoMime,
-                    extractorResult.primaryAudioMime,
-                    extractorResult.hasAvcVideo,
-                    extractorResult.hasHevcVideo,
-                    extractorResult.hasAc3Audio,
-                    extractorResult.hasEac3Audio,
-                    extractorResult.hasDtsAudio,
-                    extractorResult.hasTrueHdAudio,
-                    extractorResult.hasAtmosLikeAudio,
-                    extractorResult.audioTrackCount,
+                    primaryVideoMime,
+                    primaryAudioMime,
+                    extractorResult.hasAvcVideo || (byteResult != null && byteResult.hasAvcVideo),
+                    extractorResult.hasHevcVideo || (byteResult != null && byteResult.hasHevcVideo),
+                    extractorResult.hasAc3Audio || (byteResult != null && byteResult.hasAc3Audio),
+                    extractorResult.hasEac3Audio || (byteResult != null && byteResult.hasEac3Audio),
+                    extractorResult.hasDtsAudio || (byteResult != null && byteResult.hasDtsAudio),
+                    extractorResult.hasTrueHdAudio || (byteResult != null && byteResult.hasTrueHdAudio),
+                    extractorResult.hasAtmosLikeAudio || (byteResult != null && byteResult.hasAtmosLikeAudio),
+                    Math.max(extractorResult.audioTrackCount,
+                            byteResult == null ? 0 : byteResult.audioTrackCount),
                     mergeSubtitleTracks(extractorResult.subtitleTracks, byteResult == null ? null : byteResult.subtitleTracks),
                     summary).withColorMetadata(extractorResult.colorMetadata.mergeMissing(
                             byteResult == null ? null : byteResult.colorMetadata));
@@ -1039,7 +1082,15 @@ public final class VideoStreamProbe {
         if (result == null || !result.probed) {
             return false;
         }
-        if (result.hasDolbyVision || result.hasHdr10 || result.hasHdr10Plus) {
+        // A bounded prefix may contain a generic dovi marker before the Matroska
+        // Tracks/config record arrives. Do not cache that weak `header-dovi` result
+        // as reusable: it has no profile/level or video track and would bypass the
+        // extractor confirmation on the next playback, causing a false unsupported
+        // route (or an audio-only black surface).
+        if (result.hasDolbyVision) {
+            return !hasWeakDolbyVisionEvidence(result);
+        }
+        if (result.hasHdr10 || result.hasHdr10Plus) {
             return true;
         }
         return result.isMatroska
@@ -1779,7 +1830,13 @@ public final class VideoStreamProbe {
                 || lower.contains("dv_profile")
                 || lower.contains("dv-profile")
                 || lower.contains("dvhe")
-                || lower.contains("dvh1");
+                || lower.contains("dvh1")
+                || lower.contains("dvav")
+                || lower.contains("dva1")
+                || lower.contains("dvc1")
+                || lower.contains("dvcc")
+                || lower.contains("dvvc")
+                || lower.contains("dvv1");
     }
 
     private static int extractDolbyVisionProfile(byte[] data, VideoStreamByteMarkers.Scan markers) {
@@ -1811,6 +1868,18 @@ public final class VideoStreamProbe {
         if (value > 0) return value;
         value = firstIntAfter(lower, "dvh1.");
         if (value > 0) return value;
+        value = firstIntAfter(lower, "dvav.");
+        if (value > 0) return value;
+        value = firstIntAfter(lower, "dva1.");
+        if (value > 0) return value;
+        value = firstIntAfter(lower, "dvc1.");
+        if (value > 0) return value;
+        value = firstIntAfter(lower, "dvcc.");
+        if (value > 0) return value;
+        value = firstIntAfter(lower, "dvvc.");
+        if (value > 0) return value;
+        value = firstIntAfter(lower, "dvv1.");
+        if (value > 0) return value;
         if (lower.contains("profile 5") || lower.contains("profile: 5")) return 5;
         if (lower.contains("profile 7") || lower.contains("profile: 7")) return 7;
         if (lower.contains("profile 8") || lower.contains("profile: 8")) return 8;
@@ -1835,7 +1904,10 @@ public final class VideoStreamProbe {
                 // Reading the minor version as profile loses profiles 5/7/8 entirely.
                 if ((data[payload] & 255) <= 1 && payload + 4 < safeLength) {
                     int profile = (data[payload + 2] & 0xfe) >> 1;
-                    if (profile > 0 && profile <= 12) {
+                    // Profile is a seven-bit field. Preserve future profiles as
+                    // Dolby Vision metadata; compatibility routing remains
+                    // conservative for values without a known base mapping.
+                    if (profile > 0 && profile <= 127) {
                         int compatibilityId = (data[payload + 4] & 0xf0) >> 4;
                         int level = ((data[payload + 2] & 1) << 5)
                                 | ((data[payload + 3] & 0xf8) >> 3);
@@ -2017,6 +2089,10 @@ public final class VideoStreamProbe {
         if (marker < 0) marker = value.indexOf("dvh1.");
         if (marker < 0) marker = value.indexOf("dva1.");
         if (marker < 0) marker = value.indexOf("dvav.");
+        if (marker < 0) marker = value.indexOf("dvc1.");
+        if (marker < 0) marker = value.indexOf("dvcc.");
+        if (marker < 0) marker = value.indexOf("dvvc.");
+        if (marker < 0) marker = value.indexOf("dvv1.");
         if (marker < 0) return VideoColorMetadata.EMPTY;
         int separator = value.indexOf('.', marker + 5);
         if (separator < 0) return VideoColorMetadata.EMPTY;
@@ -2025,7 +2101,10 @@ public final class VideoStreamProbe {
         try {
             int profile = Integer.parseInt(value.substring(marker + 5, separator));
             int level = Integer.parseInt(value.substring(separator + 1, end));
-            if (profile <= 0 || profile > 12 || level <= 0 || level > 63) return VideoColorMetadata.EMPTY;
+            // The configuration syntax reserves a 7-bit profile field. Keep
+            // unknown future profiles as DV metadata, but do not infer a
+            // compatible base layer for them in the routing policy.
+            if (profile <= 0 || profile > 127 || level <= 0 || level > 63) return VideoColorMetadata.EMPTY;
             return new VideoColorMetadata(-1, -1, -1, null, profile, level, -1);
         } catch (RuntimeException ignored) {
             return VideoColorMetadata.EMPTY;
@@ -4291,7 +4370,7 @@ public final class VideoStreamProbe {
                     || (this.dolbyVisionProfile > 0 && (this.dolbyVisionProfile != 8
                     || this.colorMetadata.dolbyVisionCompatibilityId > 0)));
             this.hasHdr10BaseLayer = !explicitNonPqBase && (this.colorMetadata.hasHdr10BaseLayer()
-                    || hasHdr10BaseLayer || (hasDolbyVision && hasHdr10));
+                    || hasHdr10BaseLayer);
             this.primaryVideoMime = normalizeMime(primaryVideoMime);
             this.primaryAudioMime = normalizeMime(primaryAudioMime);
             this.hasAvcVideo = hasAvcVideo;

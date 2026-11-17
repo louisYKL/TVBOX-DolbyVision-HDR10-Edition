@@ -47,8 +47,13 @@ public final class SystemDecoderRoutePolicy {
         if (hasHdr10BaseLayer(profile, compatibilityId)) return "base-hdr";
         // A known compatibility id is authoritative over a conflicting coarse color hint.
         if (profile == 8 && compatibilityId > 0) return "dv-no-compatible-base";
-        if (transfer == 7) return "base-hlg";
-        if (transfer == 6) return "base-hdr";
+        // Compatibility IDs are omitted by some Android extractors. A PQ transfer
+        // is sufficient evidence for the HDR10 base of profile 8.1 when the ID is
+        // unavailable; do not make a playable HDR10 stream fail preflight.
+        if (profile == 8 && compatibilityId <= 0 && transfer == 6) return "base-hdr";
+        // A coarse transfer value without a known DV compatibility ID does not
+        // identify the base layer. Keep the stream in the unresolved state until
+        // dvcC/dvvC or extractor metadata supplies an authoritative mapping.
         return "dv-no-compatible-base";
     }
 
@@ -62,6 +67,46 @@ public final class SystemDecoderRoutePolicy {
         if (sdkInt >= 29 && softwareOnly) return false;
         if (sdkInt >= 29 && hardwareAccelerated) return true;
         return isLikelyHardwareCodec(28, codecName, false, false);
+    }
+
+    /**
+     * Native Dolby Vision must never use the broad HDR vendor-alias fallback above.
+     * On API 29 and later, a DV decoder is eligible only when Android explicitly marks
+     * it hardware accelerated and it is not software-only. Without that proof the
+     * renderer must use the verified HEVC/AVC compatibility-base route instead.
+     * Older APIs do not expose the hardware flag, so retain the conservative codec-name
+     * check used by the platform decoder list.
+     */
+    public static boolean isEligibleNativeDolbyVisionCodec(int sdkInt,
+                                                            String codecName,
+                                                            boolean hardwareAccelerated,
+                                                            boolean softwareOnly) {
+        if (softwareOnly) {
+            return false;
+        }
+        if (sdkInt >= 29) {
+            return hardwareAccelerated;
+        }
+        return isLikelyHardwareCodec(sdkInt, codecName, hardwareAccelerated, false);
+    }
+
+    /**
+     * A small set of vendor decoders advertise video/dolby-vision but emit no frames for
+     * profile 7/8 streams when the display path only accepts the HDR10 base layer.  Keep these
+     * codecs available for ordinary HDR playback, but force the DV-compatible base-layer route
+     * so audio cannot continue against a black video surface.
+     */
+    public static boolean shouldAvoidNativeDolbyVision(String codecName) {
+        if (codecName == null) {
+            return false;
+        }
+        String normalized = codecName.trim().toLowerCase(Locale.US);
+        return normalized.contains("nvt")
+                || normalized.contains("hisilicon")
+                || normalized.contains("hisi")
+                || normalized.contains("hi3798")
+                || normalized.contains("hi351")
+                || normalized.contains("mstar");
     }
 
     /**

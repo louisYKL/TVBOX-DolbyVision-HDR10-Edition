@@ -326,7 +326,14 @@ public final class HdrDeviceSupport {
         try {
             MediaCodecList list = new MediaCodecList(MediaCodecList.ALL_CODECS);
             for (MediaCodecInfo info : list.getCodecInfos()) {
-                if (!isHardwareVideoDecoder(info)) {
+                if (!isHardwareVideoDecoder(info)
+                        || (MediaFormat.MIMETYPE_VIDEO_DOLBY_VISION.equalsIgnoreCase(mimeType)
+                        && !SystemDecoderRoutePolicy.isEligibleNativeDolbyVisionCodec(
+                        Build.VERSION.SDK_INT,
+                        info.getName(),
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && info.isHardwareAccelerated(),
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && info.isSoftwareOnly())
+                        || SystemDecoderRoutePolicy.shouldAvoidNativeDolbyVision(info.getName()))) {
                     continue;
                 }
                 for (String type : info.getSupportedTypes()) {

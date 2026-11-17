@@ -60,6 +60,21 @@ public class DolbyVisionRpuStripperTest {
     }
 
     @Test
+    public void removesRpuAndEnhancementUnitsFromLengthPrefixedSamples() {
+        ByteBuffer data = ByteBuffer.allocate(32);
+        put(data, 0, 0, 0, 3, 0x40, 0x11, 0x12,
+                0, 0, 0, 4, 0x7c, 0x22, 0x23, 0x24,
+                0, 0, 0, 3, 0x42, 0x31, 0x32);
+        data.flip();
+
+        int removed = new DolbyVisionRpuStripper().stripInPlace(data);
+
+        assertEquals(1, removed);
+        assertArrayEquals(new byte[]{0, 0, 0, 3, 0x40, 0x11, 0x12,
+                0, 0, 0, 3, 0x42, 0x31, 0x32}, remainingBytes(data));
+    }
+
+    @Test
     public void reusesScratchForSuccessiveLargeAccessUnits() {
         DolbyVisionRpuStripper stripper = new DolbyVisionRpuStripper();
         ByteBuffer first = sampleWithRpu(1024);

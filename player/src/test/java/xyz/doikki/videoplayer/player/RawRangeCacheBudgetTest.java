@@ -49,6 +49,19 @@ public class RawRangeCacheBudgetTest {
     }
 
     @Test
+    public void closeDropsCommittedBytesButKeepsInFlightReservation() {
+        MutableHeap heap = new MutableHeap(512L * MIB, 32L * MIB);
+        RawRangeCacheBudget budget = new RawRangeCacheBudget(192L * MIB, 96L * MIB, heap);
+        RawRangeCacheBudget.Account account = budget.openAccount();
+        assertTrue(account.tryResize(96L * MIB, 24L * MIB));
+        account.releaseCommitted();
+        assertEquals(24L * MIB, account.chargedBytes());
+        assertEquals(24L * MIB, budget.chargedBytes());
+        assertTrue(account.tryResize(0L, 0L));
+        assertEquals(0L, budget.chargedBytes());
+    }
+
+    @Test
     public void closedSourceKeepsDelayedWorkerChargedUntilTheWorkerReturns() {
         MutableHeap heap = new MutableHeap(512L * MIB, 32L * MIB);
         RawRangeCacheBudget budget = new RawRangeCacheBudget(192L * MIB, 96L * MIB, heap);
@@ -64,6 +77,22 @@ public class RawRangeCacheBudgetTest {
         assertEquals("double close must not refund someone else's memory",
                 96L * MIB, budget.chargedBytes());
         assertTrue(replacement.tryResize(192L * MIB, 0L));
+    }
+
+    @Test
+    public void closedSourceDoesNotBecomePermanentLiveConflict() {
+        MutableHeap heap = new MutableHeap(512L * MIB, 32L * MIB);
+        RawRangeCacheBudget budget = new RawRangeCacheBudget(192L * MIB, 96L * MIB, heap);
+        RawRangeCacheBudget.Account retired = budget.openAccount();
+        RawRangeCacheBudget.Account replacement = budget.openAccount();
+        assertTrue(retired.tryResize(120L * MIB, 0L));
+        retired.deactivate();
+        assertEquals("retired payload remains physically charged", 120L * MIB,
+                retired.chargedBytes());
+        assertFalse(replacement.tryResize(96L * MIB, 0L));
+        assertEquals(null, replacement.minimumRunwayFailure(96L * MIB));
+        retired.releaseCommitted();
+        assertTrue(replacement.tryResize(96L * MIB, 0L));
     }
 
     @Test

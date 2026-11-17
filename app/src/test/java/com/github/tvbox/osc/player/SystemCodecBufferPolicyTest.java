@@ -185,7 +185,7 @@ public class SystemCodecBufferPolicyTest {
                 7_500L, 15_000L, 0L, 64L * MB, false));
         assertEquals(75, SystemCodecBufferPolicy.bufferingProgressPercent(
                 0L, 15_000L, 54L * MB, 72L * MB, false));
-        assertEquals(100, SystemCodecBufferPolicy.bufferingProgressPercent(
+        assertEquals(99, SystemCodecBufferPolicy.bufferingProgressPercent(
                 20_000L, 15_000L, 80L * MB, 64L * MB, false));
         assertEquals(100, SystemCodecBufferPolicy.bufferingProgressPercent(
                 0L, 15_000L, 0L, 64L * MB, true));

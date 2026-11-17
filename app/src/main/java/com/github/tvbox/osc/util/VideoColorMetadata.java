@@ -42,6 +42,10 @@ public final class VideoColorMetadata {
         if (dolbyVisionProfile == 8) {
             if (dolbyVisionCompatibilityId == 1) return true;
             if (dolbyVisionCompatibilityId > 0) return false;
+            // Some MediaExtractor/proxy paths drop the compatibility ID but retain
+            // the base-layer PQ transfer. In that case the stream is safely usable
+            // as an HDR10 HEVC base; HLG/SDR transfers remain unresolved.
+            return colorTransfer == 6;
         } else if (dolbyVisionProfile > 0) {
             // Profile 5 IPTPQc2 (and Profile 9 SDR) cannot become an HDR10 base
             // merely because an extractor or header also supplied a PQ transfer.

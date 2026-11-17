@@ -114,6 +114,17 @@ public class SystemCodecHdrPolicyTest {
     }
 
     @Test
+    public void avcDolbyVisionCodecAliasesAreRecognized() {
+        assertTrue(SystemCodecHdrPolicy.isDolbyVision("video/avc", "dvav.09.06", ""));
+        assertTrue(SystemCodecHdrPolicy.isDolbyVision("video/avc", "dva1.09.06", ""));
+        assertTrue(SystemCodecHdrPolicy.isDolbyVision("video/hevc", "dvc1.10.06", ""));
+        assertTrue(SystemCodecHdrPolicy.isDolbyVision("video/hevc", "dvcc.11.06", ""));
+        assertTrue(SystemCodecHdrPolicy.isDolbyVision("video/hevc", "dvvc.12.06", ""));
+        assertTrue(SystemCodecHdrPolicy.isDolbyVision("video/hevc", "dvv1.13.06", ""));
+        assertTrue(SystemCodecHdrPolicy.isHdr("video/avc", "dvav.09.06", null, ""));
+    }
+
+    @Test
     public void formatIdVideoRangePromotesHdrWithoutColorInfo() {
         Format format = new Format.Builder()
                 .setId("video-range=pq")
@@ -239,6 +250,10 @@ public class SystemCodecHdrPolicyTest {
         assertEquals(C.COLOR_TRANSFER_SDR, SystemCodecHdrPolicy.dolbyVisionBaseTransfer(profile8,
                 new VideoColorMetadata(-1, -1, -1, null, 8, 2)));
         assertNull(SystemCodecHdrPolicy.dolbyVisionBaseLayerFormat(profile8, VideoColorMetadata.EMPTY));
+        assertEquals(C.COLOR_TRANSFER_ST2084,
+                SystemCodecHdrPolicy.dolbyVisionBaseTransfer(profile8,
+                        new VideoColorMetadata(C.COLOR_TRANSFER_ST2084, -1, -1,
+                                null, 8, 6, -1)));
     }
 
     @Test

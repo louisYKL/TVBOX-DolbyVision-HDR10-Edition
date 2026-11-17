@@ -36,12 +36,24 @@ final class SystemCodecHdrPolicy {
         boolean dolbyVision = "video/dolby-vision".equals(mime)
                 || codec.contains("dvhe")
                 || codec.contains("dvh1")
+                || codec.contains("dvav")
+                || codec.contains("dva1")
+                || codec.contains("dvc1")
+                || codec.contains("dvcc")
+                || codec.contains("dvvc")
+                || codec.contains("dvv1")
                 || codec.contains("dovi")
                 || metadata.contains("dolby vision")
                 || metadata.contains("dolby-vision")
                 || metadata.contains("dolbyvision")
                 || metadata.contains("dvhe")
-                || metadata.contains("dvh1");
+                || metadata.contains("dvh1")
+                || metadata.contains("dvav")
+                || metadata.contains("dva1")
+                || metadata.contains("dvc1")
+                || metadata.contains("dvcc")
+                || metadata.contains("dvvc")
+                || metadata.contains("dvv1");
         boolean hdrTransfer = colorInfo != null
                 && (colorInfo.colorTransfer == C.COLOR_TRANSFER_ST2084
                 || colorInfo.colorTransfer == C.COLOR_TRANSFER_HLG);
@@ -118,8 +130,7 @@ final class SystemCodecHdrPolicy {
     static int dolbyVisionProfile(Format format, @Nullable VideoColorMetadata source) {
         String codecs = lower(format == null ? null : format.codecs);
         String[] fields = codecs.split("\\.");
-        if (fields.length >= 2 && (fields[0].equals("dvhe") || fields[0].equals("dvh1")
-                || fields[0].equals("dvav") || fields[0].equals("dva1"))) {
+        if (fields.length >= 2 && isDolbyVisionCodecPrefix(fields[0])) {
             try { return Integer.parseInt(fields[1]); } catch (NumberFormatException ignored) { }
         }
         return source == null ? -1 : source.dolbyVisionProfile;
@@ -132,7 +143,7 @@ final class SystemCodecHdrPolicy {
         String prefix;
         int profile = source.dolbyVisionProfile;
         if ("video/hevc".equals(format.sampleMimeType)
-                && (profile == 4 || profile == 5 || profile == 7 || profile == 8)) {
+                && isHevcDolbyVisionProfile(profile)) {
             prefix = "dvhe";
         } else if ("video/avc".equals(format.sampleMimeType) && profile == 9) {
             prefix = "dvav";
@@ -149,16 +160,26 @@ final class SystemCodecHdrPolicy {
         int profile = dolbyVisionProfile(format, source);
         if (profile == 7) return C.COLOR_TRANSFER_ST2084;
         if (profile == 9) return C.COLOR_TRANSFER_SDR;
+        // A bounded TV probe can identify Dolby Vision before the extractor exposes
+        // a profile. When the activity supplied an explicit PQ compatibility hint,
+        // use the ordinary HEVC HDR10 base route and let the real Format decide
+        // whether a known single-layer profile is eligible below.
+        if (profile <= 0 && source != null
+                && source.colorTransfer == C.COLOR_TRANSFER_ST2084) {
+            return C.COLOR_TRANSFER_ST2084;
+        }
         if (profile != 8) return -1; // Profile 5's IPTPQc2 is not HDR10/PQ YCbCr.
         int compatibility = source == null ? -1 : source.dolbyVisionCompatibilityId;
         if (compatibility == 1) return C.COLOR_TRANSFER_ST2084;
         if (compatibility == 4) return C.COLOR_TRANSFER_HLG;
         if (compatibility == 2) return C.COLOR_TRANSFER_SDR;
-        ColorInfo info = format == null ? null : format.colorInfo;
-        int transfer = info != null && info.colorTransfer >= 0 ? info.colorTransfer
-                : source == null ? -1 : source.colorTransfer;
-        return transfer == C.COLOR_TRANSFER_ST2084 || transfer == C.COLOR_TRANSFER_HLG
-                || transfer == C.COLOR_TRANSFER_SDR ? transfer : -1;
+        if (profile == 8 && compatibility <= 0) {
+            ColorInfo info = format == null ? null : format.colorInfo;
+            int transfer = info != null && info.colorTransfer >= 0 ? info.colorTransfer
+                    : source == null ? -1 : source.colorTransfer;
+            if (transfer == C.COLOR_TRANSFER_ST2084) return C.COLOR_TRANSFER_ST2084;
+        }
+        return -1;
     }
 
     @Nullable
@@ -271,12 +292,39 @@ final class SystemCodecHdrPolicy {
         return "video/dolby-vision".equals(mime)
                 || codec.contains("dvhe")
                 || codec.contains("dvh1")
+                || codec.contains("dvav")
+                || codec.contains("dva1")
+                || codec.contains("dvc1")
+                || codec.contains("dvcc")
+                || codec.contains("dvvc")
+                || codec.contains("dvv1")
                 || codec.contains("dovi")
                 || metadata.contains("dolby vision")
                 || metadata.contains("dolby-vision")
                 || metadata.contains("dolbyvision")
                 || metadata.contains("dvhe")
-                || metadata.contains("dvh1");
+                || metadata.contains("dvh1")
+                || metadata.contains("dvav")
+                || metadata.contains("dva1")
+                || metadata.contains("dvc1")
+                || metadata.contains("dvcc")
+                || metadata.contains("dvvc")
+                || metadata.contains("dvv1");
+    }
+
+    private static boolean isDolbyVisionCodecPrefix(String value) {
+        return "dvhe".equals(value) || "dvh1".equals(value)
+                || "dvav".equals(value) || "dva1".equals(value)
+                || "dvc1".equals(value) || "dvcc".equals(value)
+                || "dvvc".equals(value) || "dvv1".equals(value);
+    }
+
+    private static boolean isHevcDolbyVisionProfile(int profile) {
+        // Profiles 4/5/7/8 and the later HEVC profiles 10/11/12 use the HEVC
+        // Dolby Vision sample entry. Unknown profiles are deliberately left
+        // untouched so a new profile cannot be mislabelled as a base layer.
+        return profile == 4 || profile == 5 || profile == 7 || profile == 8
+                || profile == 10 || profile == 11 || profile == 12;
     }
 
     static String metadataText(@Nullable Metadata metadata) {

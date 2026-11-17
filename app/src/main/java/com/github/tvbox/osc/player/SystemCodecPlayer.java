@@ -126,6 +126,7 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
     private boolean sourceHdr10Hint;
     private boolean sourceHdr10PlusHint;
     private boolean sourceDolbyVisionHint;
+    private boolean sourceNativeDolbyVisionAllowed;
     private volatile VideoColorMetadata sourceColorMetadata = VideoColorMetadata.EMPTY;
     private boolean nativeDolbyVisionCodecActive;
     private boolean videoCodecInitialized;
@@ -535,6 +536,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         sourceHdr10Hint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-Hdr10", "1");
         sourceHdr10PlusHint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-Hdr10Plus", "1");
         sourceDolbyVisionHint = hasHeaderValue(parsed.headers, "X-TVBox-Probe-DolbyVision", "1");
+        sourceNativeDolbyVisionAllowed = hasHeaderValue(
+                parsed.headers, "X-TVBox-Probe-NativeDvDevice", "1");
         sourceColorMetadata = VideoColorMetadata.fromHeaders(parsed.headers);
         requestHeaders = sanitizeRequestHeaders(parsed.headers);
         if (networkSpeedMeter != null) {
@@ -551,7 +554,8 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
                 + " passthroughVolume=" + passthroughVolumeLocked
                 + " hdrHint=" + sourceHdr10Hint
                 + " hdr10PlusHint=" + sourceHdr10PlusHint
-                + " dvHint=" + sourceDolbyVisionHint);
+                + " dvHint=" + sourceDolbyVisionHint
+                + " nativeDvOutput=" + sourceNativeDolbyVisionAllowed);
     }
 
     @Override
@@ -2410,7 +2414,26 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
         }
 
         private VideoColorMetadata sourceMetadata() {
-            return owner == null ? VideoColorMetadata.EMPTY : owner.sourceColorMetadata;
+            if (owner == null) {
+                return VideoColorMetadata.EMPTY;
+            }
+            VideoColorMetadata metadata = owner.sourceColorMetadata;
+            // The probe header can carry reliable HDR10 evidence even when the
+            // extractor omitted the transfer field and DV compatibility ID. Feed
+            // that evidence into base-layer format construction so profile 8/unknown
+            // DV streams use the HEVC PQ base instead of being rejected.
+            if (owner.sourceHdr10Hint && metadata.colorTransfer < 0
+                    && metadata.dolbyVisionProfile != 5) {
+                return new VideoColorMetadata(
+                        C.COLOR_TRANSFER_ST2084,
+                        metadata.colorStandard,
+                        metadata.colorRange,
+                        metadata.getHdrStaticInfo(),
+                        metadata.dolbyVisionProfile,
+                        metadata.dolbyVisionLevel,
+                        metadata.dolbyVisionCompatibilityId);
+            }
+            return metadata;
         }
 
         private Format sourceFormat(Format format) {
@@ -2420,7 +2443,17 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
 
         private boolean isDolbyVision(Format format) {
             return MimeTypes.VIDEO_DOLBY_VISION.equals(format.sampleMimeType)
-                    || SystemCodecHdrPolicy.isDolbyVision(format.sampleMimeType, format.codecs, null);
+                    || SystemCodecHdrPolicy.isDolbyVision(format.sampleMimeType, format.codecs, null)
+                    // Some TV extractors expose a DV elementary stream as plain HEVC.
+                    // The preflight header is the only reliable signal in that case;
+                    // route it through the same HDR10 base conversion and RPU filter.
+                    || (owner != null && owner.sourceDolbyVisionHint);
+        }
+
+        private boolean nativeDolbyVisionOutputAvailable() {
+            // Keep renderer selection aligned with the preflight router. A vendor codec
+            // advertised in MediaCodecList is not proof that this display path accepts DV.
+            return owner != null && owner.sourceNativeDolbyVisionAllowed;
         }
 
         @Override
@@ -2464,7 +2497,16 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             ArrayList<MediaCodecInfo> supported = new ArrayList<>();
             for (MediaCodecInfo decoder : selector.getDecoderInfos(MimeTypes.VIDEO_DOLBY_VISION,
                     requiresSecureDecoder, false)) {
-                if (decoder.isFormatSupported(format)) supported.add(decoder);
+                if (SystemDecoderRoutePolicy.isEligibleNativeDolbyVisionCodec(
+                        Build.VERSION.SDK_INT,
+                        decoder.name,
+                        decoder.hardwareAccelerated,
+                        decoder.softwareOnly)
+                        && nativeDolbyVisionOutputAvailable()
+                        && !SystemDecoderRoutePolicy.shouldAvoidNativeDolbyVision(decoder.name)
+                        && decoder.isFormatSupported(format)) {
+                    supported.add(decoder);
+                }
             }
             return supported;
         }
@@ -2476,12 +2518,19 @@ public final class SystemCodecPlayer extends AbstractPlayer implements CompatTra
             boolean dolbyVision = isDolbyVision(restored);
             configuredNativeDolbyVision = dolbyVision
                     && (MimeTypes.VIDEO_DOLBY_VISION.equals(codecInfo.mimeType)
-                    || MimeTypes.VIDEO_DOLBY_VISION.equals(codecInfo.codecMimeType));
+                    || MimeTypes.VIDEO_DOLBY_VISION.equals(codecInfo.codecMimeType))
+                    && SystemDecoderRoutePolicy.isEligibleNativeDolbyVisionCodec(
+                    Build.VERSION.SDK_INT,
+                    codecInfo.name,
+                    codecInfo.hardwareAccelerated,
+                    codecInfo.softwareOnly)
+                    && nativeDolbyVisionOutputAvailable()
+                    && !SystemDecoderRoutePolicy.shouldAvoidNativeDolbyVision(codecInfo.name);
             Format base = dolbyVision && !configuredNativeDolbyVision
                     ? SystemCodecHdrPolicy.dolbyVisionBaseLayerFormat(restored, sourceMetadata()) : null;
             stripDolbyVisionRpu = !configuredNativeDolbyVision
-                    && SystemCodecHdrPolicy.shouldStripDolbyVisionRpu(restored,
-                    codecInfo.mimeType, sourceMetadata());
+                    && "video/hevc".equals(codecInfo.mimeType)
+                    && SystemCodecHdrPolicy.dolbyVisionBaseTransfer(restored, sourceMetadata()) >= 0;
             // Only the selected ordinary HEVC codec receives the compatible base format.
             // The native DV codec receives the original codec string, CSD, RPU and EL data.
             return super.getMediaCodecConfiguration(codecInfo, base == null ? restored : base,

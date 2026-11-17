@@ -14,10 +14,10 @@ final class VideoStreamByteMarkers {
     static final int HDR10_PLUS = 1 << 4;
     private static final int DOVI = 1 << 5;
     private static final int PROFILE_BASE_BIT = 8;
-    private static final int PROFILE_COUNT = 6;
-    private static final int PROFILE_5 = 1 << 14;
-    private static final int PROFILE_7 = 1 << 15;
-    private static final int PROFILE_8 = 1 << 16;
+    private static final int PROFILE_COUNT = 12;
+    private static final int PROFILE_5 = 1 << 20;
+    private static final int PROFILE_7 = 1 << 21;
+    private static final int PROFILE_8 = 1 << 22;
     private static final int ALPHABET_SIZE = 44;
     private static final Matcher MATCHER = buildMatcher();
 
@@ -56,7 +56,8 @@ final class VideoStreamByteMarkers {
             state = symbol < 0 ? 0 : MATCHER.transitions[state][symbol];
             int found = MATCHER.outputs[state];
             flags |= found;
-            if ((found >>> PROFILE_BASE_BIT & 0x3f) != 0) {
+            // Keep every recognized Dolby Vision codec-string alias in profile parsing.
+            if ((found >>> PROFILE_BASE_BIT) != 0) {
                 for (int profile = 0; profile < PROFILE_COUNT; profile++) {
                     if ((found & (1 << (PROFILE_BASE_BIT + profile))) != 0 && profiles[profile] < 0) {
                         profiles[profile] = firstIntAfter(data, offset + 1, limit);
@@ -69,9 +70,6 @@ final class VideoStreamByteMarkers {
             int value = profiles[index];
             if (index == 3 && (flags & DOVI) == 0) {
                 continue;
-            }
-            if (index >= 4 && value > 12) {
-                value /= 10;
             }
             if (value > 0) {
                 profile = value;
@@ -132,7 +130,7 @@ final class VideoStreamByteMarkers {
         Builder builder = new Builder();
         builder.add(DOLBY_VISION, "video/dolby-vision", "dovi configuration", "dolby vision",
                 "dolby_vision", "dolby-vision", "dolbyvision", "dv profile", "dv_profile",
-                "dv-profile", "dvhe", "dvh1", "dvc1", "dvcc", "dvvc", "dvv1");
+                "dv-profile", "dvhe", "dvh1", "dvav", "dva1", "dvc1", "dvcc", "dvvc", "dvv1");
         builder.add(HEVC, "video/hevc", "hev1", "hvc1", "hevc", "h265", "v_mpegh/iso/hevc");
         builder.add(MATROSKA, ".mkv", "matroska", "webm");
         builder.add(HDR10, "hdr10", "smpte2084", "smpte 2084", "arib-std-b67",
@@ -146,7 +144,9 @@ final class VideoStreamByteMarkers {
         builder.add(HDR10_PLUS, "hdr10+", "hdr10plus", "hdr10_plus", "hdr10-plus",
                 "smpte2094", "smpte 2094");
         builder.add(DOVI, "dovi");
-        String[] profileMarkers = {"dv_profile", "dv profile", "dv-profile", "profile=", "dvhe.", "dvh1."};
+        String[] profileMarkers = {"dv_profile", "dv profile", "dv-profile", "profile=",
+                "dvhe.", "dvh1.", "dvav.", "dva1.", "dvc1.", "dvcc.",
+                "dvvc.", "dvv1."};
         for (int index = 0; index < profileMarkers.length; index++) {
             builder.add(1 << (PROFILE_BASE_BIT + index), profileMarkers[index]);
         }

@@ -1836,6 +1836,17 @@ public class PlayActivity extends BaseActivity {
         errorWithRetry(getUnsupportedAvcHigh10Message(), false);
     }
 
+    private void handleUnsupportedDolbyVisionPlayback() {
+        keepHdrWindowDuringPlayerSwitch = false;
+        cancelPlayTimeout();
+        forceReleaseCurrentPlayer("activity-unsupported-dolby-vision");
+        currentPlaybackRequiresHdrOutput = false;
+        currentPlaybackUsesNativeJava64DolbyVision = false;
+        applySubtitleToneForCurrentPlayback();
+        HdrOutputManager.releaseHdr(this, "activity-unsupported-dolby-vision");
+        errorWithRetry("设备没有可用的杜比视界解码或兼容层", false);
+    }
+
     void playUrl(String url, HashMap<String, String> headers) {
         playUrl(url, headers, currentPlayGeneration());
     }
@@ -1948,6 +1959,12 @@ public class PlayActivity extends BaseActivity {
             }
             final DolbyVisionPlaybackRouter.Decision dvDecision = preflight.decision;
             VideoStreamProbe.Result streamProbe = preflight.probe;
+            if (dvDecision.unsupportedDolbyVision) {
+                LOG.i("echo-dolby-route blocked no-native-or-compatible-base profile="
+                        + streamProbe.dolbyVisionProfile + " summary=" + streamProbe.summary);
+                handleUnsupportedDolbyVisionPlayback();
+                return;
+            }
             if (isUnsupportedAvcHigh10Playback(streamProbe)) {
                 LOG.i("echo-playback-block unsupported-hwdec format=avc-high10 url=" + safeLogSnippet(preflight.url));
                 handleUnsupportedAvcHigh10Playback();
@@ -2107,7 +2124,10 @@ public class PlayActivity extends BaseActivity {
                 }
                 LOG.i("echo-probe-prefetch activity device probed=" + probe.probed
                         + " hdr10=" + probe.hasHdr10 + " hdr10Plus=" + probe.hasHdr10Plus
-                        + " dv=" + probe.hasDolbyVision + " summary=" + probe.summary);
+                        + " hdr10Base=" + probe.hasHdr10BaseLayer
+                        + " dv=" + probe.hasDolbyVision + " profile=" + probe.dolbyVisionProfile
+                        + " videoMime=" + probe.primaryVideoMime
+                        + " hevc=" + probe.hasHevcVideo + " summary=" + probe.summary);
             }
             DolbyVisionPlaybackRouter.Decision decision = DolbyVisionPlaybackRouter.resolve(mContext,
                     PlayerHelper.PLAYER_TYPE_SYSTEM, playbackUrl, activeHeaders, probe,
@@ -2333,7 +2353,11 @@ public class PlayActivity extends BaseActivity {
         if (caps.supportsNativeDolbyVisionRoute(java64TouchPhone)) {
             headers.put("X-TVBox-Probe-NativeDvDevice", "1");
         }
-        if (probe.hasHdr10) {
+        if (probe.hasHdr10 || probe.hasHdr10BaseLayer
+                // The timeout-byte TV probe can prove DV but not expose a profile yet.
+                // Pass a tentative PQ base hint; the renderer still rejects known
+                // Profile 5 when it sees the actual Format.
+                || (probe.hasDolbyVision && probe.dolbyVisionProfile != 5)) {
             headers.put("X-TVBox-Probe-Hdr10", "1");
         }
         if (probe.hasHdr10Plus) {
@@ -2352,6 +2376,7 @@ public class PlayActivity extends BaseActivity {
         return probe != null && (probe.isMatroska
                 || probe.hasDolbyVision
                 || probe.hasHdr10
+                || probe.hasHdr10BaseLayer
                 || probe.hasHdr10Plus
                 || probe.colorMetadata.hasHdrTransfer()
                 || shouldForceTv32SystemSafePcm(playbackUrl, probe)

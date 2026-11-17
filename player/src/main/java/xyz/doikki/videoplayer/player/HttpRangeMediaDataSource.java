@@ -657,6 +657,16 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
             cachedWindows.clear();
             cachedBytes = 0L;
             releaseContainerMetadataWindowLocked();
+            // cachedBytes is the committed portion of this source's process-wide budget
+            // account.  Clearing the windows without reconciling leaves those bytes charged
+            // forever, so the next playback is rejected as if another source still owned the
+            // cache (even though its own account is empty).  Reconcile before waking waiters;
+            // in-flight reservations remain charged until their workers unwind below.
+            rawBudget.releaseCommitted();
+            // This source is no longer a live playback owner. Keep in-flight reservations
+            // charged for physical heap safety, but let a replacement source wait for those
+            // workers to unwind instead of converting this close race into a permanent conflict.
+            rawBudget.deactivate();
             rangeTransferListener = null;
             containerMetadataMode = false;
             auxiliaryProbePosition = -1L;
@@ -683,6 +693,34 @@ public final class HttpRangeMediaDataSource extends MediaDataSource {
         }
         cancelActivePlaybackCall();
         cancelAllPrefetchCalls();
+        // A cancelled response may still be unwinding on the executor. Give its finally block a
+        // short opportunity to return the reservation before the next playback source is opened;
+        // otherwise the replacement can observe the old process-wide charge and fail admission.
+        awaitRangeReservationsReleased(750L);
+    }
+
+    private void awaitRangeReservationsReleased(long timeoutMs) {
+        long deadline = monotonicMillis() + Math.max(0L, timeoutMs);
+        synchronized (this) {
+            while (rawBudget.chargedBytes() > 0L) {
+                long remaining = deadline - monotonicMillis();
+                if (remaining <= 0L) {
+                    logInfo("echo-range-source close-reservations-pending bytes="
+                            + rawBudget.chargedBytes());
+                    return;
+                }
+                try {
+                    wait(Math.min(50L, remaining));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    private static long monotonicMillis() {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
     }
 
     private void ensureSizeKnown() throws IOException {
