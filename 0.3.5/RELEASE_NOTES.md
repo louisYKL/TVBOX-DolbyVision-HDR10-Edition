@@ -29,7 +29,7 @@
 ### 验证边界
 
 - 三端应用单元测试通过，APK 的版本、ABI、签名、非 debuggable 状态和 SHA-256 已核验。
-- `:player:testReleaseSimonUnitTest` 中 `startupPrefetchUsesHttpToFillBridgeAfterFragmentedCache` 和 `systemRangeDoesNotStartCompetingBackgroundPrefetch` 仍有失败；它们属于现有 Range 行为测试，未作为本次 0.3.5 的发布阻断条件。
+- `:player:testReleaseSimonUnitTest` 已通过，包含 `startupPrefetchUsesHttpToFillBridgeAfterFragmentedCache` 和 `systemRangeDoesNotStartCompetingBackgroundPrefetch`。
 
 ## English
 
@@ -58,4 +58,4 @@ All variants retain the historical release certificate and support in-place upda
 ### Validation boundary
 
 - The three application unit-test suites passed. APK version, ABI, signing certificate, non-debuggable status, and SHA-256 were verified.
-- `:player:testReleaseSimonUnitTest` still reports failures in `startupPrefetchUsesHttpToFillBridgeAfterFragmentedCache` and `systemRangeDoesNotStartCompetingBackgroundPrefetch`. These are existing Range-behavior test failures and were not treated as a 0.3.5 release blocker.
+- `:player:testReleaseSimonUnitTest` passed, including `startupPrefetchUsesHttpToFillBridgeAfterFragmentedCache` and `systemRangeDoesNotStartCompetingBackgroundPrefetch`.
