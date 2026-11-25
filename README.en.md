@@ -38,58 +38,12 @@ Version: `0.3.6`; `versionCode`: `30006`. Checksums accompany the release. Previ
 
 See the [0.3.6 release notes](0.3.6/RELEASE_NOTES.md) for implementation and validation scope.
 
-## Changes in 0.3.5
-
-- When a device lacks an end-to-end Dolby Vision decoder route, use the source's verified HDR10, HLG, or SDR compatibility base. Display-panel DV support is no longer treated as proof that the chip can decode DV.
-- Recognize Dolby Vision expressed in ordinary `video/hevc` tracks through codec strings, configuration records, and bounded probe evidence. The track no longer has to advertise `video/dolby-vision`.
-- Strip RPU/EL NAL units from both Annex-B and length-prefixed samples. Validate the complete access unit before compaction and preserve the original bytes when validation fails, so ordinary HEVC is not damaged.
-- Do not reuse weak probe results that lack a profile/level, video track, or compatibility-base evidence. A bounded confirmation probe can then resolve the actual route instead of persisting a false unsupported-DV result or an audio-only black surface.
-
-See the [0.3.5 release notes](0.3.5/RELEASE_NOTES.md) for implementation and validation scope.
-
-## Changes in 0.3.4
-
-- Release stale Range-cache accounting on source switches and player teardown, preventing a new player from being rejected after its surface is ready.
-- Reach 100% and start only after committed contiguous bytes satisfy the startup gate; in-flight bytes cannot leave playback at 100% with zero speed.
-- Recognize the `dvav`/`dva1` AVC Dolby Vision aliases. When a panel supports Dolby Vision but the chip has no DV decoder, use the source's HDR10/HLG/SDR compatible base layer. NVT, HiSilicon, and MStar black-screen declarations no longer take the native DV route.
-
-See the [0.3.4 release notes](0.3.4/RELEASE_NOTES.md) for implementation and validation scope.
-
 ## Preview
 
 <p align="center">
   <img src="1.jpg" alt="TVBOX preview 1" width="48%">
   <img src="2.webp" alt="TVBOX preview 2" width="48%">
 </p>
-
-## Changes in 0.3.3
-
-- High-heap 64-bit devices use a bounded raw Range cache tiered by the available Java heap: `192 MiB` up to `640 MiB`, `288 MiB` above `640 MiB`, and `384 MiB` at or above `1 GiB`. The network window remains `24 MiB` and live/HLS keeps its separate streaming policy.
-- 32-bit and low-heap devices retain a `192 MiB` ceiling, one prefetch lane, and bounded probing. Sibling prefetch is disabled on those devices to reduce GC contention and OOM risk.
-- High-heap 64-bit process budgets follow the same tiers while reserving `128 MiB` for decoders, demuxers, subtitles, and UI work; 32-bit and low-heap devices retain the more conservative `96 MiB` headroom. A larger source file never causes the whole file to be allocated.
-- Range payloads use `256 KiB` slices to reduce object count and garbage-collection pressure. HTTP/1.1 connection reuse remains enabled for the `6677` Range path.
-- Error-only Range diagnostics record effective bytes, elapsed time, bytes per second, prefetch, and bounded retry outcomes so source stalls can be separated from local scheduling pressure.
-
-See the [0.3.3 release notes](0.3.3/RELEASE_NOTES.md) for implementation and validation scope.
-
-## Changes in 0.3.2
-
-- WebDAV accepts HTTPS hostnames, HTTPS IPv4 addresses, and HTTPS IPv6 addresses. When the port is omitted, HTTPS uses standard port `443`; HTTP/AList keeps the existing `5244` default, while explicit ports are preserved.
-- Directory browsing, video playback, and external subtitle downloads keep the HTTPS URL and Basic Authorization. Android/OkHttp certificate validation remains enabled; self-signed or invalid certificates are not trusted.
-- All three variants use `0.3.2` (`versionCode 30002`) and the existing release certificate for in-place updates.
-
-See the [release notes](0.3.2/RELEASE_NOTES.md) for implementation and verification scope.
-
-## Changes in 0.3.1
-
-- Fix loss of real color parameters between HDR probing and decoder setup. Preserve PQ/HLG transfer, color standard, range, and source-owned static HDR metadata instead of collapsing HLG into PQ or synthesizing a fixed 1000-nit mastering descriptor.
-- Correct Dolby Vision configuration-record and codec-string profile/level parsing, including `dvhe.08.06`. Retain a native candidate when an actual DV decoder exists, then select against the real profile/level capabilities; preserve dynamic RPU data on the native path.
-- Use only real compatible Dolby Vision bases: Profile 7 / 8.1 for HDR10, 8.4 for HLG, and 8.2 / 9 for SDR. Profile 5 is not treated as having an HDR10 base layer.
-- Query the display belonging to the playback window rather than freezing the default display's first result. Reassert HDR requests on window attachment and focus restoration, addressing lost requests on phones while keeping brightness device-controlled.
-- Fix stale live URLs and empty-list startup blocking in the separate live process. Pass the latest saved URL to playback and detect playlist formats from content rather than URL keywords.
-- Retain the release certificate, `24 MiB` Range chunks, `96 MiB` VOD startup target, `192 MiB` raw-cache ceiling, and existing subtitles, port 9978 input, and audio policy.
-
-See the [release notes](0.3.1/RELEASE_NOTES.md) for implementation and verification scope. Format badges and an accepted HDR window request do not measure panel output; software cannot add unsupported hardware formats. A cache absorbs network fluctuations, but sustained throughput below the video bitrate can still require waiting.
 
 ## Playback, HDR, and audio
 
