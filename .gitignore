@@ -104,3 +104,15 @@ _runtime/
 output/playwright/
 github-device-flow.json
 gcm-*.txt
+
+# Local build, dependency cache, and diagnostic output
+/_build-v*/
+/_diagnostics/
+/_tmp_exo_audit/
+/._audit-exoplayer-core/
+/.diag/
+/.tmp-audit/
+/.gradle-project/
+/.gradle-user-home/
+/.tools/
+/_tmp_*.txt
