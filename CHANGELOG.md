@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.7
+
+### 中文
+
+- 修复 Seek 后播放器状态标记滞留时 `100%` 加载提示持续覆盖画面的问题；保留最短展示时间，并在 30 秒上限强制清理。
+- Activity 全屏播放器和详情页内嵌播放器共用 Seek 提示结束策略；完成回调会持续检查，避免短暂 loading 信号让清理任务永久退出。
+- 保留现有系统硬件解码及 SurfaceView/HDR 路由。libdovi/libplacebo 帧映射未纳入本版：现有解码输出没有可交给映射器的帧接口，GPU/HDR 输出需单独原型和实机验证。
+- 三端统一为 `0.3.7` / `versionCode 30007`，沿用既有正式签名。
+
+### English
+
+- Fix the Seek overlay that could remain at `100%` over video when vendor player state flags stayed latched. Keep a minimum visible duration and force cleanup at 30 seconds.
+- Share the overlay finish policy between fullscreen Activity playback and embedded detail playback. The finish callback keeps checking state so a transient loading signal cannot permanently abandon cleanup.
+- Preserve the existing system hardware decoder and SurfaceView/HDR route. libdovi/libplacebo frame mapping is not included: the current decoder output has no frame interface for a mapper, and GPU/HDR output requires a separate prototype and device validation.
+- Unify all three variants under `0.3.7` / `versionCode 30007` with the existing release certificate.
+
 ## 0.3.6
 
 ### 中文

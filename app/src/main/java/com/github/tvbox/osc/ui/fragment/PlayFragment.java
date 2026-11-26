@@ -210,7 +210,10 @@ public class PlayFragment extends BaseLazyFragment {
             if (!seekBufferingPending || mVideoView == null) {
                 return;
             }
-            if (PlaybackBufferProgressPolicy.isLoadingState(mVideoView.getCurrentPlayState())) {
+            if (shouldHoldSeekBufferingOverlay()) {
+                if (mHandler != null) {
+                    mHandler.postDelayed(this, BUFFER_PROGRESS_POLL_MS);
+                }
                 return;
             }
             finishSeekBufferingOverlay();
@@ -1662,31 +1665,19 @@ public class PlayFragment extends BaseLazyFragment {
             return false;
         }
         long elapsed = System.currentTimeMillis() - seekBufferingStartedAtMs;
-        if (elapsed < SEEK_BUFFER_MIN_VISIBLE_MS) {
-            return true;
-        }
         if (mVideoView == null) {
             return false;
         }
-        if (PlaybackBufferProgressPolicy.isLoadingState(mVideoView.getCurrentPlayState())) {
-            return true;
-        }
         AbstractPlayer mediaPlayer = mVideoView.getMediaPlayer();
+        boolean nativeBuffering = false;
         if (mediaPlayer instanceof AndroidMediaPlayer) {
             AndroidMediaPlayer systemPlayer = (AndroidMediaPlayer) mediaPlayer;
-            // PLAYING may be reported before the post-seek range has rendered a frame. Keep the
-            // shared percentage/speed overlay tied to the native buffering window.
-            if (systemPlayer.isBufferingForUi()) {
-                return true;
-            }
+            nativeBuffering = systemPlayer.isBufferingForUi();
         }
-        // The native player often reports the old range's 95/100% here. That value is not
-        // evidence that the new seek target has buffered. Wait for the post-seek PLAYING
-        // callback instead; the max timeout below remains the bounded vendor-firmware fallback.
-        if (seekBufferingPlaybackObserved) {
-            return false;
-        }
-        return true;
+        return PlaybackBufferProgressPolicy.shouldHoldSeekOverlay(
+                elapsed, SEEK_BUFFER_MIN_VISIBLE_MS, SEEK_BUFFER_MAX_VISIBLE_MS,
+                mVideoView.getCurrentPlayState(), nativeBuffering,
+                seekBufferingPlaybackObserved, seekBufferingPending);
     }
 
     void setTip(String msg, boolean loading, boolean err) {

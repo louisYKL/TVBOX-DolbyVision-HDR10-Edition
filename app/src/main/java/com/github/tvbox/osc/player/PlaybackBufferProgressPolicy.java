@@ -22,6 +22,31 @@ public final class PlaybackBufferProgressPolicy {
         return playbackObserved ? 100 : displayPercent(currentPercent);
     }
 
+    /** Decides whether the post-seek loading surface should remain visible. */
+    public static boolean shouldHoldSeekOverlay(long elapsedMs,
+                                                 long minimumVisibleMs,
+                                                 long maximumVisibleMs,
+                                                 int playState,
+                                                 boolean nativeBuffering,
+                                                 boolean playbackObserved,
+                                                 boolean seekPending) {
+        if (!seekPending) {
+            return false;
+        }
+        long elapsed = Math.max(0L, elapsedMs);
+        if (elapsed >= Math.max(0L, maximumVisibleMs)) {
+            return false;
+        }
+        if (elapsed < Math.max(0L, minimumVisibleMs)) {
+            return true;
+        }
+        // Vendor players can leave their buffering bit set after the post-seek frame resumed.
+        if (playbackObserved) {
+            return false;
+        }
+        return isLoadingState(playState) || nativeBuffering;
+    }
+
     public static boolean isLoadingState(int playState) {
         return playState == VideoView.STATE_PREPARING
                 || playState == VideoView.STATE_BUFFERING;

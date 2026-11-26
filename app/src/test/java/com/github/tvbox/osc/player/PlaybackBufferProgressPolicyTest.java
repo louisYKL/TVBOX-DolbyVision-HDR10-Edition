@@ -77,6 +77,32 @@ public class PlaybackBufferProgressPolicyTest {
     }
 
     @Test
+    public void observedSeekPlaybackClearsOverlayEvenWhenNativeBufferFlagIsStale() {
+        assertFalse(PlaybackBufferProgressPolicy.shouldHoldSeekOverlay(
+                2_000L, 750L, 30_000L, VideoView.STATE_PLAYING, true, true, true));
+    }
+
+    @Test
+    public void seekOverlayStillHonorsMinimumVisibleTime() {
+        assertTrue(PlaybackBufferProgressPolicy.shouldHoldSeekOverlay(
+                100L, 750L, 30_000L, VideoView.STATE_PLAYING, false, true, true));
+    }
+
+    @Test
+    public void seekOverlayHasBoundedFallbackWhenPlaybackCallbackIsMissing() {
+        assertTrue(PlaybackBufferProgressPolicy.shouldHoldSeekOverlay(
+                29_999L, 750L, 30_000L, VideoView.STATE_BUFFERING, true, false, true));
+        assertFalse(PlaybackBufferProgressPolicy.shouldHoldSeekOverlay(
+                30_000L, 750L, 30_000L, VideoView.STATE_BUFFERING, true, false, true));
+    }
+
+    @Test
+    public void seekOverlayDoesNotHoldAfterSeekIsCleared() {
+        assertFalse(PlaybackBufferProgressPolicy.shouldHoldSeekOverlay(
+                2_000L, 750L, 30_000L, VideoView.STATE_BUFFERING, true, false, false));
+    }
+
+    @Test
     public void unknownProgressKeepsStartupWatchdogAliveOnlyWithinBound() {
         assertTrue(PlaybackBufferProgressPolicy.shouldRefreshTimeoutForUnknownProgress(
                 VideoView.STATE_PREPARING, -1, 5_000L, 5_000L, 30_000L, 120_000L));
